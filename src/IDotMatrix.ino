@@ -6,7 +6,7 @@
 // Incrementare ad ogni file consegnato: viene stampato
 // sulla seriale all'avvio per evitare dubbi sulla versione.
 // ======================================================
-#define FW_BUILD 60
+#define FW_BUILD 62
 #define PNG_DIAG_SERIAL 0
 #define SCHEDULE_VERBOSE_DEBUG 0
 
@@ -29,7 +29,6 @@ struct ScheduleActivity;
 #define OLED_SDA            4
 #define OLED_SCL            15
 #define OLED_RST            16
-#define OLED_REFRESH_MS     250UL
 #define OLED_ROTATION       U8G2_R0
 #define OLED_UNKNOWN_ALERT_MS 8000UL
 #define OLED_UNKNOWN_BYTES    12
@@ -2439,30 +2438,85 @@ void setupStatusOLED() {
   statusOLED.clearBuffer();
   statusOLED.setFont(u8g2_font_7x14B_tf);
   statusOLED.setCursor(0,14);
-  statusOLED.print("iDotMatrix B59");
+  statusOLED.print("iDotMatrix B62");
   statusOLED.setCursor(0,31);
   statusOLED.print("OLED LIVE STATUS");
   statusOLED.setCursor(0,48);
   statusOLED.print("DollaTek ESP32");
   statusOLED.sendBuffer();
 #if DEBUG_SERIAL
-  Serial.println("OLED: U8g2 OK - rotation R0, live dashboard");
+  Serial.println("OLED: U8g2 OK - rotation R0, pure event-driven dashboard");
 #endif
   delay(1000);
 }
 
 void updateStatusOLED() {
   if(!statusOLEDReady) return;
-  static uint32_t last=0;
-  uint32_t now=millis();
-  if((uint32_t)(now-last)<OLED_REFRESH_MS) return;
-  last=now;
+
+  static bool first = true;
+  static uint32_t lastUnknownAtSeen = 0;
+  static bool lastBle = false;
+  static bool lastScreen = false;
+  static uint8_t lastMode = 0xFF;
+  static uint8_t lastBrightness = 0xFF;
+  static int8_t lastScheduleIndex = -127;
+  static uint8_t lastScheduleFlags = 0xFF;
+  static bool lastAlarmActive = false;
+  static uint8_t lastAlarmSlot = 0xFE;
+  static bool lastClockSynced = false;
+  static bool lastStopwatchRunning = false;
+  static bool lastCountdownRunning = false;
+  static bool lastCountdownPaused = false;
+
+  uint32_t now = millis();
+
+  // Scaduto l'avviso: forza un redraw immediato della dashboard normale.
+  bool alertExpired = false;
+  if (unknownCommandActive && (uint32_t)(now - unknownCommandAt) >= OLED_UNKNOWN_ALERT_MS) {
+    unknownCommandActive = false;
+    alertExpired = true;
+  }
+
+  // Eventi che meritano aggiornamento immediato dell'OLED.
+  bool unknownChanged = unknownCommandActive && (unknownCommandAt != lastUnknownAtSeen);
+  bool stateChanged = first || alertExpired || unknownChanged ||
+                      deviceConnected != lastBle ||
+                      screenOn != lastScreen ||
+                      (uint8_t)displayMode != lastMode ||
+                      brightnessPercent != lastBrightness ||
+                      scheduleActiveIndex != lastScheduleIndex ||
+                      scheduleGlobalFlags != lastScheduleFlags ||
+                      alarmActive != lastAlarmActive ||
+                      activeAlarmSlot != lastAlarmSlot ||
+                      clockSynced != lastClockSynced ||
+                      stopwatchRunning != lastStopwatchRunning ||
+                      countdownRunning != lastCountdownRunning ||
+                      countdownPaused != lastCountdownPaused;
+
+  // BUILD 62: nessun refresh periodico. Lo SW-I2C blocca il loop durante
+  // sendBuffer(); l'OLED viene quindi ridisegnato solo su un vero cambio di stato.
+  if (!stateChanged) return;
+
+  // Snapshot dello stato visualizzato: nessun sendBuffer() finche lo stato non cambia.
+  first = false;
+  lastBle = deviceConnected;
+  lastScreen = screenOn;
+  lastMode = (uint8_t)displayMode;
+  lastBrightness = brightnessPercent;
+  lastScheduleIndex = scheduleActiveIndex;
+  lastScheduleFlags = scheduleGlobalFlags;
+  lastAlarmActive = alarmActive;
+  lastAlarmSlot = activeAlarmSlot;
+  lastClockSynced = clockSynced;
+  lastStopwatchRunning = stopwatchRunning;
+  lastCountdownRunning = countdownRunning;
+  lastCountdownPaused = countdownPaused;
+  if (unknownChanged) lastUnknownAtSeen = unknownCommandAt;
 
   statusOLED.clearBuffer();
 
-  // An unhandled protocol command gets an 8-second full-screen alert.
-  // The counter remains useful if the same unknown command is received repeatedly.
-  if (unknownCommandActive && (uint32_t)(now-unknownCommandAt) < OLED_UNKNOWN_ALERT_MS) {
+  // Comando non gestito: alert immediato per 8 secondi.
+  if (unknownCommandActive) {
     char line[32];
     statusOLED.setFont(u8g2_font_7x14B_tf);
     statusOLED.drawStr(0,13,"CMD SCONOSCIUTO!");
@@ -2470,7 +2524,6 @@ void updateStatusOLED() {
     snprintf(line,sizeof(line),"LEN:%u  N:%lu",unknownCommandLen,(unsigned long)unknownCommandCount);
     statusOLED.drawStr(0,25,line);
 
-    // Up to 12 raw bytes, split over three readable rows.
     for (uint8_t row=0; row<3; row++) {
       char hexline[24]; size_t pos=0;
       for (uint8_t j=0; j<4; j++) {
@@ -2483,7 +2536,6 @@ void updateStatusOLED() {
     statusOLED.sendBuffer();
     return;
   }
-  if (unknownCommandActive && (uint32_t)(now-unknownCommandAt) >= OLED_UNKNOWN_ALERT_MS) unknownCommandActive=false;
 
   statusOLED.setFont(u8g2_font_6x10_tf);
   char line[32];
@@ -2499,13 +2551,19 @@ void updateStatusOLED() {
   if(scheduleActiveIndex>=0) snprintf(line,sizeof(line),"SCH:%s ACT:%d",(scheduleGlobalFlags&1)?"ON":"OFF",scheduleActiveIndex);
   else snprintf(line,sizeof(line),"SCH:%s ACT:-",(scheduleGlobalFlags&1)?"ON":"OFF");
   statusOLED.drawStr(0,39,line);
+
   if(displayMode==DISPLAY_STOPWATCH) {
     uint32_t e=stopwatchElapsedMs+(stopwatchRunning?(now-stopwatchStartMillis):0);
     snprintf(line,sizeof(line),"SW %s %lu.%03lus",stopwatchRunning?"RUN":"STOP",(unsigned long)(e/1000),(unsigned long)(e%1000));
   } else if(displayMode==DISPLAY_COUNTDOWN) {
-    uint32_t r=countdownRemainingMs; if(countdownRunning){uint32_t e=now-countdownStartMillis;r=e<r?r-e:0;}
+    uint32_t r=countdownRemainingMs;
+    if(countdownRunning){uint32_t e=now-countdownStartMillis;r=e<r?r-e:0;}
     snprintf(line,sizeof(line),"CD %s %lus",countdownRunning?"RUN":(countdownPaused?"PAUSE":"STOP"),(unsigned long)((r+999)/1000));
-  } else snprintf(line,sizeof(line),"UNK:%lu UP:%lus",(unsigned long)unknownCommandCount,(unsigned long)(now/1000UL));
+  } else if(alarmActive) {
+    snprintf(line,sizeof(line),"ALARM SLOT:%u UNK:%lu",activeAlarmSlot,(unsigned long)unknownCommandCount);
+  } else {
+    snprintf(line,sizeof(line),"UNK:%lu",(unsigned long)unknownCommandCount);
+  }
   statusOLED.drawStr(0,49,line);
   snprintf(line,sizeof(line),"HEAP:%luK STK:%lu",(unsigned long)(ESP.getFreeHeap()/1024UL),(unsigned long)uxTaskGetStackHighWaterMark(NULL));
   statusOLED.drawStr(0,60,line);

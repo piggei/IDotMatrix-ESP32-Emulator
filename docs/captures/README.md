@@ -1,24 +1,7 @@
-# Catture BLE
+# Catture di protocollo
 
-Questa cartella e' destinata alle catture minimali usate per il reverse engineering del protocollo.
+Questa directory contiene estratti significativi delle sessioni di reverse engineering.
 
-Formato consigliato per ogni file:
+Le catture sono **evidenze sperimentali**. `PROTOCOL.md` contiene invece l'interpretazione corrente del protocollo. Se una futura scoperta modifica l'interpretazione di un campo, la cattura RAW non deve essere riscritta: si aggiorna `PROTOCOL.md`.
 
-```text
-# Scopo della prova
-# Versione app / data, se rilevante
-# Sequenza di azioni eseguite
-
-RX ...
-TX ...
-```
-
-Esempi di nomi:
-
-- `stopwatch-start-pause-resume-reset.txt`
-- `countdown-10s.txt`
-- `schedule-three-activities.txt`
-- `alarm-gif.txt`
-- `audio-fft-modes.txt`
-
-Evitare log enormi non annotati: una cattura piccola in cui cambia una sola variabile e' molto piu' utile per il reverse engineering.
+I file sono stati ridotti ai passaggi utili, eliminando log periodici, messaggi RMT e output non pertinente. I byte e gli ACK significativi sono mantenuti invariati.

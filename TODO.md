@@ -134,3 +134,9 @@ Quando viene osservato un nuovo comando:
 4. implementare il comando solo dopo aver identificato almeno la struttura principale;
 5. aggiornare `PROTOCOL.md` indicando chiaramente se il risultato e' CONFERMATO o PARZIALE;
 6. aggiornare questo TODO.
+
+## Note dalla BUILD 62
+
+- [x] OLED diagnostico U8g2 funzionante sulla DollaTek (SCL 15, SDA 4, RESET 16).
+- [x] Eliminata la regressione prestazionale OLED: dalla B62 il display e' aggiornato esclusivamente su evento.
+- [x] Comandi non gestiti segnalati direttamente sull'OLED, utile quando il monitor seriale non e' disponibile.

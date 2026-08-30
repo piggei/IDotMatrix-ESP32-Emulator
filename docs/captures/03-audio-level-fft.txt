@@ -1,0 +1,18 @@
+# Protocollo audio - BUILD 32 diagnostics
+
+AUDIO LEVEL level=1 sensitivity=5
+TX FA03 [5]: 05 00 00 02 01
+AUDIO LEVEL level=4 sensitivity=5
+TX FA03 [5]: 05 00 00 02 01
+AUDIO LEVEL level=5 sensitivity=5
+TX FA03 [5]: 05 00 00 02 01
+
+AUDIO FFT mode=0 bands8=4,4,3,3,3,3,10,11 mirror=OK tailHeader=YES tailMode=0 tail7=4,4,5,2,10,5,6
+TX FA03 [5]: 05 00 01 02 01
+AUDIO FFT mode=0 bands8=9,6,6,3,6,4,4,5 mirror=OK tailHeader=YES tailMode=0 tail7=5,12,5,6,11,11,10
+TX FA03 [5]: 05 00 01 02 01
+
+AUDIO FFT mode=4 bands8=4,2,0,3,6,4,5,12 mirror=OK tailHeader=YES tailMode=4 tail7=4,3,12,11,5,10,11
+TX FA03 [5]: 05 00 01 02 01
+
+# Il test completo ha mostrato 5 visualizzazioni LEVEL e 5 FFT.

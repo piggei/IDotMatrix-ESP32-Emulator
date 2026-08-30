@@ -156,3 +156,14 @@ La cartella `docs/captures/` e' destinata alle catture BLE significative usate c
 ## Nota sul reverse engineering
 
 Questo e' un progetto indipendente, costruito osservando il comportamento dell'app e i pacchetti BLE da essa trasmessi. Le descrizioni del protocollo rappresentano quanto verificato sperimentalmente durante lo sviluppo e possono contenere campi ancora non identificati.
+
+## Documentazione di sviluppo
+
+- [`PROTOCOL.md`](PROTOCOL.md) - reverse engineering dettagliato del protocollo BLE.
+- [`TODO.md`](TODO.md) - stato delle funzionalita', problemi aperti e sviluppi futuri.
+- [`HISTORY.md`](HISTORY.md) - cronologia delle build e delle principali modifiche.
+- [`docs/captures/`](docs/captures/) - catture sperimentali significative usate per il reverse engineering.
+
+### Build corrente
+
+La versione sorgente inclusa in questo archivio e' **BUILD 62**, con OLED diagnostico completamente event-driven. La B62 e' stata verificata su hardware senza i rallentamenti della matrice osservati nelle B60/B61.

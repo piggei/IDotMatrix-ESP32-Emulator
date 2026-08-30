@@ -1,0 +1,19 @@
+# Trasferimento GIF bulk - estratto significativo
+
+========== BULK START ==========
+TYPE: 1
+FORMAT: GIF
+TOTAL: 1297
+CRC32: 0x87EB26F2
+BULK CHUNK #1 1297/1297
+BULK CRC: OK
+GIF OPEN OK 16x16 bytes=1297
+TX FA03 [5]: 05 00 01 00 03
+
+GIF FRAME #1
+  RECT    : 0,0 16x16
+  DELAY   : 120 ms
+  DISPOSAL: 1
+  TRANS   : 1 index=9 bg=9
+
+# Nota: l'ACK finale 03 e' usato al completamento corretto del bulk.

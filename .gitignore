@@ -1,21 +1,17 @@
-# Arduino / editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Build artifacts
+# Arduino build output
 build/
-.pio/
 *.bin
 *.elf
 *.map
+*.hex
 
-# OS
+# IDE / OS
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
 
-# Temporary logs
-*.log
-
-*Zone.Identifier
+# Temporary files
+*.tmp
+*.bak
+*~
