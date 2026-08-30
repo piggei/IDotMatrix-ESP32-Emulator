@@ -3,8 +3,8 @@
 
 // ======================================================
 // FIRMWARE BUILD ID
-// Incrementare ad ogni file consegnato: viene stampato
-// sulla seriale all'avvio per evitare dubbi sulla versione.
+// Increment for every delivered build: printed to Serial at startup
+// so the running firmware version is always unambiguous.
 // ======================================================
 #define FW_BUILD 62
 #define PNG_DIAG_SERIAL 0
@@ -58,13 +58,13 @@ uint8_t unknownCommandStored = 0;
 #endif
 
 // PNG Schedule: usiamo l'inflater miniz gia presente nella ROM/SDK ESP32,
-// cosi non serve aggiungere una libreria PNG esterna.
+// This avoids requiring an external PNG library.
 #if __has_include(<rom/miniz.h>)
   #include <rom/miniz.h>
 #elif __has_include(<miniz.h>)
   #include <miniz.h>
 #else
-  #error "miniz header non trovato: richiesto per i PNG Schedule"
+  #error "miniz header not found: required for Schedule PNG support"
 #endif
 #if RTC_ENABLED
   #include <Wire.h>
@@ -116,7 +116,7 @@ uint8_t unknownCommandStored = 0;
 // Abbassato come richiesto: 100% app = 64/255 FastLED.
 #define MAX_LED_BRIGHTNESS 50
 
-// Persistenza luminosita
+// Brightness persistence
 #define BRIGHTNESS_NVS_NAMESPACE "idotmatrix"
 #define BRIGHTNESS_NVS_KEY       "brightness"
 #define BRIGHTNESS_SAVE_DELAY_MS 1000UL
@@ -348,9 +348,9 @@ struct AudioState {
 // ======================================================
 // FORWARD DECLARATIONS USED BY ALARM SUPPORT
 //
-// Le routine delle sveglie sono definite prima del blocco GIF.
-// Dichiarare qui simboli e funzioni evita di dipendere dalla
-// generazione automatica dei prototipi dell'IDE Arduino.
+// Alarm routines are defined before the GIF block.
+// Declaring symbols and functions here avoids relying on
+// Arduino IDE automatic prototype generation.
 // ======================================================
 extern uint8_t *gifData;
 extern size_t gifWriteOffset;
@@ -492,7 +492,7 @@ void stopAlarm(){
   digitalWrite(ALARM_BUZZER_PIN,LOW);
 #endif
   alarmActive=false; activeAlarmSlot=0xFF;
-  // Se il contenuto era GIF, la precedente GIF non e' piu' disponibile: torniamo all'orologio.
+  // If the content was a GIF, the previous GIF is no longer available: return to the clock.
   switchDisplayMode(DISPLAY_CLOCK); renderClock();
 }
 
@@ -522,7 +522,7 @@ bool processAlarmCommand(const uint8_t *data,size_t len){
   if(len<12 || data[2]!=0x00 || data[3]!=0x80) return false;
   uint8_t slot=data[4]; if(slot>=ALARM_SLOT_COUNT){sendCommandAck(0x00,0x80);return true;}
   AlarmSlot &a=alarms[slot];
-  // Pacchetto corto: aggiorna/disarma i metadati senza media.
+  // Short packet: update/disarm metadata without rewriting media.
   if(len<ALARM_HEADER_SIZE){
     a.configured=true; a.flags=data[5]; a.hour=data[6]; a.minute=data[7]; a.durationSec=data[8];
     if(len>9)a.reserved1=data[9]; if(len>10)a.contentType=data[10]; if(len>11)a.buzzer=data[11];
@@ -788,14 +788,14 @@ void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool 
 
 // ======================================================
 // CLOCK STYLES - ricostruiti dal video dell'app.
-// 0 rainbow frame + cifre colore selezionato
+// 0 rainbow frame + digits in selected color
 // 1 Christmas: rosso + albero verde
 // 2 racing/checker: cyan/magenta, cifre arancio
-// 3 fondo colore selezionato, cifre nere
-// 4 hourglass: cifre colore selezionato + clessidra arancio/bianca
+// 3 selected-color background, black digits
+// 4 hourglass: selected-color digits + orange/white hourglass
 // 5 frame cyan/blue + cifre arancio
-// 6 frame cyan/blue + cifre colore selezionato
-// 7 frame quadranti RGBY + cifre colore selezionato
+// 6 cyan/blue frame + digits in selected color
+// 7 RGBY quadrant frame + digits in selected color
 // ======================================================
 void drawRainbowBorder() {
   uint8_t hue = (millis()/20) & 0xFF;
@@ -824,20 +824,20 @@ void drawChristmasTree() {
 }
 
 void drawCheckerRows() {
-  // Stile 3 del video: TRE BANDE PIENE sopra e sotto.
-  // Esterna = azzurro, centrale = viola, interna = fuxia.
-  // Non sono segmentate/scacchiera: ogni riga e' continua.
+  // Video style 3: THREE SOLID BANDS at top and bottom.
+  // Outer = cyan, middle = violet, inner = fuchsia.
+  // They are not segmented/checkered: each row is continuous.
   const CRGB cyan(0,255,255);
   const CRGB violet(145,0,255);
   const CRGB fuchsia(255,0,170);
 
   for (uint8_t x=0; x<16; x++) {
-    // sopra
+    // top
     putPixel(x,0,cyan);
     putPixel(x,1,violet);
     putPixel(x,2,fuchsia);
 
-    // sotto, speculare
+    // bottom, mirrored
     putPixel(x,13,fuchsia);
     putPixel(x,14,violet);
     putPixel(x,15,cyan);
@@ -848,7 +848,7 @@ void drawFrameStyle5(bool cornerBlocks) {
   CRGB cyan(0,255,255), blue(0,70,255);
 
   if (cornerBlocks) {
-    // Stile precedente: cornice azzurra con blocchi blu agli angoli.
+    // Previous style: cyan frame with blue corner blocks.
     for (uint8_t x=2;x<=13;x++) { putPixel(x,1,cyan); putPixel(x,14,cyan); }
     for (uint8_t y=2;y<=13;y++) { putPixel(1,y,cyan); putPixel(14,y,cyan); }
     for (uint8_t y=0;y<3;y++) for (uint8_t x=0;x<3;x++) {
@@ -951,9 +951,9 @@ void renderClock() {
       drawTimeTwoRows(h,m,orange,orange,true);
       break;
     }
-    case 6: { // doppia cornice: blu esterna + azzurra interna
-      // Disegniamo prima le cifre e POI le cornici, cosi' i due bordi
-      // restano sempre completi e non possono essere sovrascritti.
+    case 6: { // double frame: blue outer + cyan inner
+      // Draw digits first and frames afterward, so both borders
+      // always remain complete and cannot be overwritten.
       drawTimeTwoRows(h,m,clockColor,clockColor,true);
       drawFrameStyle5(false);
       break;
@@ -1116,16 +1116,16 @@ CRGB effectPaletteGradient(uint8_t p){
   return blend(effectState.colors[idx%effectState.colorCount],effectState.colors[(idx+1)%effectState.colorCount],frac);
 }
 
-// Velocita' rallentata rispetto alla build precedente.
+// Slower speed than the previous build.
 uint16_t effectFrameInterval(){
   uint8_t s=min((uint8_t)100,effectState.speed);
 
-  // L'effetto 6 e' un vero cross-fade per-pixel: per vederlo
-  // fluido serve un refresh frequente anche quando la velocita'
-  // impostata nell'app e' molto bassa (es. speed=5).
+  // Effect 6 is a true per-pixel cross-fade: to make it visible
+  // smoothly, frequent refresh is required even when the speed
+  // selected in the app is very low (e.g. speed=5).
   if(effectState.effect==6) return 40;
 
-  // Gli altri effetti restano volutamente piu' lenti.
+  // Other effects intentionally remain slower.
   return map(s,0,100,360,70);
 }
 
@@ -1139,7 +1139,7 @@ uint32_t effectHash(uint32_t v){ v^=v>>16; v*=0x7FEB352DUL; v^=v>>15; v*=0x846CA
 void renderEffect0(){
   uint32_t ph=effectPhase()/4;
   for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++) {
-    // Gradiente lungo: circa 10+ pixel per transizione colore.
+    // Long gradient: roughly 10+ pixels per color transition.
     uint8_t pos=(uint8_t)((y*5 + x + ph)/3);
     framebuffer[logicalIndex(x,y)]=effectPaletteGradient(pos);
   }
@@ -1204,9 +1204,9 @@ void renderEffect5(){
 }
 
 void renderEffect6(){
-  // Effetto 7 UI: ogni pixel mantiene la propria fase e FADE
-  // realmente da un colore al successivo. Non esiste alcuna
-  // sostituzione istantanea del colore.
+  // UI effect 7: each pixel keeps its own phase and FADE
+  // actually moves from one color to the next. There is no
+  // instantaneous color replacement.
   const uint8_t count=max((uint8_t)1,effectState.colorCount);
 
   if(count==1){
@@ -1214,10 +1214,10 @@ void renderEffect6(){
     return;
   }
 
-  // Nell'app speed=5 e' lento. A quella velocita' un singolo
-  // passaggio dura circa 5.7 secondi; speed=100 scende a 700 ms.
-  // Con update ogni 40 ms il fade ha molti step e deve risultare
-  // chiaramente continuo anche a velocita' minima.
+  // In the app speed=5 is slow. At that speed a single
+  // transition lasts about 5.7 seconds; speed=100 drops to 700 ms.
+  // With a 40 ms update interval the fade has many steps and should look
+  // clearly continuous even at minimum speed.
   const uint8_t sp=constrain(effectState.speed,0,100);
   const uint32_t fadeMs=map(sp,0,100,6000,700);
   const uint32_t elapsed=millis()-effectState.startMillis;
@@ -1228,8 +1228,8 @@ void renderEffect6(){
       const uint16_t i=(uint16_t)y*16+x;
       const uint32_t seed=effectHash((uint32_t)i*977UL+0x51EDUL);
 
-      // Ogni pixel parte da un punto diverso dello stesso ciclo
-      // continuo della palette.
+      // Each pixel starts at a different point of the same
+      // continuous palette cycle.
       const uint32_t local=(elapsed+(seed%cycleMs))%cycleMs;
       const uint8_t a=(uint8_t)(local/fadeMs);
       const uint8_t b=(uint8_t)((a+1)%count);
@@ -1870,7 +1870,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
   unknownCommandStored = (uint8_t)min(len, (size_t)OLED_UNKNOWN_BYTES);
   for (uint8_t i=0; i<unknownCommandStored; i++) unknownCommandData[i]=data[i];
 #if DEBUG_SERIAL
-  Serial.print("COMANDO NON GESTITO [");Serial.print(len);Serial.print("]: ");dumpHex(data,len);
+  Serial.print("UNHANDLED COMMAND [");Serial.print(len);Serial.print("]: ");dumpHex(data,len);
 #endif
   sendCommandAck(cmd,sub);
 }
@@ -1941,14 +1941,14 @@ void resetRuntimeState(){
 
 // -----------------------------------------------------------------------------
 // PROGRAM / SCHEDULE - BUILD 44
-// L'app conserva i programmi; il device conserva solamente la schedule attiva.
-// 07 80 -> stato globale (bit0 enabled, bit1 sound), ACK=01
-// 05 80 -> attivita completa, ACK=03
-// Una nuova lista viene ricevuta in staging e committata dopo un breve timeout.
+// The app stores programs; the device stores only the active schedule.
+// 07 80 -> global state (bit0 enabled, bit1 sound), ACK=01
+// 05 80 -> complete activity, ACK=03
+// A new list is received into staging and committed after a short timeout.
 // -----------------------------------------------------------------------------
 struct ScheduleActivity {
   bool configured = false;
-  uint8_t flags = 0;            // bit0 enabled, bit1..7 lun..dom
+  uint8_t flags = 0;            // bit0 enabled, bit1..7 Mon..Sun
   uint8_t startHour = 0;
   uint8_t startMinute = 0;
   uint8_t endHour = 0;
@@ -1969,7 +1969,7 @@ bool scheduleUploadDirty = false;
 uint32_t scheduleLastRxMs = 0;
 uint32_t scheduleReceivedMask = 0;
 int8_t scheduleActiveIndex = -1;
-int8_t scheduleFailedIndex = -1;  // evita retry continuo se un media non viene decodificato
+int8_t scheduleFailedIndex = -1;  // avoid continuous retries when media cannot be decoded
 DisplayMode schedulePreviousMode = DISPLAY_CLOCK;
 CRGB scheduleSavedFrame[NUM_LEDS];
 
@@ -2093,9 +2093,9 @@ static inline uint8_t pngPaeth(uint8_t a, uint8_t b, uint8_t c) {
   return c;
 }
 
-// Decoder volutamente piccolo: il formato osservato dall'app e' PNG 16x16,
-// 8 bit, non interlacciato. Supportiamo RGB (type 2) e RGBA (type 6).
-// La decompressione DEFLATE viene eseguita dal miniz dell'ESP32.
+// Intentionally small decoder: the format observed from the app is 16x16 PNG,
+// 8-bit, non-interlaced. Supports RGB (type 2) and RGBA (type 6).
+// DEFLATE decompression is performed by ESP32 miniz.
 bool decodeSchedulePNG(File &f, uint32_t fileSize) {
 #if PNG_DIAG_SERIAL
   Serial.print("P0 n="); Serial.print(fileSize);
@@ -2160,7 +2160,7 @@ bool decodeSchedulePNG(File &f, uint32_t fileSize) {
   Serial.println("P3 inflate");
   Serial.flush();
 #endif
-  // IMPORTANT: non usare tinfl_decompress_mem_to_mem() qui. Quel wrapper
+  // IMPORTANT: do not use tinfl_decompress_mem_to_mem() here. That wrapper
   // crea un tinfl_decompressor locale molto grande sullo stack del loopTask
   // e sull'ESP32 provoca lo stack-canary visto nei log. Manteniamo invece
   // lo stato dell'inflater sull'heap e chiamiamo l'API low-level.
@@ -2310,8 +2310,8 @@ void startScheduleActivity(uint8_t idx) {
     Serial.print("S+"); Serial.println(idx);
 #endif
   } else {
-    // Importante: senza questo latch updateSchedule() ritenterebbe il decode
-    // ad ogni giro di loop, saturando CPU/heap e facendo sembrare la scheda bloccata.
+    // Important: without this latch updateSchedule() would retry decoding
+    // on every loop iteration, saturating CPU/heap and making the board appear frozen.
     scheduleFailedIndex = (int8_t)idx;
 #if PNG_DIAG_SERIAL
     Serial.print("S!"); Serial.println(idx);
@@ -2379,7 +2379,7 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
     return true;
   }
 
-  // Attivita completa: ACK 03
+  // Complete activity: ACK 03
   if (len >= 23 && data[2] == 0x05 && data[3] == 0x80) {
     uint16_t declared = rd16le(data);
     uint8_t idx = data[4];
@@ -2470,14 +2470,14 @@ void updateStatusOLED() {
 
   uint32_t now = millis();
 
-  // Scaduto l'avviso: forza un redraw immediato della dashboard normale.
+  // Alert expired: force an immediate redraw of the normal dashboard.
   bool alertExpired = false;
   if (unknownCommandActive && (uint32_t)(now - unknownCommandAt) >= OLED_UNKNOWN_ALERT_MS) {
     unknownCommandActive = false;
     alertExpired = true;
   }
 
-  // Eventi che meritano aggiornamento immediato dell'OLED.
+  // Events that deserve an immediate OLED refresh.
   bool unknownChanged = unknownCommandActive && (unknownCommandAt != lastUnknownAtSeen);
   bool stateChanged = first || alertExpired || unknownChanged ||
                       deviceConnected != lastBle ||
@@ -2493,11 +2493,11 @@ void updateStatusOLED() {
                       countdownRunning != lastCountdownRunning ||
                       countdownPaused != lastCountdownPaused;
 
-  // BUILD 62: nessun refresh periodico. Lo SW-I2C blocca il loop durante
-  // sendBuffer(); l'OLED viene quindi ridisegnato solo su un vero cambio di stato.
+  // BUILD 62: no periodic refresh. SW-I2C blocks the loop during
+  // sendBuffer(), so the OLED is redrawn only after a real state change.
   if (!stateChanged) return;
 
-  // Snapshot dello stato visualizzato: nessun sendBuffer() finche lo stato non cambia.
+  // Snapshot of displayed state: no sendBuffer() until state changes.
   first = false;
   lastBle = deviceConnected;
   lastScreen = screenOn;
@@ -2515,11 +2515,11 @@ void updateStatusOLED() {
 
   statusOLED.clearBuffer();
 
-  // Comando non gestito: alert immediato per 8 secondi.
+  // Unhandled command: immediate 8-second alert.
   if (unknownCommandActive) {
     char line[32];
     statusOLED.setFont(u8g2_font_7x14B_tf);
-    statusOLED.drawStr(0,13,"CMD SCONOSCIUTO!");
+    statusOLED.drawStr(0,13,"UNKNOWN COMMAND!");
     statusOLED.setFont(u8g2_font_6x10_tf);
     snprintf(line,sizeof(line),"LEN:%u  N:%lu",unknownCommandLen,(unsigned long)unknownCommandCount);
     statusOLED.drawStr(0,25,line);

@@ -1,7 +1,7 @@
-# Catture di protocollo
+# Protocol captures
 
-Questa directory contiene estratti significativi delle sessioni di reverse engineering.
+This directory contains selected excerpts from reverse-engineering sessions.
 
-Le catture sono **evidenze sperimentali**. `PROTOCOL.md` contiene invece l'interpretazione corrente del protocollo. Se una futura scoperta modifica l'interpretazione di un campo, la cattura RAW non deve essere riscritta: si aggiorna `PROTOCOL.md`.
+The captures are **experimental evidence**. [`PROTOCOL.md`](../../PROTOCOL.md) contains the current interpretation of that evidence. If a future discovery changes the interpretation of a field, the RAW capture should not be rewritten: update `PROTOCOL.md` instead.
 
-I file sono stati ridotti ai passaggi utili, eliminando log periodici, messaggi RMT e output non pertinente. I byte e gli ACK significativi sono mantenuti invariati.
+The files have been reduced to the useful portions by removing periodic heap reports, RMT diagnostics and unrelated output. Significant bytes and ACKs are preserved unchanged.

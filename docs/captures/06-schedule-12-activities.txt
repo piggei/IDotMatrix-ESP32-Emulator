@@ -1,4 +1,4 @@
-# Schedule - programma di default con 12 attivita'
+# Schedule - default program with 12 activities
 
 SCH RX i=0 f=C1 07:00-07:01 t=2 n=257
 TX FA03 [5]: 05 00 05 80 03

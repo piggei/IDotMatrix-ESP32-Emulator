@@ -1,11 +1,11 @@
-# Device info e sincronizzazione oraria
-# Estratto da una sessione reale con l'app.
+# Device info and time synchronization
+# Excerpt from a real session with the app.
 
 TIME SYNC: 2026-8-29 15:58:32
 TX FA03 [5]: 05 00 01 80 01
 DEVICE INFO -> 16x16
 TX FA03 [9]: 09 00 01 80 04 0E 01 01 00
 
-# Interpretazione corrente:
-# - 01 80 con payload data/ora sincronizza il clock software del device.
-# - query device info riceve una risposta di 9 byte che identifica il display 16x16.
+# Current interpretation:
+# - 01 80 with date/time payload synchronizes the device software clock.
+# - the device-info query receives a 9-byte response identifying the 16x16 display.

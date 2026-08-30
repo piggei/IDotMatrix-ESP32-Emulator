@@ -1,7 +1,7 @@
-# Schedule - scoperta dell'ACK finale 0x03
+# Schedule - discovery of final ACK 0x03
 
-# Con ACK 01 l'app segnalava errore e non proseguiva correttamente.
-# Dopo la modifica a DONE=03:
+# With ACK 01 the app reported an error and did not continue correctly.
+# After changing to DONE=03:
 
 SCHEDULE GLOBAL flags=0x01 enabled=1 sound=0
 SCH OPEN
@@ -11,7 +11,7 @@ SCH RX i=0 f=A5 01:00-02:00 t=1 n=1856
 TX FA03 [5]: 05 00 05 80 03
 SCH ACK i=0 DONE=3 c=1
 
-# Programma con tre attivita':
+# Program with three activities:
 SCHEDULE GLOBAL flags=0x03 enabled=1 sound=1
 SCH OPEN
 TX FA03 [5]: 05 00 07 80 01

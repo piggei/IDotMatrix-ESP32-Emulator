@@ -34,11 +34,11 @@ RX FA02 RAW [7]: 07 00 08 80 03 00 0A
 TIMER CD mode=3 run=1 pause=0 remMs=6636
 TX FA03 [5]: 05 00 08 80 01
 
-# Fine naturale del countdown: notifica spontanea del device
+# Natural countdown completion: spontaneous device notification
 TX FA03 [5]: 05 00 08 80 03
 
 RX FA02 RAW [7]: 07 00 08 80 00 00 00
 TIMER CD mode=0 run=0 pause=0 remMs=0
 TX FA03 [5]: 05 00 08 80 01
 
-# Durante l'esecuzione non sono state osservate query periodiche dell'app.
+# No periodic app queries were observed while the timers were running.

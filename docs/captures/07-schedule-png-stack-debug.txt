@@ -1,12 +1,12 @@
-# PNG Schedule - diagnosi dello stack
+# Schedule PNG - stack diagnostics
 
 P0 n=137 h=90980
 P1 16x16 ct=6 z=51
 P2 raw=1040 h=85464
 P3 inflate
 
-# Prima correzione: stack canary durante inflate.
-# Dopo lo spostamento dei buffer pesanti fuori dallo stack:
+# First attempt: stack canary triggered during inflate.
+# After moving heavy buffers/state off the task stack:
 
 P0 n=137 h=91080
 P1 16x16 ct=6 z=51
@@ -19,4 +19,4 @@ P7 done
 PR i=1 ok=1
 S+1
 
-# Questa cattura ha confermato decoder PNG corretto e problema originario di stack.
+# This capture confirmed a correct PNG decoder and that the original failure was a stack issue.

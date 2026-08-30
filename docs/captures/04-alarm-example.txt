@@ -1,10 +1,10 @@
-# Esempio di pacchetto Alarm osservato
-# Sveglia con media GIF; il payload prosegue con il file GIF89a.
+# Example of an observed Alarm packet
+# Alarm with GIF media; the payload continues with the GIF89a file.
 
 45 01 00 80 00 01 00 01 0A 00 01 00 00 2D 01 00 00 08 D1 D5 0F 00 00 14
 47 49 46 38 39 61 10 00 10 00 ...
 
 TX FA03 [5]: 05 00 00 80 01
 
-# Sono stati osservati anche pacchetti Alarm da 792 byte e oltre,
-# con payload immagine/animazione e campi di durata, tipo e flags.
+# Alarm packets of 792 bytes and larger were also observed,
+# with image/animation payloads plus duration, type and flag fields.

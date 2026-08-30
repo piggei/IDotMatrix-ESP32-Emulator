@@ -1,91 +1,91 @@
-# Protocollo BLE iDotMatrix - note di reverse engineering
+# iDotMatrix BLE Protocol - reverse-engineering notes
 
-Questo documento descrive il protocollo osservato tra l'app iDotMatrix e l'emulatore ESP32.
+This document describes the protocol observed between the iDotMatrix app and the ESP32 emulator.
 
-Non disponendo del dispositivo originale, le informazioni derivano dalle catture dell'app e da test differenziali: si modifica una sola impostazione nell'app e si confrontano i pacchetti generati.
+Because no original device was available, the information comes from app traffic captures and differential tests: one app setting is changed at a time and the resulting packets are compared.
 
-## Convenzioni
+## Conventions
 
-Stato delle informazioni:
+Confidence levels:
 
-- **CONFERMATO** - comportamento verificato ripetutamente;
-- **PARZIALE** - comando funzionante ma con campi o semantica ancora non completamente identificati;
-- **SCONOSCIUTO** - pacchetto osservato ma non decodificato.
+- **CONFIRMED** - behavior verified repeatedly;
+- **PARTIAL** - working command, but some fields or semantics are not fully identified;
+- **UNKNOWN** - packet observed but not decoded.
 
-Tutti i valori esadecimali sono scritti come byte separati. I campi multibyte osservati nel protocollo sono generalmente **little-endian**.
+All hexadecimal values are written as separate bytes. Multi-byte fields observed in the protocol are generally **little-endian**.
 
-## Trasporto BLE
+## BLE transport
 
-### Servizi e caratteristiche - CONFERMATO
+### Services and characteristics - CONFIRMED
 
-| Elemento | UUID | Uso osservato |
+| Element | UUID | Observed use |
 |---|---|---|
-| Servizio FA | `000000fa-0000-1000-8000-00805f9b34fb` | canale principale |
-| FA02 | `0000fa02-0000-1000-8000-00805f9b34fb` | App -> dispositivo, write |
-| FA03 | `0000fa03-0000-1000-8000-00805f9b34fb` | Dispositivo -> app, notify/read |
-| Servizio AE | `0000ae00-0000-1000-8000-00805f9b34fb` | canale secondario |
-| AE01 | `0000ae01-0000-1000-8000-00805f9b34fb` | App -> dispositivo |
-| AE02 | `0000ae02-0000-1000-8000-00805f9b34fb` | Dispositivo -> app |
+| FA service | `000000fa-0000-1000-8000-00805f9b34fb` | main channel |
+| FA02 | `0000fa02-0000-1000-8000-00805f9b34fb` | App -> device, write |
+| FA03 | `0000fa03-0000-1000-8000-00805f9b34fb` | Device -> app, notify/read |
+| AE service | `0000ae00-0000-1000-8000-00805f9b34fb` | secondary channel |
+| AE01 | `0000ae01-0000-1000-8000-00805f9b34fb` | App -> device |
+| AE02 | `0000ae02-0000-1000-8000-00805f9b34fb` | Device -> app |
 
-L'advertising usato dall'emulatore espone il servizio FA e manufacturer data osservati:
+The emulator advertising exposes the FA service and the observed manufacturer data:
 
 ```text
 54 52 00 70 01
 ```
 
-### Lunghezza pacchetto
+### Packet length
 
-Nei pacchetti FA02 il primo `uint16` e' normalmente la lunghezza totale del pacchetto, little-endian. Esempio:
+In FA02 packets the first `uint16` normally contains the total packet length, little-endian. Example:
 
 ```text
 05 00 09 80 01
 ```
 
-`05 00` = 5 byte totali.
+`05 00` = 5 total bytes.
 
-Il callback BLE puo' ricevere un pacchetto logico in piu' write; il firmware accumula i dati fino alla lunghezza dichiarata.
+The BLE callback may receive one logical packet across multiple writes; the firmware accumulates data until the declared length is reached.
 
-## Risposte / ACK
+## Responses / ACK
 
-### ACK standard - CONFERMATO
+### Standard ACK - CONFIRMED
 
-La forma piu' comune e':
+The most common form is:
 
 ```text
 05 00 CMD SUB STATUS
 ```
 
-Esempio:
+Example:
 
 ```text
 05 00 04 80 01
 ```
 
-`STATUS=01` viene usato come normale conferma/accettazione per molti comandi.
+`STATUS=01` is used as the normal acknowledgement/acceptance status for many commands.
 
-### Stato 03 - CONFERMATO, semantica generale PARZIALE
+### Status 03 - CONFIRMED, general semantics PARTIAL
 
-`03` viene usato in almeno due casi importanti:
+`03` is used in at least two important cases:
 
-1. completamento di un trasferimento bulk;
-2. ACK di una singola attivita' Schedule completa.
+1. completion of a bulk transfer;
+2. ACK for one complete Schedule activity.
 
-Per le Schedule la distinzione e' fondamentale:
+For Schedules the distinction is critical:
 
 ```text
 07 80 -> ACK 01
 05 80 -> ACK 03
 ```
 
-Rispondere `01` a una attivita' `05 80` fa segnalare errore all'app e impedisce l'invio delle attivita' successive. Con `03` l'app continua correttamente.
+Replying with `01` to a `05 80` activity makes the app report an error and prevents subsequent activities from being sent. With `03`, the app continues correctly.
 
-La semantica universale di `01/02/03` non e' ancora considerata completamente decodificata.
+The universal semantics of `01/02/03` are not yet considered fully decoded.
 
 ---
 
-# Comandi generali
+# General commands
 
-## Device info - CONFERMATO
+## Device info - CONFIRMED
 
 ### Query
 
@@ -93,41 +93,41 @@ La semantica universale di `01/02/03` non e' ancora considerata completamente de
 04 00 01 80
 ```
 
-### Risposta osservata/emulata
+### Observed/emulated response
 
 ```text
 09 00 01 80 04 0E 01 01 00
 ```
 
-La risposta e' sufficiente per far riconoscere all'app il dispositivo come matrice 16x16.
+This response is sufficient for the app to recognize the device as a 16x16 matrix.
 
-## Sincronizzazione data/ora - CONFERMATO
+## Date/time synchronization - CONFIRMED
 
-Pacchetto di 11 byte:
+11-byte packet:
 
 ```text
 0B 00 01 80 YY MM DD ? HH MI SS
 ```
 
-Campi usati dal firmware:
+Fields used by the firmware:
 
-| Offset | Campo |
+| Offset | Field |
 |---:|---|
-| 4 | anno come `2000 + YY` |
-| 5 | mese |
-| 6 | giorno |
-| 7 | campo non ancora usato/identificato con certezza |
-| 8 | ora |
-| 9 | minuto |
-| 10 | secondo |
+| 4 | year as `2000 + YY` |
+| 5 | month |
+| 6 | day |
+| 7 | field not yet used/identified with certainty |
+| 8 | hour |
+| 9 | minute |
+| 10 | second |
 
-Esempio catturato:
+Captured example:
 
 ```text
 0B 00 01 80 1A 08 1E 07 14 0B 35
 ```
 
-Il firmware usa il sync come base del clock software. Se `RTC_ENABLED=1`, lo stesso comando puo' sincronizzare anche il DS3231.
+The firmware uses this synchronization as the base for its software clock. If `RTC_ENABLED=1`, the same command can also synchronize a DS3231.
 
 ACK:
 
@@ -135,7 +135,7 @@ ACK:
 05 00 01 80 01
 ```
 
-## Accensione/spegnimento matrice - CONFERMATO
+## Matrix power on/off - CONFIRMED
 
 ```text
 05 00 07 01 STATE
@@ -144,164 +144,164 @@ ACK:
 `STATE`:
 
 - `00` = off;
-- valore non zero = on.
+- any non-zero value = on.
 
-ACK standard `01`.
+Standard ACK `01`.
 
-## Rotazione 180 gradi - CONFERMATO
+## 180-degree rotation - CONFIRMED
 
 ```text
 05 00 06 80 STATE
 ```
 
-`00` disabilita, valore non zero abilita la rotazione.
+`00` disables rotation; any non-zero value enables it.
 
-## Luminosita' - CONFERMATO
+## Brightness - CONFIRMED
 
 ```text
 05 00 04 80 PERCENT
 ```
 
-`PERCENT` e' 0..100. Nel firmware viene scalato su `MAX_LED_BRIGHTNESS` e salvato in NVS con scrittura ritardata.
+`PERCENT` is 0..100. The firmware scales it to `MAX_LED_BRIGHTNESS` and stores it in NVS using delayed writes.
 
-## Risparmio energetico - PARZIALE
+## Power saving - PARTIAL
 
 ```text
 0A 00 02 80 ENABLE SH SM EH EM REDUCTION
 ```
 
-Interpretazione implementata:
+Implemented interpretation:
 
-| Campo | Significato |
+| Field | Meaning |
 |---|---|
-| ENABLE | abilitazione |
-| SH:SM | inizio fascia |
-| EH:EM | fine fascia |
-| REDUCTION | percentuale di riduzione |
+| ENABLE | enable flag |
+| SH:SM | start time |
+| EH:EM | end time |
+| REDUCTION | reduction percentage |
 
-La logica supporta anche fasce che attraversano la mezzanotte.
+The logic also supports time ranges crossing midnight.
 
-## Soft reset runtime - PARZIALE
+## Runtime soft reset - PARTIAL
 
 ```text
 04 00 03 80
 ```
 
-Il firmware risponde con ACK e resetta lo stato grafico runtime poco dopo. La corrispondenza esatta con il comportamento dell'hardware originale non e' verificabile.
+The firmware replies with an ACK and resets runtime graphics state shortly afterward. Exact correspondence with original hardware behavior cannot be verified.
 
 ---
 
-# Contenuti grafici
+# Graphic content
 
-## Colore pieno - CONFERMATO
+## Solid color - CONFIRMED
 
 ```text
 07 00 02 02 R G B
 ```
 
-I tre canali sono RGB 8 bit.
+The three channels are 8-bit RGB.
 
-## Modalita' graffiti / DIY - CONFERMATO
+## Graffiti / DIY mode - CONFIRMED
 
-Entrata/uscita:
+Enter/exit:
 
 ```text
 05 00 04 01 STATE
 ```
 
-Aggiornamento pixel:
+Pixel update:
 
 ```text
 LENlo LENhi 05 01 ? R G B X0 Y0 X1 Y1 ...
 ```
 
-Nel firmware:
+In the firmware:
 
-- RGB = offset 5..7;
-- da offset 8 seguono coppie `(x,y)`;
-- coordinate valide: 0..15.
+- RGB = offsets 5..7;
+- `(x,y)` pairs follow from offset 8;
+- valid coordinates: 0..15.
 
-Il byte a offset 4 non e' ancora documentato semanticamente.
+The byte at offset 4 is not yet semantically documented.
 
-## Trasferimenti bulk - CONFERMATO per GIF/RAW/TEXT
+## Bulk transfers - CONFIRMED for GIF/RAW/TEXT
 
-Header comune implementato, 16 byte:
+Implemented common header, 16 bytes:
 
-| Offset | Size | Campo |
+| Offset | Size | Field |
 |---:|---:|---|
-| 0 | 2 | lunghezza pacchetto |
-| 2 | 1 | tipo |
+| 0 | 2 | packet length |
+| 2 | 1 | type |
 | 3 | 1 | `00` |
-| 4 | 1 | campo non identificato nel parser attuale |
-| 5 | 4 | dimensione totale payload LE |
-| 9 | 4 | CRC32 payload LE |
-| 13..15 | 3 | campi header non ancora documentati |
-| 16.. | - | chunk payload |
+| 4 | 1 | field not identified by the current parser |
+| 5 | 4 | total payload size LE |
+| 9 | 4 | payload CRC32 LE |
+| 13..15 | 3 | header fields not yet documented |
+| 16.. | - | payload chunk |
 
-Tipi implementati:
+Implemented types:
 
-| Tipo | Contenuto |
+| Type | Content |
 |---:|---|
 | `01` | GIF |
-| `02` | RAW RGB 16x16 quando size=768 |
+| `02` | RAW RGB 16x16 when size=768 |
 | `03` | TEXT |
 
-Durante un trasferimento incompleto:
+During an incomplete transfer:
 
 ```text
 05 00 TYPE 00 01
 ```
 
-Al completamento:
+On completion:
 
 ```text
 05 00 TYPE 00 03
 ```
 
-Il CRC32 viene verificato sull'intero payload.
+CRC32 is verified over the complete payload.
 
-### RAW RGB 16x16 - CONFERMATO
+### RAW RGB 16x16 - CONFIRMED
 
-Dimensione:
+Size:
 
 ```text
 16 * 16 * 3 = 768 byte
 ```
 
-Ordine pixel lineare RGB. Il firmware converte poi le coordinate logiche nella disposizione serpentina fisica della matrice.
+Linear RGB pixel order. The firmware then maps logical coordinates to the physical serpentine matrix layout.
 
-### GIF - CONFERMATO
+### GIF - CONFIRMED
 
-Il payload e' un normale file GIF (`GIF87a`/`GIF89a`) 16x16. Viene conservato in RAM e decodificato con AnimatedGIF, rispettando delay, palette e trasparenza.
+The payload is a standard 16x16 GIF file (`GIF87a`/`GIF89a`). It is kept in RAM and decoded with AnimatedGIF, respecting delays, palettes and transparency.
 
-### TEXT - CONFERMATO per i campi usati
+### TEXT - CONFIRMED for the fields currently used
 
-Payload globale:
+Global payload:
 
-| Offset | Campo |
+| Offset | Field |
 |---:|---|
-| 0 | numero glifi |
-| 1..3 | campi non ancora documentati |
-| 4 | effetto/movimento |
-| 5 | velocita' |
-| 6 | modalita' colore |
-| 7 | R testo |
-| 8 | G testo |
-| 9 | B testo |
-| 10 | modalita' sfondo |
-| 11 | R sfondo |
-| 12 | G sfondo |
-| 13 | B sfondo |
+| 0 | glyph count |
+| 1..3 | fields not yet documented |
+| 4 | effect/movement |
+| 5 | speed |
+| 6 | color mode |
+| 7 | text R |
+| 8 | text G |
+| 9 | text B |
+| 10 | background mode |
+| 11 | background R |
+| 12 | background G |
+| 13 | background B |
 
-Seguono record da 20 byte per ogni glifo:
+Each glyph is followed by a 20-byte record:
 
 ```text
 7 byte META + 13 byte BITMAP
 ```
 
-Ogni bitmap rappresenta 13 righe x 8 colonne. Nel formato osservato **bit 0 e' il pixel sinistro**. Questa inversione e' stata verificata con testi non simmetrici.
+Each bitmap represents 13 rows x 8 columns. In the observed format, **bit 0 is the leftmost pixel**. This orientation was verified with non-symmetric text.
 
-Esempio osservato per `IW`:
+Observed example for `IW`:
 
 ```text
 GLYPH 0
@@ -313,40 +313,40 @@ META   : 02 FF FF FF 00 00 00
 BITMAP : 6B 2A 2A 2A 2A 2A 36 14 14 14 14 00 00
 ```
 
-La semantica completa dei 7 byte META non e' ancora decodificata.
+The complete semantics of the 7 META bytes are not yet decoded.
 
 ---
 
-# Effetti luminosi
+# Visual effects
 
-## Comando effetti - CONFERMATO
+## Effects command - CONFIRMED
 
 ```text
 LENlo LENhi 03 02 EFFECT SPEED COUNT [R G B]...
 ```
 
-| Campo | Significato |
+| Field | Meaning |
 |---|---|
-| EFFECT | indice effetto |
-| SPEED | velocita' |
-| COUNT | numero colori |
-| RGB | colori coinvolti |
+| EFFECT | effect index |
+| SPEED | speed |
+| COUNT | number of colors |
+| RGB | colors used |
 
-I canali colore osservati in questo comando sono su scala circa **0..127**; il firmware li espande a 0..255.
+The color channels observed in this command use an approximately **0..127** range; the firmware expands them to 0..255.
 
-Sono stati riprodotti 7 effetti grafici osservati nell'app. La resa e' stata rifinita confrontandola visivamente con un video dell'app; non tutti gli algoritmi possono essere considerati una copia matematica dell'originale.
+Seven visual effects observed in the app have been reproduced. Their appearance was refined by visual comparison with an app video; not every algorithm should be considered a mathematically exact copy of the original.
 
 ---
 
-# Orologio
+# Clock
 
-## Selezione stile - CONFERMATO
+## Style selection - CONFIRMED
 
 ```text
 08 00 06 01 FLAGS R G B
 ```
 
-Interpretazione implementata:
+Implemented interpretation:
 
 ```text
 style     = FLAGS & 0x3F
@@ -354,100 +354,100 @@ style     = FLAGS & 0x3F
 showDate  = FLAGS & 0x80
 ```
 
-`R G B` e' il colore scelto dall'app; alcuni stili usano anche colori grafici propri osservati nel riferimento visivo.
+`R G B` is the color selected by the app; some styles also use their own graphic colors observed in the visual reference.
 
-Sono implementati gli 8 stili studiati durante il reverse engineering.
+All 8 styles investigated during reverse engineering are implemented.
 
 ---
 
 # Countdown
 
-## Comando - CONFERMATO, compatibilita' app PARZIALE
+## Command - CONFIRMED, app compatibility PARTIAL
 
 ```text
 07 00 08 80 MODE MIN SEC
 ```
 
-`MIN` e `SEC` vengono convertiti in millisecondi.
+`MIN` and `SEC` are converted to milliseconds.
 
-Modalita' osservate:
+Observed modes:
 
-| MODE | Azione |
+| MODE | Action |
 |---:|---|
 | `00` | reset |
-| `01` | start con valore MIN:SEC |
-| `02` | pausa |
+| `01` | start with MIN:SEC value |
+| `02` | pause |
 | `03` | resume |
 
-Per start/pause/resume/reset il firmware restituisce attualmente ACK standard `01`.
+For start/pause/resume/reset the firmware currently returns standard ACK `01`.
 
-Alla conclusione naturale il firmware invia spontaneamente:
+At natural completion the firmware spontaneously sends:
 
 ```text
 05 00 08 80 03
 ```
 
-La logica locale del countdown funziona, ma la compatibilita' dell'interfaccia app non e' ancora considerata chiusa.
+The local countdown logic works, but app UI compatibility is not yet considered complete.
 
 ---
 
-# Cronometro / Stopwatch
+# Stopwatch
 
-## Comando - CONFERMATO, risposta originale NON NOTA
+## Command - CONFIRMED, original response UNKNOWN
 
 ```text
 05 00 09 80 MODE
 ```
 
-Modalita':
+Modes:
 
-| MODE | Azione |
+| MODE | Action |
 |---:|---|
 | `00` | reset |
-| `01` | start da zero |
-| `02` | pausa |
+| `01` | start from zero |
+| `02` | pause |
 | `03` | resume |
 
-La state machine locale e' stata verificata: in una prova la pausa dopo circa 6 secondi riportava internamente 6045 ms, il resume continuava da quel valore e il reset tornava a zero.
+The local state machine was verified: in one test, pausing after about 6 seconds produced an internal value of 6045 ms, resume continued from that value, and reset returned to zero.
 
-Lo sniffer ha dimostrato che l'app **non effettua polling periodico** del tempo. Tra START e PAUSE non vengono inviati altri comandi.
+The sniffer showed that the app **does not periodically poll** the timer. No additional commands are sent between START and PAUSE.
 
-Il firmware risponde attualmente:
+The firmware currently replies:
 
 ```text
 05 00 09 80 01
 ```
 
-ma l'interfaccia app non si comporta ancora come atteso. Sono state provate anche varianti `01/03` senza risultato. Il comportamento esatto della risposta del dispositivo originale resta una delle principali domande aperte.
+but the app UI still does not behave as expected. `01/03` variants were also tested without success. The exact response behavior of the original device remains one of the main open questions.
 
 ---
 
 # Scoreboard
 
-## Comando - CONFERMATO
+## Command - CONFIRMED
 
 ```text
 08 00 0A 80 A_lo A_hi B_lo B_hi
 ```
 
-I due punteggi sono `uint16` little-endian.
+Both scores are little-endian `uint16` values.
 
 ---
 
 # Audio / Rhythm
 
-L'app non usa il microfono del dispositivo emulato: invia al display dati derivati dall'audio del telefono.
+The app does not use a microphone on the emulated device: it sends the display data derived from phone audio.
 
-Sono state osservate **10 modalita'**, divise in 5 LEVEL e 5 FFT.
+**10 modes** were observed, split into 5 LEVEL and 5 FFT modes.
 
-## LEVEL - CONFERMATO
+## LEVEL - CONFIRMED
 
 ```text
 06 00 00 02 LEVEL MODE
 ```
 
 - `MODE`: 1..5;
-- `LEVEL`: livello istantaneo, limitato a 0..12 nel renderer.
+- `LEVEL`: instantaneous level, clamped to 0..12 by the renderer.
 
 ACK:
 
@@ -455,27 +455,27 @@ ACK:
 05 00 00 02 01
 ```
 
-Sequenza grafica studiata:
+Observed visual sequence:
 
-1. omino/breakdance;
-2. cuore;
-3. pseudo-spettrogramma con cornice puntinata;
-4. faccia;
-5. faccia/labbra animate.
+1. dancer/breakdance figure;
+2. heart;
+3. pseudo-spectrum with dotted frame;
+4. face;
+5. animated face/lips.
 
-## FFT - CONFERMATO per il frame usato
+## FFT - CONFIRMED for the frame currently used
 
-Frame logico da almeno 21 byte:
+Logical frame of at least 21 bytes:
 
 ```text
 21 00 01 02 MODE ...
 ```
 
 - `MODE`: 0..4;
-- il firmware usa 8 bande da offset 5;
-- valori limitati a 0..12.
+- the firmware uses 8 bands starting at offset 5;
+- values are clamped to 0..12.
 
-Durante le catture un write BLE da 33 byte poteva contenere un frame completo da 21 byte piu' l'inizio del successivo; il parser considera i primi 21 byte come frame logico.
+During captures, a 33-byte BLE write could contain one complete 21-byte frame plus the beginning of the next one; the parser treats the first 21 bytes as the logical frame.
 
 ACK:
 
@@ -483,42 +483,42 @@ ACK:
 05 00 01 02 01
 ```
 
-Modalita' grafiche:
+Visual modes:
 
-1. barre verticali simmetriche dalla linea centrale;
-2. simile alla precedente, ma colore associato alle righe;
-3. cuore arcobaleno a pieno schermo che si comprime/espande con le barre;
-4. spettro dalla linea centrale verticale;
-5. barre dall'alto e dal basso verso il centro.
+1. symmetric vertical bars from the center line;
+2. similar to the previous mode, but color is associated with rows;
+3. full-screen rainbow heart that contracts/expands with the bars;
+4. spectrum from the vertical center line;
+5. bars moving from top and bottom toward the center.
 
 ---
 
-# Sveglie
+# Alarms
 
-## Comando - CONFERMATO per la struttura implementata
+## Command - CONFIRMED for the implemented structure
 
-I pacchetti sveglia usano:
+Alarm packets use:
 
 ```text
 CMD=00 SUB=80
 ```
 
-Il firmware prevede 10 slot (`0..9`).
+The firmware provides 10 slots (`0..9`).
 
-### Pacchetto completo
+### Full packet
 
 Header da 24 byte:
 
-| Offset | Size | Campo |
+| Offset | Size | Field |
 |---:|---:|---|
-| 0 | 2 | lunghezza totale LE |
+| 0 | 2 | total length LE |
 | 2 | 1 | `00` |
 | 3 | 1 | `80` |
 | 4 | 1 | slot |
 | 5 | 1 | flags |
-| 6 | 1 | ora |
-| 7 | 1 | minuto |
-| 8 | 1 | durata in secondi |
+| 6 | 1 | hour |
+| 7 | 1 | minute |
+| 8 | 1 | duration in seconds |
 | 9 | 1 | reserved1 |
 | 10 | 1 | contentType |
 | 11 | 1 | buzzer |
@@ -529,33 +529,33 @@ Header da 24 byte:
 | 23 | 1 | mediaId |
 | 24.. | - | media |
 
-Tipi media confermati nel firmware:
+Media types confirmed in the firmware:
 
 - `01` = GIF;
 - `02` = RAW RGB.
 
-Durante le prove sono comparsi anche contenuti testuali in pacchetti sveglia; la semantica completa di tutti i valori `contentType` va ancora documentata con catture dedicate.
+Text content also appeared in alarm packets during testing; the full semantics of all `contentType` values still need dedicated captures.
 
-### Flags giorni - CONFERMATO
+### Weekday flags - CONFIRMED
 
-La convenzione usata anche dalle Schedule e':
+The convention, also used by Schedules, is:
 
 ```text
 bit 0 = enabled
-bit 1 = lunedi
-bit 2 = martedi
-bit 3 = mercoledi
-bit 4 = giovedi
-bit 5 = venerdi
-bit 6 = sabato
-bit 7 = domenica
+bit 1 = Monday
+bit 2 = Tuesday
+bit 3 = Wednesday
+bit 4 = Thursday
+bit 5 = Friday
+bit 6 = Saturday
+bit 7 = Sunday
 ```
 
-Per una sveglia one-shot i bit giorno possono essere zero; dopo l'esecuzione il firmware disabilita il bit `enabled`.
+For a one-shot alarm the weekday bits may be zero; after execution the firmware clears the `enabled` bit.
 
-### Pacchetto corto
+### Short packet
 
-Se il pacchetto e' piu' corto dell'header completo, il firmware lo tratta come aggiornamento/disabilitazione dei metadati senza riscrivere il media.
+If the packet is shorter than the full header, the firmware treats it as a metadata update/disable operation without rewriting media.
 
 ### ACK
 
@@ -563,56 +563,56 @@ Se il pacchetto e' piu' corto dell'header completo, il firmware lo tratta come a
 05 00 00 80 01
 ```
 
-Il buzzer e' previsto dal protocollo e dal firmware ma non e' presente sull'hardware di sviluppo attuale.
+The buzzer is supported by both protocol and firmware but is not present on the current development hardware.
 
 ---
 
-# Programmi / Schedule
+# Programs / Schedule
 
-Questa e' una delle parti del protocollo meglio verificate, grazie a programmi con 1, 3 e almeno 12 attivita'.
+This is one of the best-verified parts of the protocol, thanks to programs containing 1, 3 and at least 12 activities.
 
-## Stato globale programma - CONFERMATO
+## Global program state - CONFIRMED
 
 ```text
 05 00 07 80 FLAGS
 ```
 
-Interpretazione verificata:
+Verified interpretation:
 
 ```text
-bit 0 = programma abilitato
-bit 1 = suono abilitato
+bit 0 = program enabled
+bit 1 = sound enabled
 ```
 
-Esempi osservati:
+Observed examples:
 
 - `00` = disabled, sound off;
 - `01` = enabled, sound off;
 - `03` = enabled, sound on.
 
-ACK obbligatorio:
+Required ACK:
 
 ```text
 05 00 07 80 01
 ```
 
-Quando un programma viene attivato, l'app invia le attivita' una alla volta, attendendo l'ACK di ciascuna.
+When a program is activated, the app sends activities one at a time and waits for each ACK.
 
-## Attivita' - CONFERMATO
+## Activities - CONFIRMED
 
-Formato:
+Format:
 
-| Offset | Size | Campo |
+| Offset | Size | Field |
 |---:|---:|---|
-| 0 | 2 | lunghezza totale LE |
+| 0 | 2 | total length LE |
 | 2 | 1 | `05` |
 | 3 | 1 | `80` |
-| 4 | 1 | indice attivita' |
+| 4 | 1 | activity index |
 | 5 | 1 | flags |
-| 6 | 1 | ora inizio |
-| 7 | 1 | minuto inizio |
-| 8 | 1 | ora fine |
-| 9 | 1 | minuto fine |
+| 6 | 1 | start hour |
+| 7 | 1 | start minute |
+| 8 | 1 | end hour |
+| 9 | 1 | end minute |
 | 10 | 2 | contentType LE |
 | 12 | 4 | payloadSize LE |
 | 16 | 4 | CRC32 LE |
@@ -620,7 +620,7 @@ Formato:
 | 22 | 1 | mediaId |
 | 23.. | - | payload |
 
-Tipi:
+Types:
 
 ```text
 01 = GIF
@@ -628,66 +628,66 @@ Tipi:
 03 = TEXT
 ```
 
-### Flags attivita' - CONFERMATO
+### Activity flags - CONFIRMED
 
 ```text
 bit 0 = enabled
-bit 1 = lunedi
-bit 2 = martedi
-bit 3 = mercoledi
-bit 4 = giovedi
-bit 5 = venerdi
-bit 6 = sabato
-bit 7 = domenica
+bit 1 = Monday
+bit 2 = Tuesday
+bit 3 = Wednesday
+bit 4 = Thursday
+bit 5 = Friday
+bit 6 = Saturday
+bit 7 = Sunday
 ```
 
-Esempi verificati:
+Verified examples:
 
 ```text
-03 = enabled + lunedi
-4B = enabled + lunedi + mercoledi + sabato
-D5 = enabled + martedi + giovedi + sabato + domenica
-C1 = enabled + sabato + domenica
-A5 = enabled + martedi + venerdi + domenica
+03 = enabled + Monday
+4B = enabled + Monday + Wednesday + Saturday
+D5 = enabled + Tuesday + Thursday + Saturday + Sunday
+C1 = enabled + Saturday + Sunday
+A5 = enabled + Tuesday + Friday + Sunday
 ```
 
-### ACK attivita' - CONFERMATO E CRITICO
+### Activity ACK - CONFIRMED AND CRITICAL
 
-In caso di successo:
+On success:
 
 ```text
 05 00 05 80 03
 ```
 
-Questo e' stato verificato sperimentalmente. Rispondendo:
+This was verified experimentally. Replying with:
 
 ```text
 05 00 05 80 01
 ```
 
-l'app segnala errore anche per un programma con una sola attivita' e non prosegue con le successive. Con `03`, un programma di 12 attivita' viene trasferito completamente.
+the app reports an error even for a program containing a single activity and does not continue with later activities. With `03`, a 12-activity program is transferred completely.
 
-Il firmware usa `02` come risposta in caso di validazione fallita; il significato originale di questo status non e' ancora confermato da un dispositivo reale.
+The firmware uses `02` when validation fails; the original meaning of this status is not confirmed by a real device.
 
 ### Commit
 
-Non e' stato osservato un comando esplicito di fine lista. Il firmware quindi usa uno staging temporaneo e considera concluso l'upload dopo circa 900 ms senza nuove attivita'. A quel punto sostituisce atomicamente la Schedule precedente.
+No explicit end-of-list command was observed. The firmware therefore uses temporary staging and considers the upload complete after about 900 ms without new activities. It then atomically replaces the previous Schedule.
 
-Questa e' una scelta dell'emulatore, non un campo confermato del protocollo originale.
+This is an emulator design choice, not a confirmed field or behavior of the original protocol.
 
 ### PNG
 
-Le immagini Schedule osservate sono PNG 16x16, 8 bit, non interlacciate. Il decoder implementato supporta RGB/RGBA e i filtri PNG standard. L'inflate usa direttamente `tinfl_decompressor` con stato allocato su heap: l'uso del wrapper `tinfl_decompress_mem_to_mem()` causava stack overflow del `loopTask` sull'ESP32 usato.
+Observed Schedule images are 16x16, 8-bit, non-interlaced PNG files. The implemented decoder supports RGB/RGBA and standard PNG filters. Inflate uses `tinfl_decompressor` directly with state allocated on the heap: using the `tinfl_decompress_mem_to_mem()` wrapper caused a `loopTask` stack overflow on the ESP32 used for development.
 
 ---
 
-# Campi e comportamenti ancora aperti
+# Open fields and behaviors
 
-1. risposta esatta del dispositivo originale al cronometro `09 80`;
-2. semantica generale completa degli status ACK `01`, `02`, `03`;
-3. significato di alcuni byte riservati negli header Bulk, Alarm e Schedule;
-4. significato completo dei 7 byte META di ogni glifo TEXT;
-5. eventuali comandi dell'app non ancora visitati;
-6. corrispondenza matematica esatta di alcuni effetti grafici/audio rispetto al firmware originale.
+1. exact original-device response to stopwatch `09 80`;
+2. complete general semantics of ACK statuses `01`, `02`, `03`;
+3. meaning of several reserved bytes in Bulk, Alarm and Schedule headers;
+4. complete meaning of the 7 META bytes for each TEXT glyph;
+5. app commands/features not yet exercised;
+6. exact mathematical correspondence of some visual/audio effects to the original firmware.
 
-La BUILD 60 registra ogni comando non riconosciuto e, se l'OLED e' abilitato, ne mostra temporaneamente lunghezza e primi byte direttamente sul display diagnostico.
+BUILD 62 records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.

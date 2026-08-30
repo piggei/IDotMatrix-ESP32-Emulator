@@ -1,142 +1,122 @@
-# TODO / stato del progetto
+# TODO / Project status
 
-Questo file separa volutamente:
+This file intentionally separates completed features, partial features, optional hardware, known issues and open protocol questions.
 
-- funzioni completate;
-- funzioni parziali;
-- hardware opzionale;
-- problemi noti;
-- domande ancora aperte sul protocollo.
+## Completed
 
-## Completato
-
-- [x] Advertising BLE riconosciuto dall'app.
-- [x] Servizi FA e AE e caratteristiche FA02/FA03/AE01/AE02.
-- [x] Device info / riconoscimento matrice 16x16.
-- [x] Sincronizzazione data e ora dall'app.
-- [x] Accensione/spegnimento matrice.
-- [x] Rotazione 180 gradi.
-- [x] Luminosita' 0..100 con limite hardware configurabile.
-- [x] Persistenza luminosita' in NVS.
-- [x] Risparmio energetico a fascia oraria.
-- [x] Colore pieno.
-- [x] Modalita' graffiti/DIY.
-- [x] Immagini RAW RGB 16x16.
-- [x] GIF animate.
-- [x] Testo e glifi con orientamento bitmap corretto.
-- [x] Colori ed effetti testo studiati.
-- [x] Effetti luminosi studiati e rifiniti visivamente.
-- [x] Orologio e stili grafici studiati.
+- [x] BLE advertising recognized by the app.
+- [x] FA and AE services and FA02/FA03/AE01/AE02 characteristics.
+- [x] Device info / 16x16 matrix identification.
+- [x] Date and time synchronization from the app.
+- [x] Matrix power on/off.
+- [x] 180-degree rotation.
+- [x] Brightness 0..100 with configurable hardware limit.
+- [x] Brightness persistence in NVS.
+- [x] Time-window power saving.
+- [x] Solid color.
+- [x] Graffiti/DIY mode.
+- [x] 16x16 RAW RGB images.
+- [x] Animated GIFs.
+- [x] Text and glyphs with correct bitmap orientation.
+- [x] Text colors and effects investigated.
+- [x] Visual effects investigated and visually refined.
+- [x] Clock and clock styles investigated.
 - [x] Scoreboard.
-- [x] Audio: 5 modalita' LEVEL.
-- [x] Audio: 5 modalita' FFT.
-- [x] Sveglie: parsing e 10 slot persistenti.
-- [x] Sveglie: durata, giorni, one-shot e media.
-- [x] Programmi/Schedule: stato globale ON/OFF e sound flag.
-- [x] Programmi/Schedule: handshake corretto `07 80 -> 01`, `05 80 -> 03`.
-- [x] Programmi/Schedule: almeno 12 attivita' verificate; limite firmware 32.
-- [x] Programmi/Schedule: persistenza NVS + LittleFS.
-- [x] Programmi/Schedule: staging e commit della nuova lista.
-- [x] Programmi/Schedule: esecuzione automatica per giorno e fascia oraria.
-- [x] Programmi/Schedule: TEXT.
-- [x] Programmi/Schedule: GIF.
-- [x] Programmi/Schedule: PNG 16x16.
-- [x] Decoder PNG con inflater su heap, evitando stack overflow.
-- [x] OLED diagnostico U8g2 opzionale.
-- [x] OLED: build, BLE, screen, modalita', ora, luminosita', heap/stack, Schedule e timer.
-- [x] OLED: avviso evidente per comandi non gestiti con dump dei primi byte.
-- [x] BUILD 60 definita come baseline consolidata.
+- [x] Audio: 5 LEVEL modes.
+- [x] Audio: 5 FFT modes.
+- [x] Alarms: parsing and 10 persistent slots.
+- [x] Alarms: duration, weekdays, one-shot behavior and media.
+- [x] Programs/Schedules: global ON/OFF state and sound flag.
+- [x] Programs/Schedules: correct handshake `07 80 -> 01`, `05 80 -> 03`.
+- [x] Programs/Schedules: at least 12 activities verified; firmware limit 32.
+- [x] Programs/Schedules: NVS + LittleFS persistence.
+- [x] Programs/Schedules: staging and commit of a new activity list.
+- [x] Programs/Schedules: automatic execution by weekday and time range.
+- [x] Programs/Schedules: TEXT.
+- [x] Programs/Schedules: GIF.
+- [x] Programs/Schedules: 16x16 PNG.
+- [x] PNG decoder with inflater state on heap, avoiding stack overflow.
+- [x] Optional U8g2 diagnostic OLED.
+- [x] OLED: build, BLE, screen, mode, time, brightness, Schedule and timer status.
+- [x] OLED: prominent alert for unhandled commands with raw-byte preview.
+- [x] BUILD 62 verified on hardware with pure event-driven OLED and smooth matrix animations.
 
-## Parzialmente completato
+## Partially completed
 
 ### Countdown
 
-- [x] Decodificati MODE 0/1/2/3.
-- [x] Start, pausa, resume, reset locali.
-- [x] Rendering del tempo residuo.
-- [x] Evento spontaneo `08 80 03` a fine countdown.
-- [ ] Verificare perche' l'interfaccia dell'app non replica ancora perfettamente il comportamento atteso.
+- [x] MODE 0/1/2/3 decoded.
+- [x] Local start, pause, resume and reset.
+- [x] Remaining-time rendering.
+- [x] Spontaneous `08 80 03` event at natural completion.
+- [ ] Determine why the app UI still does not perfectly reproduce the expected behavior.
 
-### Cronometro
+### Stopwatch
 
-- [x] Decodificati MODE 0/1/2/3.
-- [x] Start, pausa, resume, reset locali.
-- [x] Conteggio interno verificato.
-- [x] Confermato tramite sniffer che l'app non effettua polling periodico.
-- [x] Provate varianti ACK `01/03` senza risolvere il problema UI.
-- [ ] Capire la risposta/stato che l'app si aspetta dal dispositivo originale.
+- [x] MODE 0/1/2/3 decoded.
+- [x] Local start, pause, resume and reset.
+- [x] Internal timekeeping verified.
+- [x] Sniffer confirmed that the app performs no periodic polling.
+- [x] ACK `01/03` variants tested without solving the UI issue.
+- [ ] Determine the response/state expected from the original device.
 
-### Testo
+### Text
 
-- [x] Struttura globale e bitmap glifi.
-- [x] Orientamento bit corretto (`bit0 = sinistra`).
-- [ ] Decodificare semanticamente tutti i 7 byte `META` del glifo.
+- [x] Global structure and glyph bitmaps.
+- [x] Correct bit orientation (`bit0 = left`).
+- [ ] Decode the semantic meaning of all 7 glyph `META` bytes.
 
-### ACK
+### ACK semantics
 
-- [x] ACK standard `01` verificato su molti comandi.
-- [x] `03` confermato come necessario per fine bulk e attivita' Schedule.
-- [ ] Formalizzare il significato generale di `01`, `02`, `03` per tutti i sottoprotocolli.
+- [x] Standard ACK `01` verified for many commands.
+- [x] `03` confirmed as required for bulk completion and Schedule activities.
+- [ ] Formalize the general meaning of `01`, `02`, `03` across all sub-protocols.
 
-## Hardware opzionale
+## Optional hardware
 
 ### Buzzer
 
-- [x] Campi buzzer riconosciuti in sveglie/Schedule.
-- [x] Logica firmware predisposta.
-- [ ] Scegliere GPIO libero.
-- [ ] Collegare buzzer o pilotaggio tramite transistor se necessario.
-- [ ] Abilitare `ALARM_BUZZER_ENABLED` / `SCHEDULE_BUZZER_ENABLED`.
-- [ ] Verificare durata e comportamento sonoro rispetto all'app.
+- [x] Protocol fields and firmware hooks implemented.
+- [ ] Select a free GPIO and test a real buzzer.
 
-### RTC DS3231
+### DS3231 RTC
 
-- [x] Supporto software opzionale predisposto.
-- [x] Sync BLE -> RTC predisposto.
-- [ ] Decidere se montarlo realmente.
-- [ ] Verificare convivenza I2C con OLED se si passa a bus condiviso/hardware.
+- [x] Optional compile-time support prepared.
+- [x] BLE time sync can update the RTC when enabled.
+- [ ] Test on real hardware if standalone timekeeping after power loss is desired.
 
-L'RTC non e' necessario per emulare il comportamento osservato finche' la scheda resta alimentata e riceve il time-sync BLE. Serve invece per mantenere un riferimento temporale affidabile dopo un power-cycle senza riconnettere l'app.
+The current development board does not contain a battery-backed RTC. Without an external RTC, alarms and Schedules rely on a BLE time sync after a full power cycle.
 
-## Problemi noti
+## Known issues
 
-- Il cronometro funziona sulla matrice ma la UI dell'app non e' ancora completamente soddisfatta.
-- Il countdown e' funzionale ma va considerato ancora parziale lato compatibilita' app.
-- La matrice WS2812B puo' causare brownout se alimentata dalla stessa sorgente della scheda senza corrente sufficiente. Non e' un bug del decoder PNG o del protocollo.
-- Alcuni effetti sono repliche visive ottenute da video e test, non algoritmi estratti dal firmware originale.
-- Non disponiamo del dispositivo iDotMatrix originale: non e' possibile confrontare direttamente le risposte BLE del firmware originale.
+- Stopwatch app-side behavior is still not fully reproduced.
+- Countdown app-side behavior should receive another compatibility pass.
+- Some TEXT metadata bytes remain unknown.
+- The exact semantics of some reserved Bulk/Alarm/Schedule header fields remain unknown.
+- Some visual/audio effects are visual approximations rather than mathematically exact clones.
 
-## Domande aperte sul protocollo
+## Open protocol questions
 
-- [ ] Qual e' la risposta esatta del device originale a `09 80` (stopwatch)?
-- [ ] `STATUS=02` e' realmente un errore/NACK generale?
-- [ ] Qual e' la semantica completa dei campi reserved negli header Alarm/Schedule?
-- [ ] Qual e' la semantica dei byte 1..3 del payload TEXT?
-- [ ] Qual e' la semantica completa dei 7 byte META per glifo?
-- [ ] Esistono funzioni dell'app non ancora visitate che generano nuovi comandi?
+1. What exact FA03 response does the original device send for stopwatch commands `09 80`?
+2. What is the general semantic meaning of ACK status `01`, `02` and `03`?
+3. What do all 7 TEXT glyph META bytes represent?
+4. What do the remaining reserved Alarm/Schedule/Bulk header bytes mean?
+5. Are there app features/commands that have not yet been exercised?
+6. Does the original hardware contain any persistent RTC, or does it rely entirely on app time synchronization after power loss?
 
-## Miglioramenti software futuri
+## Future software improvements
 
-- [ ] Separare gradualmente il monolite `.ino` in moduli `.h/.cpp` dopo aver stabilizzato il protocollo.
-- [ ] Aggiungere test automatici per parser di pacchetti noti.
-- [ ] Salvare in `docs/captures/` catture BLE minimali e annotate per ogni famiglia di comando.
-- [ ] Aggiungere un changelog quando inizieranno release/tag Git formali.
-- [ ] Valutare CI di compilazione Arduino/PlatformIO.
-- [ ] Tradurre README, PROTOCOL e TODO in inglese dopo la revisione della versione italiana.
+- [ ] Split the monolithic `.ino` into modules once protocol work is sufficiently stable.
+- [ ] Add automated parser tests based on the captures in `docs/captures/`.
+- [ ] Add a compact protocol regression test harness.
+- [ ] Consider hardware I2C for the OLED only if future diagnostic needs require frequent refreshes.
+- [ ] Add more annotated captures for TEXT, Alarm content types and unknown commands.
 
-## Regola per nuove scoperte
+## Rule for new discoveries
 
-Quando viene osservato un nuovo comando:
+When a new command is observed:
 
-1. salvare una cattura minima e riproducibile;
-2. variare una sola impostazione dell'app alla volta;
-3. annotare byte costanti e byte variabili;
-4. implementare il comando solo dopo aver identificato almeno la struttura principale;
-5. aggiornare `PROTOCOL.md` indicando chiaramente se il risultato e' CONFERMATO o PARZIALE;
-6. aggiornare questo TODO.
-
-## Note dalla BUILD 62
-
-- [x] OLED diagnostico U8g2 funzionante sulla DollaTek (SCL 15, SDA 4, RESET 16).
-- [x] Eliminata la regressione prestazionale OLED: dalla B62 il display e' aggiornato esclusivamente su evento.
-- [x] Comandi non gestiti segnalati direttamente sull'OLED, utile quando il monitor seriale non e' disponibile.
+1. preserve the raw capture in `docs/captures/`;
+2. document confirmed behavior in `PROTOCOL.md`;
+3. add unresolved questions here;
+4. update `HISTORY.md` when the behavior is implemented or corrected.
