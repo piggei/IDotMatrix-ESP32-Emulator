@@ -1,0 +1,28 @@
+name: Protocol finding or correction
+description: Propose a new interpretation, confirmation or correction for PROTOCOL.md.
+title: "[Protocol] "
+labels: ["protocol"]
+body:
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+      description: What field, command, ACK or behavior did you identify?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Experimental evidence
+      description: Include raw packets, logs, app actions and repeated observations where possible.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware / model
+  - type: input
+    id: app
+    attributes:
+      label: App version / OS

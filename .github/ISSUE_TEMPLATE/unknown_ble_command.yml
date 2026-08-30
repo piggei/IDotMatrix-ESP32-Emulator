@@ -1,0 +1,35 @@
+name: Unknown BLE command
+description: Report a BLE command that the emulator does not currently recognize.
+title: "[BLE] Unknown command: "
+labels: ["protocol", "help wanted"]
+body:
+  - type: input
+    id: app_version
+    attributes:
+      label: iDotMatrix app version
+  - type: input
+    id: platform
+    attributes:
+      label: Phone / OS
+      placeholder: "Android 16, iOS ..."
+  - type: textarea
+    id: action
+    attributes:
+      label: Action performed
+      description: Describe exactly what you did in the app immediately before the packet appeared.
+    validations:
+      required: true
+  - type: textarea
+    id: packet
+    attributes:
+      label: Raw packet
+      description: Paste the complete hexadecimal packet if available. If only the OLED bytes are available, paste those.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true

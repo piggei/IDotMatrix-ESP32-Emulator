@@ -1,0 +1,21 @@
+name: Original hardware information
+description: Share PCB photos, component identification or other information about an original iDotMatrix device.
+title: "[Hardware] "
+labels: ["hardware", "help wanted"]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: iDotMatrix model
+  - type: textarea
+    id: info
+    attributes:
+      label: Information
+      description: Describe the board, component markings, buzzer, RTC, power circuitry or other findings.
+    validations:
+      required: true
+  - type: textarea
+    id: photos
+    attributes:
+      label: Photos / references
+      description: Drag PCB photos here or provide references. Clear front/back photos and readable IC markings are especially useful.

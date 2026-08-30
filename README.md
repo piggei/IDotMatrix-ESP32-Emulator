@@ -151,3 +151,9 @@ iDotMatrix and any related trademarks belong to their respective owners. This pr
 This repository is released under the [MIT License](LICENSE).
 
 Copyright (c) 2026 Piergiorgio Ghezzo.
+
+## How you can help
+
+Most known application features are implemented, but the reverse engineering is still active. **We are especially looking for owners of original iDotMatrix hardware** who can help verify the remaining protocol details.
+
+Useful contributions include BLE captures from real hardware, unknown commands, tests with other models/app versions, PCB photographs, component identification, and corrections to the protocol documentation. See [TODO.md](TODO.md) for open questions and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.

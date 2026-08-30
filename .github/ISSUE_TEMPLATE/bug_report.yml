@@ -1,0 +1,35 @@
+name: Firmware bug report
+description: Report a reproducible problem with the ESP32 emulator.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: input
+    id: build
+    attributes:
+      label: Firmware build
+      placeholder: "B62"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / OLED output
+      render: text
