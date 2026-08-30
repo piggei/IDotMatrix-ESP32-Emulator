@@ -1,0 +1,21 @@
+# Arduino / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+build/
+.pio/
+*.bin
+*.elf
+*.map
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary logs
+*.log
+
+*Zone.Identifier
