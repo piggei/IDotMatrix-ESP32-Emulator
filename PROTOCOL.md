@@ -693,7 +693,7 @@ Observed Schedule images are 16x16, 8-bit, non-interlaced PNG files. The impleme
 5. app commands/features not yet exercised;
 6. exact mathematical correspondence of some visual/audio effects to the original firmware.
 
-BUILD 62 records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.
+BUILD 67 records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.
 
 ## Additional 32x32 findings (Builds 63-67)
 

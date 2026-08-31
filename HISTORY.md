@@ -1,18 +1,58 @@
 # HISTORY
 
-## Documentation update after Build 62
-
-- Added a real hardware photograph to the README and `assets/`.
-- Added `docs/PROTOCOL-COMPARISON.md` to cross-check independently derived findings against public client implementations and original-hardware research.
-- Documented the distinction between client/controller implementations and this project's BLE peripheral/server emulation approach.
-- Added independently corroborated ACK semantics (`0x01` intermediate/continue, `0x03` complete).
-- Added the multi-size 16x16 / 32x32 / 64x64 research roadmap and request for testers.
-- No firmware behavior changed; Build 62 remains the stable firmware baseline.
-
-
 Development history of the ESP32 iDotMatrix emulator.
 
 > Early builds were produced very iteratively during reverse engineering, and a reliable per-build history is not available for every number. Where the exact build number is not documented, this file describes the development period without inventing an attribution.
+
+## BUILD 67 - Multi-size consolidation, text 16/32 and active buzzer
+
+### Added
+- Active buzzer support on GPIO 18.
+- Non-blocking three-pulse trill for Alarm and Schedule sound.
+- Resolution-aware text glyph handling for 8x16 (`0x02`) and 16x32 (`0x05`) records.
+
+### Changed
+- 16x16 restored as the default physical/logical profile while retaining the multi-size framework.
+- Stopwatch rendering changed to white.
+- Countdown is white and switches to red for the final five seconds.
+- Removed the obsolete Schedule-specific verbose debug switch; normal protocol diagnostics remain.
+
+### Protocol / research
+- Official app successfully exercised with the emulator advertising the 32x32 profile (`screen type 0x03`).
+- 32x32 profile exposes 16/32 text size selection.
+- SimSun/SimHei changes glyph bitmap data; no device-side font-selection command was observed.
+- 32x32 cloud GIF transfers observed with 4096-byte chunks.
+- Intermediate bulk ACK `0x01` and completion ACK `0x03` further confirmed.
+- Cloud assets differ by screen profile; clock style identifiers appear unchanged.
+- Graffiti works with 32x32 coordinates.
+- Programs created under 16x16 were not shown under 32x32, suggesting app-side per-profile storage.
+
+## BUILD 66 - Buzzer trill
+
+- Replaced continuous active-buzzer output with a non-blocking three-pulse trill pattern.
+- Superseded by B67 due to a declaration-order compile fix.
+
+## BUILD 65 - Multi-size text and buzzer integration
+
+- Returned default profile to 16x16 while retaining 32x32 support.
+- Added 8x16 and 16x32 text glyph handling.
+- Added active buzzer integration on GPIO 18.
+- Removed temporary raw TEXT diagnostics after the font format was decoded.
+
+## BUILD 64 - TEXT / bulk diagnostics
+
+- Added focused diagnostics that revealed 16px marker `0x02`, 32px marker `0x05`, and glyph record sizes.
+- Captured SimSun/SimHei bitmap differences.
+- Captured 32x32 cloud GIF transfers and 4096-byte chunking.
+- Changed stopwatch/countdown colors to the current behavior.
+
+## BUILD 63 - First multi-size / 32x32 simulation
+
+- Added separate logical device resolution and physical matrix resolution.
+- Added 32x32 device-profile simulation while downscaling output to the physical 16x16 development matrix.
+- Removed critical hardcoded 16x16 assumptions from Graffiti, RAW, GIF and PNG paths.
+- Generated profile-specific Device Info and manufacturer-data screen type.
+- Verified that the official app changes cloud assets and Graffiti resolution when presented with a 32x32 profile.
 
 ## BUILD 62 - Pure event-driven OLED
 
@@ -174,31 +214,3 @@ Development history of the ESP32 iDotMatrix emulator.
 
 ### Note
 - The exact numbering/history of the earliest builds was not preserved reliably enough to create a per-build changelog without speculation.
-
-## Build 67
-
-### Added
-- Active buzzer support on GPIO 18 with a non-blocking three-pulse trill pattern for alarms and schedules.
-- Resolution-aware text glyph handling for 8x16 (`0x02`) and 16x32 (`0x05`) glyph records.
-
-### Changed
-- 16x16 restored as the default physical/logical profile while retaining the multi-size framework introduced for 32x32 experiments.
-- Stopwatch rendering is white.
-- Countdown rendering is white, switching to red for the final five seconds.
-- Schedule-specific verbose debug mode removed; normal protocol diagnostics remain available.
-
-### Protocol / research
-- The official app was successfully exercised with the emulator advertising the 32x32 profile (`screen type 0x03`).
-- The app exposes 16/32 text size selection for the 32x32 profile.
-- SimSun and SimHei selection changes glyph bitmap data rather than sending a device-side font-selection command.
-- 32x32 cloud GIF transfers were observed using 4096-byte chunks, with `0x01` intermediate acknowledgements and `0x03` completion acknowledgement.
-- Cloud assets differ by screen profile, while clock style identifiers appear unchanged and are scaled by the device renderer.
-- Graffiti coordinates operate correctly with the simulated 32x32 profile.
-- Programs created under the 16x16 profile were not shown after switching to 32x32, suggesting app-side per-profile storage.
-
-## Builds 63-66
-
-- B63 introduced the first multi-size / simulated 32x32 device profile and removed several hard-coded 16x16 assumptions.
-- B64 added focused TEXT and bulk-transfer diagnostics used to identify 16px and 32px glyph formats.
-- B65 consolidated multi-size text handling and added the first active-buzzer integration.
-- B66 introduced the non-blocking buzzer trill; B67 fixes declaration ordering and is the consolidated build.

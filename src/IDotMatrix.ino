@@ -2685,7 +2685,7 @@ void updateStatusOLED() {
                       countdownRunning != lastCountdownRunning ||
                       countdownPaused != lastCountdownPaused;
 
-  // BUILD 62: nessun refresh periodico. Lo SW-I2C blocca il loop durante
+  // Pure event-driven OLED: no periodic refresh. SW-I2C blocks the loop during
   // sendBuffer(); l'OLED viene quindi ridisegnato solo su un vero cambio di stato.
   if (!stateChanged) return;
 

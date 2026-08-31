@@ -61,7 +61,7 @@ Public clients support or discuss 16x16, 32x32 and 64x64 displays, but this does
 - firmware-specific features;
 - clock/text rendering behavior.
 
-Build 62 of this emulator remains a 16x16 target. Multi-size support is a roadmap item rather than a currently supported feature.
+Build 67 keeps 16x16 as the default physical target but includes a multi-size framework. The official app has been successfully exercised with the emulator advertising the 32x32 profile (`0x03`), including 32x32 Graffiti coordinates, profile-specific cloud assets, 16/32 text glyph sizes, and 4096-byte GIF chunking. Physical 32x32 matrix testing is still pending.
 
 ## Research policy
 

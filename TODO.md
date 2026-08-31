@@ -6,7 +6,8 @@ This file intentionally separates completed features, partial features, optional
 
 - [x] BLE advertising recognized by the app.
 - [x] FA and AE services and FA02/FA03/AE01/AE02 characteristics.
-- [x] Device info / 16x16 matrix identification.
+- [x] Device info / 16x16 identification.
+- [x] Simulated 32x32 device profile (`0x03`) recognized by the official app.
 - [x] Date and time synchronization from the app.
 - [x] Matrix power on/off.
 - [x] 180-degree rotation.
@@ -15,7 +16,7 @@ This file intentionally separates completed features, partial features, optional
 - [x] Time-window power saving.
 - [x] Solid color.
 - [x] Graffiti/DIY mode.
-- [x] 16x16 RAW RGB images.
+- [x] Resolution-aware RAW RGB images.
 - [x] Animated GIFs.
 - [x] Text and glyphs with correct bitmap orientation.
 - [x] Text colors and effects investigated.
@@ -34,12 +35,13 @@ This file intentionally separates completed features, partial features, optional
 - [x] Programs/Schedules: automatic execution by weekday and time range.
 - [x] Programs/Schedules: TEXT.
 - [x] Programs/Schedules: GIF.
-- [x] Programs/Schedules: 16x16 PNG.
+- [x] Programs/Schedules: resolution-aware PNG handling.
 - [x] PNG decoder with inflater state on heap, avoiding stack overflow.
 - [x] Optional U8g2 diagnostic OLED.
 - [x] OLED: build, BLE, screen, mode, time, brightness, Schedule and timer status.
 - [x] OLED: prominent alert for unhandled commands with raw-byte preview.
-- [x] BUILD 62 verified on hardware with pure event-driven OLED and smooth matrix animations.
+- [x] BUILD 62 verified pure event-driven OLED and smooth matrix animations.
+- [x] BUILD 67 consolidated multi-size framework, 16/32 text glyphs and active buzzer support.
 
 ## Partially completed
 
@@ -64,7 +66,10 @@ This file intentionally separates completed features, partial features, optional
 
 - [x] Global structure and glyph bitmaps.
 - [x] Correct bit orientation (`bit0 = left`).
-- [ ] Decode the semantic meaning of all 7 glyph `META` bytes.
+- [x] Decode 16px glyph record: marker `0x02`, 8x16 bitmap.
+- [x] Decode 32px glyph record: marker `0x05`, 16x32 bitmap.
+- [x] Confirm SimSun/SimHei are rasterized by the app; no device-side font-selection command observed.
+- [ ] Decode the semantic meaning of all remaining glyph metadata bytes.
 
 ### ACK semantics
 
@@ -77,7 +82,8 @@ This file intentionally separates completed features, partial features, optional
 ### Buzzer
 
 - [x] Protocol fields and firmware hooks implemented.
-- [ ] Select a free GPIO and test a real buzzer.
+- [x] Active buzzer tested on GPIO 18.
+- [x] Non-blocking three-pulse trill implemented for Alarm/Schedule.
 
 ### DS3231 RTC
 
@@ -123,18 +129,19 @@ When a new command is observed:
 
 ## Multi-size matrix support
 
-- [ ] Remove remaining hardcoded 16x16 assumptions
-- [ ] Make framebuffer dimensions configurable
-- [ ] Make LED mapping dimension-independent
-- [ ] Adapt graphical renderers to matrix dimensions
-- [ ] Adapt GIF/PNG handling to matrix dimensions
-- [ ] Generate model-specific Device Info responses
-- [ ] Verify BLE protocol behavior on 32x32
-- [ ] Verify BLE protocol behavior on 64x64
-- [ ] Compare transfer/chunk limits between models and firmware versions
-- [ ] Test with a physical 32x32 WS2812B-compatible matrix
-- [ ] Test with original 32x32 iDotMatrix hardware
-- [ ] Test with original 64x64 iDotMatrix hardware
+- [x] Remove critical hardcoded 16x16 assumptions from framebuffer, Graffiti, RAW, GIF and PNG paths.
+- [x] Make logical and physical matrix dimensions configurable.
+- [x] Generate model-specific Device Info / advertising profile values.
+- [x] Simulate and exercise the 32x32 app profile.
+- [x] Verify 32x32 Graffiti coordinates and profile-specific cloud assets.
+- [x] Decode 16px / 32px app-provided text glyph formats.
+- [x] Observe 4096-byte GIF chunking on the simulated 32x32 profile.
+- [ ] Replace/verify the remaining 16x16-native decorative renderers with true 32x32 equivalents where the original hardware differs.
+- [ ] Verify BLE protocol behavior on 64x64.
+- [ ] Compare transfer/chunk limits between models and firmware versions.
+- [ ] Test with a physical 32x32 WS2812B-compatible matrix.
+- [ ] Test with original 32x32 iDotMatrix hardware.
+- [ ] Test with original 64x64 iDotMatrix hardware.
 
 ## Multi-size follow-up
 
