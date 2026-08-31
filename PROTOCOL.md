@@ -693,47 +693,25 @@ Observed Schedule images are 16x16, 8-bit, non-interlaced PNG files. The impleme
 5. app commands/features not yet exercised;
 6. exact mathematical correspondence of some visual/audio effects to the original firmware.
 
-BUILD 67 records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.
+BUILD 62 records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.
 
-## Additional 32x32 findings (Builds 63-67)
+## Resolution profiles confirmed during emulator testing
 
-### Device profile
+| Device type | Resolution | Emulator observation |
+|---|---:|---|
+| `0x01` | 16x16 | original stable target |
+| `0x03` | 32x32 | official app switches to 32x32 assets/features |
+| `0x04` | 64x64 | official app switches to 64x64 cloud assets; GIF reception/playback verified |
 
-The emulator successfully selected the application's 32x32 behavior by reporting screen type `0x03` in Device Info:
-
-`09 00 01 80 04 0E 01 03 00`
-
-The 16x16 profile uses screen type `0x01`.
-
-Observed application behavior after selecting the 32x32 profile:
-
-- cloud images/animations are different and use higher-resolution assets;
-- Graffiti exposes and transmits the larger coordinate space;
-- clock styles appear to use the same style identifiers and are rendered/scaled by the device;
-- Programs/Schedules appear to be stored separately by the app for different screen profiles.
-
-The last point is an application-side observation and is not yet known to be a protocol requirement.
+The manufacturer/device profile byte is sufficient in our tests to make the official app select resolution-specific content. Graffiti coordinates and the general command structure remain compatible across the tested profiles.
 
 ### Text glyph sizes
 
-For the 32x32 profile the application exposes text sizes 16 and 32.
+Observed text records use marker `0x02` for an 8x16 glyph (16 bitmap bytes) and `0x05` for a 16x32 glyph (64 bitmap bytes). Changing SimSun/SimHei causes the app to resend different glyph bitmap data rather than sending a persistent font-selection command; therefore font rasterization is performed by the app.
 
-Observed glyph record markers:
+### Large GIF transfers
 
-| Marker | Glyph bitmap | Bitmap bytes | Record size |
-| --- | --- | ---: | ---: |
-| `0x02` | 8x16 | 16 | 20 bytes |
-| `0x05` | 16x32 | 64 | 68 bytes |
+32x32 and 64x64 cloud media continue to use 4096-byte bulk chunks. Intermediate transfer acknowledgement `0x01` and completion acknowledgement `0x03` remain consistent with earlier observations. During 64x64 tests, GIFs around 79 KB were successfully received and played.
 
-Each observed record consists of the marker, RGB color data and the rasterized glyph bitmap.
+The emulator now stores large media in LittleFS rather than requiring one contiguous RAM allocation. Receive and playback files are separate, and each media switch creates a fresh AnimatedGIF decoder instance. These are implementation requirements of this emulator, not claims about the original device firmware.
 
-SimSun and SimHei do not appear to be transmitted as a device-side font selector. Changing the font family and resending identical text preserves the packet structure and glyph-size marker while changing the bitmap bytes. This strongly indicates that the mobile application rasterizes the selected font before transmission.
-
-### 32x32 GIF chunking
-
-Observed cloud GIF transfers on the simulated 32x32 profile used payload chunks of up to 4096 bytes. Examples included 30,321 bytes in 8 chunks and 14,571 bytes in 4 chunks.
-
-Intermediate chunks were acknowledged with status `0x01`; transfer completion used status `0x03`. This further corroborates the interpretation:
-
-- `0x01` = accepted / continue;
-- `0x03` = transaction complete.

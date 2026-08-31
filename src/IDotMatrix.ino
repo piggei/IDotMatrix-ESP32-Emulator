@@ -6,7 +6,7 @@
 // Incrementare ad ogni file consegnato: viene stampato
 // sulla seriale all'avvio per evitare dubbi sulla versione.
 // ======================================================
-#define FW_BUILD 67
+#define FW_BUILD 76
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 1
 #define BULK_PROTOCOL_DEBUG 1
@@ -111,9 +111,10 @@ uint8_t unknownCommandStored = 0;
 // iDotMatrix logical screen profile.
 // 1 = 16x16 (original development target)
 // 3 = 32x32 (HXS-002 / NL-XSD-32, hardware-validated by community captures)
+// 4 = 64x64 (experimental emulation profile; community hardware evidence)
 // The protocol/logical resolution is deliberately separated from the physical
-// LED matrix so a 32x32 device can be emulated while still using a 16x16 panel
-// as a downscaled preview.
+// LED matrix so larger iDotMatrix profiles can be emulated while still using
+// the existing 16x16 panel as a downscaled preview.
 // -----------------------------------------------------------------------------
 #define IDOTMATRIX_SCREEN_TYPE  1
 
@@ -123,18 +124,30 @@ uint8_t unknownCommandStored = 0;
 #elif IDOTMATRIX_SCREEN_TYPE == 3
   #define MATRIX_WIDTH   32
   #define MATRIX_HEIGHT  32
+#elif IDOTMATRIX_SCREEN_TYPE == 4
+  #define MATRIX_WIDTH   64
+  #define MATRIX_HEIGHT  64
 #else
-  #error "Unsupported IDOTMATRIX_SCREEN_TYPE (supported: 1=16x16, 3=32x32)"
+  #error "Unsupported IDOTMATRIX_SCREEN_TYPE (supported: 1=16x16, 3=32x32, 4=64x64)"
 #endif
 
 #define NUM_LEDS       ((uint16_t)MATRIX_WIDTH * (uint16_t)MATRIX_HEIGHT)
+#define LOGICAL_FRAME_BYTES ((size_t)NUM_LEDS * sizeof(CRGB))
 
 // Physical LED panel connected to the ESP32.
-// Keep these at 16x16 to emulate a 32x32 iDotMatrix with the existing matrix.
-// Set them to 32x32 when a real 32x32 WS2812B panel is connected.
+// Keep these at 16x16 to emulate a larger logical iDotMatrix with the existing
+// panel. Set them to the real panel size when larger WS2812B hardware is used.
 #define PHYSICAL_MATRIX_WIDTH   16
 #define PHYSICAL_MATRIX_HEIGHT  16
 #define PHYSICAL_NUM_LEDS       ((uint16_t)PHYSICAL_MATRIX_WIDTH * (uint16_t)PHYSICAL_MATRIX_HEIGHT)
+
+// Diagnostic preview only: allows a larger logical profile to be scaled onto
+// the 16x16 development panel. Keep disabled for normal/native operation.
+#define ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW 0
+
+#if !ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW && ((MATRIX_WIDTH != PHYSICAL_MATRIX_WIDTH) || (MATRIX_HEIGHT != PHYSICAL_MATRIX_HEIGHT))
+  #error "Logical and physical matrix sizes differ. Enable ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW only for diagnostic emulation."
+#endif
 
 #define LED_TYPE       WS2812B
 #define COLOR_ORDER    GRB
@@ -266,7 +279,9 @@ BLECharacteristic *ae02 = nullptr;
 bool deviceConnected = false;
 
 CRGB leds[PHYSICAL_NUM_LEDS];
-CRGB framebuffer[NUM_LEDS];
+// Logical buffers are allocated from the heap at runtime. Keeping 64x64
+// framebuffers in .bss overflows ESP32 DRAM before the sketch can link.
+CRGB *framebuffer = nullptr;
 
 enum DisplayMode {
   DISPLAY_NONE,
@@ -667,16 +682,35 @@ bool processAlarmCommand(const uint8_t *data,size_t len){
 // ======================================================
 // GIF
 // ======================================================
-AnimatedGIF gif;
+AnimatedGIF *gif = nullptr;
+bool gifDecoderTeardownPending = false;
+bool gifDecoderOpenPending = false;
+uint32_t gifDecoderOpenAt = 0;
 uint8_t *gifData = nullptr;
 size_t gifSize = 0;
 size_t gifWriteOffset = 0;
+bool gifStoredOnFS = false;
+// B73: RX and playback files are deliberately different.  BLE writes happen
+// on Core 0 while AnimatedGIF playback runs from loop() on Core 1; touching
+// the file/decoder currently in use from the BLE callback can corrupt the heap.
+const char *GIF_PLAY_FILE = "/gif_play.gif";
+const char *GIF_RX_FILES[2] = { "/gif_rx0.tmp", "/gif_rx1.tmp" };
+File gifBulkFile;
+size_t gifRxWriteOffset = 0;
+uint8_t nextGifRxSlot = 0;
 bool gifLoaded = false;
 bool gifPlaying = false;
 bool gifRestartPending = false;
 bool gifFrameWasDrawn = false;
+// A completed BLE GIF transfer is acknowledged immediately and opened later
+// from loop().  AnimatedGIF/LittleFS initialization must not run inside the
+// BLE write callback: complex 64x64 GIFs can otherwise corrupt/crash Core 0.
+volatile bool pendingGifStart = false;
+volatile int8_t pendingGifSlot = -1;
+volatile uint32_t pendingGifSize = 0;
+uint32_t pendingGifStartAt = 0;
 uint32_t gifNextFrameAt = 0;
-CRGB gifFrame[NUM_LEDS];
+CRGB *gifFrame = nullptr;
 
 // ======================================================
 // PACKET / BULK
@@ -693,6 +727,8 @@ struct BulkTransferState {
   uint32_t expectedCRC = 0;
   uint32_t runningCRC = 0xFFFFFFFF;
   uint32_t chunkCount = 0;
+  bool gifToFS = false;
+  int8_t gifRxSlot = -1;
   String format = "UNKNOWN";
 } bulk;
 
@@ -824,10 +860,8 @@ void refreshMatrix() {
     return;
   }
   FastLED.clear();
-  // Render the logical iDotMatrix framebuffer onto the actually connected
-  // matrix. If the sizes differ (e.g. logical 32x32 on physical 16x16), use
-  // nearest-neighbour down/up-sampling. This is intentionally only a preview:
-  // the BLE protocol still exposes the full logical resolution to the app.
+#if ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW
+  // Diagnostic-only nearest-neighbour preview of a larger logical framebuffer.
   for (uint8_t py = 0; py < PHYSICAL_MATRIX_HEIGHT; py++) {
     for (uint8_t px = 0; px < PHYSICAL_MATRIX_WIDTH; px++) {
       uint8_t outX = px, outY = py;
@@ -843,6 +877,22 @@ void refreshMatrix() {
       leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(sx, sy)];
     }
   }
+#else
+  // Native 1:1 rendering. No resolution scaling in normal operation.
+  for (uint8_t y = 0; y < PHYSICAL_MATRIX_HEIGHT; y++) {
+    for (uint8_t x = 0; x < PHYSICAL_MATRIX_WIDTH; x++) {
+      uint8_t outX = x, outY = y;
+#if MATRIX_MIRROR_X
+      outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
+#endif
+      if (flipped180) {
+        outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
+        outY = PHYSICAL_MATRIX_HEIGHT - 1 - outY;
+      }
+      leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(x, y)];
+    }
+  }
+#endif
   FastLED.setBrightness(brightnessToFastLED(effectiveBrightnessPercent()));
   FastLED.show();
 }
@@ -1448,12 +1498,70 @@ bool processEffectCommand(const uint8_t *data,size_t len){
 // ======================================================
 // GIF
 // ======================================================
-void stopGIFPlayback(){ gifPlaying=false; gifLoaded=false; gifRestartPending=false; gifFrameWasDrawn=false; gif.close(); }
-void freeGIF(){ stopGIFPlayback(); if(gifData){ free(gifData); gifData=nullptr; } gifSize=gifWriteOffset=0; }
+void destroyGIFDecoder(){
+  gifPlaying=false; gifLoaded=false; gifRestartPending=false; gifFrameWasDrawn=false;
+  if(gif){
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+    Serial.println("GIF OLD close");
+#endif
+    gif->close();
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+    Serial.println("GIF OLD delete");
+#endif
+    delete gif;
+    gif=nullptr;
+  }
+}
+void stopGIFPlayback(){ destroyGIFDecoder(); }
+void freeGIF(){
+  pendingGifStart=false;
+  pendingGifSlot=-1;
+  pendingGifSize=0;
+  pendingGifStartAt=0;
+  gifDecoderTeardownPending=false;
+  gifDecoderOpenPending=false;
+  gifDecoderOpenAt=0;
+  destroyGIFDecoder();
+  if(gifData){ free(gifData); gifData=nullptr; }
+  gifSize=gifWriteOffset=0;
+  gifStoredOnFS=false;
+}
 bool allocateGIF(size_t size){
   freeGIF(); if(!size || size>MAX_GIF_SIZE) return false;
   gifData=(uint8_t*)malloc(size); if(!gifData) return false;
-  gifSize=size; gifWriteOffset=0; return true;
+  gifSize=size; gifWriteOffset=0; gifStoredOnFS=false; return true;
+}
+
+// AnimatedGIF file callbacks. Large GIFs are kept in LittleFS so the
+// compressed media never needs one large contiguous DRAM allocation.
+void *GIFOpenFile(const char *fname, int32_t *pSize){
+  File *f=new File(LittleFS.open(fname,"r"));
+  if(!f || !(*f)){ if(f) delete f; return nullptr; }
+  *pSize=(int32_t)f->size();
+  return (void *)f;
+}
+void GIFCloseFile(void *pHandle){
+  File *f=(File *)pHandle;
+  if(f){ f->close(); delete f; }
+}
+int32_t GIFReadFile(GIFFILE *pFile,uint8_t *pBuf,int32_t iLen){
+  File *f=(File *)pFile->fHandle;
+  if(!f || !(*f) || iLen<=0) return 0;
+  int32_t remain=pFile->iSize-pFile->iPos;
+  if(remain<=0) return 0;
+  if(iLen>remain) iLen=remain;
+  int32_t n=(int32_t)f->read(pBuf,(size_t)iLen);
+  pFile->iPos=(int32_t)f->position();
+  return n;
+}
+int32_t GIFSeekFile(GIFFILE *pFile,int32_t iPosition){
+  File *f=(File *)pFile->fHandle;
+  if(!f || !(*f)) return -1;
+  if(iPosition<0) iPosition=0;
+  if(iPosition>pFile->iSize) iPosition=pFile->iSize;
+  if(!f->seek((uint32_t)iPosition,SeekSet)) return -1;
+  pFile->iPos=(int32_t)f->position();
+  return pFile->iPos;
 }
 
 void GIFDraw(GIFDRAW *pDraw){
@@ -1475,21 +1583,57 @@ void GIFDraw(GIFDRAW *pDraw){
 }
 
 bool startGIF(){
-  if(!gifData||!gifSize) return false;
-  stopGIFPlayback(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
-  gif.begin(LITTLE_ENDIAN_PIXELS); gif.setDrawType(GIF_DRAW_RAW);
-  if(!gif.open(gifData,(int)gifSize,GIFDraw)) return false;
-  GIFINFO info; if(gif.getInfo(&info)==GIF_SUCCESS) gif.reset();
+  if((!gifStoredOnFS && (!gifData||!gifSize)) || (gifStoredOnFS && !LittleFS.exists(GIF_PLAY_FILE))) return false;
+  if(gif) destroyGIFDecoder();
+  fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.println("GIF NEW alloc");
+#endif
+  gif=new AnimatedGIF();
+  if(!gif){
+#if DEBUG_SERIAL
+    Serial.println("GIF NEW alloc FAILED");
+#endif
+    return false;
+  }
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.println("GIF NEW begin");
+#endif
+  gif->begin(LITTLE_ENDIAN_PIXELS); gif->setDrawType(GIF_DRAW_RAW);
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.println("GIF NEW open");
+#endif
+  bool opened=false;
+  if(gifStoredOnFS){
+    opened=gif->open(GIF_PLAY_FILE,GIFOpenFile,GIFCloseFile,GIFReadFile,GIFSeekFile,GIFDraw);
+  } else {
+    opened=gif->open(gifData,(int)gifSize,GIFDraw);
+  }
+  if(!opened){
+#if DEBUG_SERIAL
+    Serial.println("GIF NEW open FAILED");
+#endif
+    destroyGIFDecoder();
+    return false;
+  }
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.println("GIF NEW open OK");
+  Serial.println("GIF NEW reset");
+#endif
+  gif->reset();
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.println("GIF NEW reset OK");
+#endif
   gifLoaded=gifPlaying=true; gifNextFrameAt=millis(); displayMode=DISPLAY_GIF; return true;
 }
 
 void updateGIF(){
-  if(!gifPlaying||!gifLoaded||displayMode!=DISPLAY_GIF) return;
+  if(!gif || !gifPlaying||!gifLoaded||displayMode!=DISPLAY_GIF) return;
   uint32_t now=millis(); if((long)(now-gifNextFrameAt)<0) return;
-  if(gifRestartPending){ gif.reset(); gifRestartPending=false; fill_solid(gifFrame,NUM_LEDS,CRGB::Black); }
-  gifFrameWasDrawn=false; int delayMs=0; int result=gif.playFrame(false,&delayMs);
-  if(!gifFrameWasDrawn){ gif.reset(); gifNextFrameAt=now+10; return; }
-  ::memcpy(framebuffer,gifFrame,sizeof(framebuffer)); refreshMatrix();
+  if(gifRestartPending){ gif->reset(); gifRestartPending=false; fill_solid(gifFrame,NUM_LEDS,CRGB::Black); }
+  gifFrameWasDrawn=false; int delayMs=0; int result=gif->playFrame(false,&delayMs);
+  if(!gifFrameWasDrawn){ gif->reset(); gifNextFrameAt=now+10; return; }
+  ::memcpy(framebuffer,gifFrame,LOGICAL_FRAME_BYTES); refreshMatrix();
   if(delayMs<10) delayMs=10; gifNextFrameAt=now+delayMs; if(result==0) gifRestartPending=true;
 }
 
@@ -1498,6 +1642,7 @@ void updateGIF(){
 // ======================================================
 bool startsWithGIF(const uint8_t *data,size_t len){ return len>=6 && (!memcmp(data,"GIF87a",6)||!memcmp(data,"GIF89a",6)); }
 void resetBulkTransfer(){
+  if(gifBulkFile) gifBulkFile.close();
   bulk=BulkTransferState();
   textPayloadReceived=0;
   if(rawRgbData){ free(rawRgbData); rawRgbData=nullptr; }
@@ -1522,7 +1667,26 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     Serial.print(" firstPayload="); Serial.print(payloadSize);
     Serial.print(" format="); Serial.println(bulk.format.length() ? bulk.format : "UNKNOWN");
 #endif
-    if(type==1 && !allocateGIF(total)){ resetBulkTransfer(); sendTransferAck(type,0x03); return true; }
+    if(type==1){
+      // B73: every incoming GIF is streamed to an RX file.  Crucially, do not
+      // call freeGIF()/gif.close() here: this function runs in the BLE callback
+      // while loop() may simultaneously be inside gif.playFrame() on Core 1.
+      // The currently playing GIF is left completely untouched until loop()
+      // performs the atomic RX -> PLAY hand-off after CRC validation.
+      int8_t slot=(int8_t)(nextGifRxSlot & 1U);
+      nextGifRxSlot ^= 1U;
+      if(pendingGifStart && slot==pendingGifSlot) slot ^= 1;
+      bulk.gifRxSlot=slot;
+      const char *rxPath=GIF_RX_FILES[(uint8_t)slot];
+      LittleFS.remove(rxPath);
+      gifBulkFile=LittleFS.open(rxPath,"w");
+      if(!gifBulkFile){ resetBulkTransfer(); sendTransferAck(type,0x03); return true; }
+      bulk.gifToFS=true;
+      gifRxWriteOffset=0;
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+      Serial.print("BULK GIF STORAGE: LittleFS RX slot="); Serial.println(slot);
+#endif
+    }
     if(type==2 && bulk.format=="RAW RGB"){
       rawRgbData=(uint8_t*)malloc(total);
       if(!rawRgbData){ resetBulkTransfer(); sendTransferAck(type,0x03); return true; }
@@ -1532,7 +1696,18 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   if(type!=bulk.dataType){ resetBulkTransfer(); return true; }
   uint32_t remain=bulk.expectedSize-bulk.receivedSize; size_t useful=min((size_t)remain,payloadSize);
   bulk.runningCRC=crc32Update(bulk.runningCRC,payload,useful);
-  if(type==1 && gifData && gifWriteOffset+useful<=gifSize){ ::memcpy(gifData+gifWriteOffset,payload,useful); gifWriteOffset+=useful; }
+  if(type==1){
+    if(bulk.gifToFS){
+      size_t n=gifBulkFile ? gifBulkFile.write(payload,useful) : 0;
+      gifRxWriteOffset+=n;
+      if(n!=useful){
+#if DEBUG_SERIAL
+        Serial.println("BULK GIF LittleFS RX write error");
+#endif
+        resetBulkTransfer(); sendTransferAck(type,0x03); return true;
+      }
+    }
+  }
   if(type==2 && rawRgbData && rawRgbWriteOffset+useful<=bulk.expectedSize){
     ::memcpy(rawRgbData+rawRgbWriteOffset,payload,useful);
     rawRgbWriteOffset+=useful;
@@ -1551,7 +1726,25 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     }
 #endif
     if(type==3 && ok && textPayloadReceived) parseTextPayload(textPayload,textPayloadReceived);
-    if(type==1){ if(ok && gifWriteOffset==gifSize) startGIF(); else freeGIF(); }
+    if(type==1){
+      if(gifBulkFile){ gifBulkFile.flush(); gifBulkFile.close(); }
+      if(ok && bulk.gifToFS && gifRxWriteOffset==bulk.expectedSize && bulk.gifRxSlot>=0){
+        // Publish only metadata here.  No AnimatedGIF calls, no closing the
+        // current decoder and no PLAY-file mutation are allowed from Core 0.
+        // If a previous completed RX has not yet been promoted, the newest
+        // valid transfer wins; its file uses the other RX slot when possible.
+        pendingGifSlot=bulk.gifRxSlot;
+        pendingGifSize=bulk.expectedSize;
+        pendingGifStartAt=millis();
+        pendingGifStart=true;
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+        Serial.print("GIF RX COMPLETE queued slot="); Serial.print((int)bulk.gifRxSlot);
+        Serial.print(" bytes="); Serial.println(bulk.expectedSize);
+#endif
+      } else {
+        if(bulk.gifRxSlot>=0) LittleFS.remove(GIF_RX_FILES[(uint8_t)bulk.gifRxSlot]);
+      }
+    }
     if(type==2 && ok && rawRgbData && rawRgbWriteOffset==bulk.expectedSize){
       switchDisplayMode(DISPLAY_RAW);
       for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
@@ -1565,6 +1758,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     Serial.print("BULK END type="); Serial.print(type);
     Serial.print(" total="); Serial.print(bulk.receivedSize);
     Serial.print(" chunks="); Serial.print(bulk.chunkCount);
+    if(type==1){ Serial.print(" storage=LittleFS-RX"); Serial.print(" slot="); Serial.print((int)bulk.gifRxSlot); }
     Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
 #endif
     sendTransferAck(type,0x03); resetBulkTransfer();
@@ -2168,7 +2362,7 @@ uint32_t scheduleReceivedMask = 0;
 int8_t scheduleActiveIndex = -1;
 int8_t scheduleFailedIndex = -1;  // evita retry continuo se un media non viene decodificato
 DisplayMode schedulePreviousMode = DISPLAY_CLOCK;
-CRGB scheduleSavedFrame[NUM_LEDS];
+CRGB *scheduleSavedFrame = nullptr;
 
 static inline uint16_t rd16le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -2472,7 +2666,7 @@ void stopScheduleActivity() {
   stopGIFPlayback();
   if (schedulePreviousMode == DISPLAY_SOLID || schedulePreviousMode == DISPLAY_RAW ||
       schedulePreviousMode == DISPLAY_GRAFFITI) {
-    ::memcpy(framebuffer, scheduleSavedFrame, sizeof(framebuffer));
+    ::memcpy(framebuffer, scheduleSavedFrame, LOGICAL_FRAME_BYTES);
     displayMode = schedulePreviousMode;
     refreshMatrix();
   } else if (clockSynced) {
@@ -2493,7 +2687,7 @@ void startScheduleActivity(uint8_t idx) {
   if (scheduleActiveIndex == idx) return;
   if (scheduleActiveIndex >= 0) stopScheduleActivity();
   schedulePreviousMode = displayMode;
-  ::memcpy(scheduleSavedFrame, framebuffer, sizeof(framebuffer));
+  ::memcpy(scheduleSavedFrame, framebuffer, LOGICAL_FRAME_BYTES);
   if (loadScheduleMedia(idx)) {
     scheduleActiveIndex = idx;
     scheduleFailedIndex = -1;
@@ -2685,7 +2879,7 @@ void updateStatusOLED() {
                       countdownRunning != lastCountdownRunning ||
                       countdownPaused != lastCountdownPaused;
 
-  // Pure event-driven OLED: no periodic refresh. SW-I2C blocks the loop during
+  // BUILD 62: nessun refresh periodico. Lo SW-I2C blocca il loop durante
   // sendBuffer(); l'OLED viene quindi ridisegnato solo su un vero cambio di stato.
   if (!stateChanged) return;
 
@@ -2783,6 +2977,38 @@ void setup(){
 #if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
   pinMode(ALARM_BUZZER_PIN,OUTPUT); digitalWrite(ALARM_BUZZER_PIN,BUZZER_ACTIVE_HIGH?LOW:HIGH);
 #endif
+// Allocate the logical display buffers at runtime. This is essential for the
+  // 64x64 profile: three static 4096-pixel CRGB buffers would consume ~36 KB
+  // of .bss and overflow the ESP32 DRAM linker segment.
+  framebuffer = (CRGB*)malloc(LOGICAL_FRAME_BYTES);
+  gifFrame = (CRGB*)malloc(LOGICAL_FRAME_BYTES);
+  scheduleSavedFrame = (CRGB*)malloc(LOGICAL_FRAME_BYTES);
+  if (!framebuffer || !gifFrame || !scheduleSavedFrame) {
+#if DEBUG_SERIAL
+    Serial.print("FATAL: logical framebuffer allocation failed, bytes each=");
+    Serial.print(LOGICAL_FRAME_BYTES);
+    Serial.print(" freeHeap=");
+    Serial.println(ESP.getFreeHeap());
+#endif
+#if OLED_STATUS_ENABLED
+    statusOLED.clearBuffer();
+    statusOLED.setFont(u8g2_font_6x10_tf);
+    statusOLED.drawStr(0, 14, "MEMORY ERROR");
+    statusOLED.drawStr(0, 28, "Logical buffers");
+    statusOLED.drawStr(0, 42, "allocation failed");
+    statusOLED.sendBuffer();
+#endif
+    while (true) delay(1000);
+  }
+  fill_solid(framebuffer, NUM_LEDS, CRGB::Black);
+  fill_solid(gifFrame, NUM_LEDS, CRGB::Black);
+  fill_solid(scheduleSavedFrame, NUM_LEDS, CRGB::Black);
+#if DEBUG_SERIAL
+  Serial.print("LOGICAL BUFFERS: "); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
+  Serial.print(" x3, bytes="); Serial.print(LOGICAL_FRAME_BYTES * 3U);
+  Serial.print(" freeHeap="); Serial.println(ESP.getFreeHeap());
+#endif
+
 #if RTC_ENABLED
   Wire.begin();
   rtcReady=rtc.begin();
@@ -2838,6 +3064,66 @@ void loop(){
   updateAlarms();
   updateSchedule();
   updateBuzzer();
+
+  // B73: a decoder instance is never reused.  Switching GIFs is split across
+  // separate loop iterations: first destroy the old AnimatedGIF object and
+  // promote RX -> PLAY, then allocate/open a fresh decoder on the next pass.
+  if(pendingGifStart && (long)(now-pendingGifStartAt)>=0 && !gifDecoderTeardownPending && !gifDecoderOpenPending){
+    int8_t slot=pendingGifSlot;
+    uint32_t newSize=pendingGifSize;
+    pendingGifStart=false;
+    pendingGifSlot=-1;
+    pendingGifSize=0;
+    if(slot>=0 && slot<=1){
+      const char *rxPath=GIF_RX_FILES[(uint8_t)slot];
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+      Serial.print("GIF RX -> PLAY SWITCH slot="); Serial.print((int)slot);
+      Serial.print(" bytes="); Serial.println(newSize);
+      reportHeap("before GIF teardown");
+#endif
+      destroyGIFDecoder();
+      if(gifData){ free(gifData); gifData=nullptr; }
+      gifWriteOffset=0; gifStoredOnFS=false; gifSize=0;
+
+      LittleFS.remove(GIF_PLAY_FILE);
+      bool promoted=LittleFS.exists(rxPath) && LittleFS.rename(rxPath,GIF_PLAY_FILE);
+      if(!promoted){
+#if DEBUG_SERIAL
+        Serial.println("GIF RX -> PLAY rename FAILED");
+#endif
+      } else {
+        gifStoredOnFS=true;
+        gifSize=newSize;
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+        Serial.println("GIF RX -> PLAY rename OK");
+        Serial.println("GIF OPEN deferred to next loop");
+#endif
+        gifDecoderOpenPending=true;
+        gifDecoderOpenAt=millis()+1;
+      }
+    }
+  }
+
+  if(gifDecoderOpenPending && (long)(now-gifDecoderOpenAt)>=0){
+    gifDecoderOpenPending=false;
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+    Serial.println("GIF FRESH DECODER START");
+    reportHeap("before fresh GIF open");
+#endif
+    if(!startGIF()){
+#if DEBUG_SERIAL
+      Serial.println("GIF PLAY OPEN failed");
+#endif
+      destroyGIFDecoder();
+      gifStoredOnFS=false;
+      gifSize=0;
+    } else {
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+      Serial.println("GIF PLAY START OK");
+      reportHeap("after fresh GIF open");
+#endif
+    }
+  }
 
   if(displayMode==DISPLAY_EFFECT) updateEffect();
   if(displayMode==DISPLAY_AUDIO){ static uint32_t lastAudioRender=0; if(now-lastAudioRender>=80){ lastAudioRender=now; renderAudio(); } }

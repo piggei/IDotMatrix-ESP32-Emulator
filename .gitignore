@@ -10,11 +10,8 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
-
 # Temporary files
 *.tmp
 *.bak
 *~
-
-# Windows alternate data stream sidecar files
 *Zone.Identifier
