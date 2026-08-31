@@ -152,6 +152,28 @@ The protocol documentation describes experimentally observed behavior. Some fiel
 
 iDotMatrix and any related trademarks belong to their respective owners. This project is not affiliated with, sponsored by, or endorsed by the original manufacturer.
 
+
+## Related projects and prior work
+
+Most existing open-source iDotMatrix projects implement the **client/controller side** of the protocol: they connect to original iDotMatrix hardware and send commands to it. This project approaches the protocol from the opposite direction: the ESP32 emulates the BLE peripheral itself, allowing the official mobile application to connect directly to the emulator.
+
+As far as we are aware, this is the first public ESP32 implementation that emulates an iDotMatrix BLE peripheral. If you know of an earlier device-side implementation, please let us know.
+
+Useful related projects include:
+
+- `derkalle4/python3-idotmatrix-client` — Python controller and early reverse-engineering work for 16x16/32x32 displays.
+- `8none1/idotmatrix` — protocol reverse engineering, including transfer framing and ACK behavior.
+- `dallanwagz/idotmatrix-ha` — Home Assistant integration tested against original 32x32 hardware.
+- `markusressel/idotmatrix-api-client` — modern Python API client for iDotMatrix displays.
+
+Our protocol findings were independently derived from the official app and ESP32 emulator, and are now being cross-checked against these implementations and hardware-derived captures. See [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md).
+
+## Multi-size testing wanted
+
+Build 62 is currently a **16x16 firmware target** and still contains 16x16-specific rendering assumptions. The BLE protocol itself appears to share many commands across the 16x16, 32x32 and possibly 64x64 product family.
+
+We are therefore looking for testers who own **32x32 or 64x64 WS2812B-compatible matrices**, and especially anyone who also owns an original iDotMatrix of the same size. Future builds will progressively remove hardcoded 16x16 assumptions and make matrix dimensions configurable.
+
 ## License
 
 This repository is released under the [MIT License](LICENSE).

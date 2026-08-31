@@ -1,5 +1,8 @@
 # iDotMatrix BLE Protocol - reverse-engineering notes
 
+> Cross-project validation and model comparison: see [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md).
+
+
 This document describes the protocol observed between the iDotMatrix app and the ESP32 emulator.
 
 Because no original device was available, the information comes from app traffic captures and differential tests: one app setting is changed at a time and the resulting packets are compared.

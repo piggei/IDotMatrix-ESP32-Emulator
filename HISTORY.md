@@ -1,5 +1,15 @@
 # HISTORY
 
+## Documentation update after Build 62
+
+- Added a real hardware photograph to the README and `assets/`.
+- Added `docs/PROTOCOL-COMPARISON.md` to cross-check independently derived findings against public client implementations and original-hardware research.
+- Documented the distinction between client/controller implementations and this project's BLE peripheral/server emulation approach.
+- Added independently corroborated ACK semantics (`0x01` intermediate/continue, `0x03` complete).
+- Added the multi-size 16x16 / 32x32 / 64x64 research roadmap and request for testers.
+- No firmware behavior changed; Build 62 remains the stable firmware baseline.
+
+
 Development history of the ESP32 iDotMatrix emulator.
 
 > Early builds were produced very iteratively during reverse engineering, and a reliable per-build history is not available for every number. Where the exact build number is not documented, this file describes the development period without inventing an attribution.

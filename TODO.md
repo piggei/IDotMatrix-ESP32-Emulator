@@ -120,3 +120,18 @@ When a new command is observed:
 2. document confirmed behavior in `PROTOCOL.md`;
 3. add unresolved questions here;
 4. update `HISTORY.md` when the behavior is implemented or corrected.
+
+## Multi-size matrix support
+
+- [ ] Remove remaining hardcoded 16x16 assumptions
+- [ ] Make framebuffer dimensions configurable
+- [ ] Make LED mapping dimension-independent
+- [ ] Adapt graphical renderers to matrix dimensions
+- [ ] Adapt GIF/PNG handling to matrix dimensions
+- [ ] Generate model-specific Device Info responses
+- [ ] Verify BLE protocol behavior on 32x32
+- [ ] Verify BLE protocol behavior on 64x64
+- [ ] Compare transfer/chunk limits between models and firmware versions
+- [ ] Test with a physical 32x32 WS2812B-compatible matrix
+- [ ] Test with original 32x32 iDotMatrix hardware
+- [ ] Test with original 64x64 iDotMatrix hardware
