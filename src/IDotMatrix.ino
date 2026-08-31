@@ -3,12 +3,13 @@
 
 // ======================================================
 // FIRMWARE BUILD ID
-// Increment for every delivered build: printed to Serial at startup
-// so the running firmware version is always unambiguous.
+// Incrementare ad ogni file consegnato: viene stampato
+// sulla seriale all'avvio per evitare dubbi sulla versione.
 // ======================================================
-#define FW_BUILD 62
+#define FW_BUILD 67
 #define PNG_DIAG_SERIAL 0
-#define SCHEDULE_VERBOSE_DEBUG 0
+#define TEXT_PROTOCOL_DEBUG 1
+#define BULK_PROTOCOL_DEBUG 1
 
 // Optional external RTC (DS3231 via RTClib).
 // Keep 0 when no RTC hardware is installed: alarms use BLE time sync.
@@ -58,13 +59,13 @@ uint8_t unknownCommandStored = 0;
 #endif
 
 // PNG Schedule: usiamo l'inflater miniz gia presente nella ROM/SDK ESP32,
-// This avoids requiring an external PNG library.
+// cosi non serve aggiungere una libreria PNG esterna.
 #if __has_include(<rom/miniz.h>)
   #include <rom/miniz.h>
 #elif __has_include(<miniz.h>)
   #include <miniz.h>
 #else
-  #error "miniz header not found: required for Schedule PNG support"
+  #error "miniz header non trovato: richiesto per i PNG Schedule"
 #endif
 #if RTC_ENABLED
   #include <Wire.h>
@@ -106,9 +107,35 @@ uint8_t unknownCommandStored = 0;
 
 #define DEVICE_NAME "IDM-858931"
 
-#define MATRIX_WIDTH   16
-#define MATRIX_HEIGHT  16
-#define NUM_LEDS       256
+// -----------------------------------------------------------------------------
+// iDotMatrix logical screen profile.
+// 1 = 16x16 (original development target)
+// 3 = 32x32 (HXS-002 / NL-XSD-32, hardware-validated by community captures)
+// The protocol/logical resolution is deliberately separated from the physical
+// LED matrix so a 32x32 device can be emulated while still using a 16x16 panel
+// as a downscaled preview.
+// -----------------------------------------------------------------------------
+#define IDOTMATRIX_SCREEN_TYPE  1
+
+#if IDOTMATRIX_SCREEN_TYPE == 1
+  #define MATRIX_WIDTH   16
+  #define MATRIX_HEIGHT  16
+#elif IDOTMATRIX_SCREEN_TYPE == 3
+  #define MATRIX_WIDTH   32
+  #define MATRIX_HEIGHT  32
+#else
+  #error "Unsupported IDOTMATRIX_SCREEN_TYPE (supported: 1=16x16, 3=32x32)"
+#endif
+
+#define NUM_LEDS       ((uint16_t)MATRIX_WIDTH * (uint16_t)MATRIX_HEIGHT)
+
+// Physical LED panel connected to the ESP32.
+// Keep these at 16x16 to emulate a 32x32 iDotMatrix with the existing matrix.
+// Set them to 32x32 when a real 32x32 WS2812B panel is connected.
+#define PHYSICAL_MATRIX_WIDTH   16
+#define PHYSICAL_MATRIX_HEIGHT  16
+#define PHYSICAL_NUM_LEDS       ((uint16_t)PHYSICAL_MATRIX_WIDTH * (uint16_t)PHYSICAL_MATRIX_HEIGHT)
+
 #define LED_TYPE       WS2812B
 #define COLOR_ORDER    GRB
 #define MATRIX_MIRROR_X 1
@@ -116,7 +143,7 @@ uint8_t unknownCommandStored = 0;
 // Abbassato come richiesto: 100% app = 64/255 FastLED.
 #define MAX_LED_BRIGHTNESS 50
 
-// Brightness persistence
+// Persistenza luminosita
 #define BRIGHTNESS_NVS_NAMESPACE "idotmatrix"
 #define BRIGHTNESS_NVS_KEY       "brightness"
 #define BRIGHTNESS_SAVE_DELAY_MS 1000UL
@@ -184,13 +211,10 @@ void loadBrightnessFromNVS() {
 
 #define MAX_PACKET_SIZE     8192
 #define MAX_TEXT_PAYLOAD    4096
-#define MAX_TEXT_GLYPHS     64
-#define TEXT_GLOBAL_HEADER  14
-#define TEXT_GLYPH_BYTES    20
-#define TEXT_GLYPH_META     7
-#define TEXT_GLYPH_ROWS     13
-#define TEXT_GLYPH_WIDTH    8
-#define TEXT_GLYPH_ADVANCE  8
+#define MAX_TEXT_GLYPHS        64
+#define TEXT_GLOBAL_HEADER     14
+#define TEXT_GLYPH_META        4   // marker + RGB; glyph bitmap follows
+#define TEXT_MAX_BITMAP_BYTES  64  // 16x32 glyph = 64 bytes
 #define MAX_GIF_SIZE        (128UL * 1024UL)
 #define MAX_EFFECT_COLORS   16
 
@@ -198,8 +222,16 @@ void loadBrightnessFromNVS() {
 // ALARMS
 // ======================================================
 #define ALARM_SLOT_COUNT       10
-#define ALARM_BUZZER_ENABLED   0
-#define ALARM_BUZZER_PIN       -1
+#define ALARM_BUZZER_ENABLED   1
+#define ALARM_BUZZER_PIN       18
+#define BUZZER_ACTIVE_HIGH     1
+
+// Active-buzzer trill pattern: 3 short beeps followed by a longer pause.
+// Fully non-blocking: BLE, animations and matrix refresh continue normally.
+#define BUZZER_PULSE_ON_MS       90UL
+#define BUZZER_PULSE_GAP_MS      70UL
+#define BUZZER_TRILL_PAUSE_MS   550UL
+#define BUZZER_TRILL_PULSES       3
 #define ALARM_MEDIA_BASE_ID    0x14
 #define ALARM_CONTENT_GIF      0x01
 #define ALARM_CONTENT_RAW      0x02
@@ -214,8 +246,8 @@ void loadBrightnessFromNVS() {
 #define SCHEDULE_CONTENT_IMAGE  0x02
 #define SCHEDULE_CONTENT_TEXT   0x03
 #define SCHEDULE_MEDIA_BASE_ID  0x1E
-#define SCHEDULE_BUZZER_ENABLED 0
-#define SCHEDULE_BUZZER_PIN     -1
+#define SCHEDULE_BUZZER_ENABLED 1
+#define SCHEDULE_BUZZER_PIN     ALARM_BUZZER_PIN
 
 
 
@@ -233,7 +265,7 @@ BLECharacteristic *ae01 = nullptr;
 BLECharacteristic *ae02 = nullptr;
 bool deviceConnected = false;
 
-CRGB leds[NUM_LEDS];
+CRGB leds[PHYSICAL_NUM_LEDS];
 CRGB framebuffer[NUM_LEDS];
 
 enum DisplayMode {
@@ -308,7 +340,11 @@ struct TextState {
   uint8_t backgroundMode = 0;
   uint8_t backgroundR = 0, backgroundG = 0, backgroundB = 0;
   uint8_t meta[MAX_TEXT_GLYPHS][TEXT_GLYPH_META];
-  uint8_t bitmap[MAX_TEXT_GLYPHS][TEXT_GLYPH_ROWS];
+  uint8_t bitmap[MAX_TEXT_GLYPHS][TEXT_MAX_BITMAP_BYTES];
+  uint8_t glyphWidth = 8;
+  uint8_t glyphHeight = 16;
+  uint8_t glyphBytes = 16;
+  uint8_t glyphAdvance = 8;
   int16_t offsetX = 0, offsetY = 1;
   uint32_t animationStart = 0;
   uint32_t lastFrame = 0;
@@ -348,9 +384,9 @@ struct AudioState {
 // ======================================================
 // FORWARD DECLARATIONS USED BY ALARM SUPPORT
 //
-// Alarm routines are defined before the GIF block.
-// Declaring symbols and functions here avoids relying on
-// Arduino IDE automatic prototype generation.
+// Le routine delle sveglie sono definite prima del blocco GIF.
+// Dichiarare qui simboli e funzioni evita di dipendere dalla
+// generazione automatica dei prototipi dell'IDE Arduino.
 // ======================================================
 extern uint8_t *gifData;
 extern size_t gifWriteOffset;
@@ -457,7 +493,7 @@ bool loadAlarmMedia(uint8_t slot){
   AlarmSlot &a=alarms[slot];
   File f=LittleFS.open(alarmFileName(slot),"r");
   if(!f || (uint32_t)f.size()!=a.mediaSize){ if(f)f.close(); return false; }
-  if(a.contentType==ALARM_CONTENT_RAW && a.mediaSize==768){
+  if(a.contentType==ALARM_CONTENT_RAW && a.mediaSize==(uint32_t)NUM_LEDS*3UL){
     uint8_t rgb[3];
     switchDisplayMode(DISPLAY_RAW);
     for(uint16_t i=0;i<NUM_LEDS;i++){ if(f.read(rgb,3)!=3){f.close();return false;} framebuffer[i]=CRGB(rgb[0],rgb[1],rgb[2]); }
@@ -472,14 +508,82 @@ bool loadAlarmMedia(uint8_t slot){
   f.close(); return false;
 }
 
+// ======================================================
+// ACTIVE BUZZER - NON-BLOCKING TRILL
+// ======================================================
+#if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
+static bool buzzerOutputOn = false;
+static bool buzzerPatternRunning = false;
+static uint8_t buzzerPulseIndex = 0;
+static uint32_t buzzerNextChangeAt = 0;
+
+static inline void setBuzzerOutput(bool on) {
+  buzzerOutputOn = on;
+  digitalWrite(ALARM_BUZZER_PIN,
+               on ? (BUZZER_ACTIVE_HIGH ? HIGH : LOW)
+                  : (BUZZER_ACTIVE_HIGH ? LOW : HIGH));
+}
+
+// Schedule state is defined later in the sketch; forward declarations are required here.
+extern uint8_t scheduleGlobalFlags;
+extern int8_t scheduleActiveIndex;
+
+static bool buzzerRequested() {
+  bool wanted = false;
+
+  if (alarmActive && activeAlarmSlot < ALARM_SLOT_COUNT)
+    wanted |= alarms[activeAlarmSlot].buzzer != 0;
+
+#if SCHEDULE_BUZZER_ENABLED && (SCHEDULE_BUZZER_PIN >= 0)
+  if (scheduleActiveIndex >= 0)
+    wanted |= (scheduleGlobalFlags & 0x02) != 0;
+#endif
+
+  return wanted;
+}
+
+void updateBuzzer() {
+  const bool wanted = buzzerRequested();
+  const uint32_t now = millis();
+
+  if (!wanted) {
+    if (buzzerPatternRunning || buzzerOutputOn) setBuzzerOutput(false);
+    buzzerPatternRunning = false;
+    buzzerPulseIndex = 0;
+    return;
+  }
+
+  if (!buzzerPatternRunning) {
+    buzzerPatternRunning = true;
+    buzzerPulseIndex = 0;
+    setBuzzerOutput(true);
+    buzzerNextChangeAt = now + BUZZER_PULSE_ON_MS;
+    return;
+  }
+
+  if ((int32_t)(now - buzzerNextChangeAt) < 0) return;
+
+  if (buzzerOutputOn) {
+    setBuzzerOutput(false);
+    ++buzzerPulseIndex;
+    buzzerNextChangeAt = now +
+      (buzzerPulseIndex >= BUZZER_TRILL_PULSES ? BUZZER_TRILL_PAUSE_MS
+                                               : BUZZER_PULSE_GAP_MS);
+  } else {
+    if (buzzerPulseIndex >= BUZZER_TRILL_PULSES) buzzerPulseIndex = 0;
+    setBuzzerOutput(true);
+    buzzerNextChangeAt = now + BUZZER_PULSE_ON_MS;
+  }
+}
+#else
+void updateBuzzer() {}
+#endif
+
 void startAlarm(uint8_t slot){
   if(slot>=ALARM_SLOT_COUNT || alarmActive) return;
   AlarmSlot &a=alarms[slot];
   alarmPreviousMode=displayMode;
   alarmActive=true; activeAlarmSlot=slot; alarmEndsAt=millis()+(uint32_t)a.durationSec*1000UL;
-#if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
-  digitalWrite(ALARM_BUZZER_PIN,a.buzzer?HIGH:LOW);
-#endif
   loadAlarmMedia(slot);
 #if DEBUG_SERIAL
   Serial.print("ALARM TRIGGER slot=");Serial.print(slot);Serial.print(" duration=");Serial.print(a.durationSec);Serial.print(" buzzer=");Serial.println(a.buzzer);
@@ -488,11 +592,8 @@ void startAlarm(uint8_t slot){
 
 void stopAlarm(){
   if(!alarmActive) return;
-#if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
-  digitalWrite(ALARM_BUZZER_PIN,LOW);
-#endif
   alarmActive=false; activeAlarmSlot=0xFF;
-  // If the content was a GIF, the previous GIF is no longer available: return to the clock.
+  // Se il contenuto era GIF, la precedente GIF non e' piu' disponibile: torniamo all'orologio.
   switchDisplayMode(DISPLAY_CLOCK); renderClock();
 }
 
@@ -522,7 +623,7 @@ bool processAlarmCommand(const uint8_t *data,size_t len){
   if(len<12 || data[2]!=0x00 || data[3]!=0x80) return false;
   uint8_t slot=data[4]; if(slot>=ALARM_SLOT_COUNT){sendCommandAck(0x00,0x80);return true;}
   AlarmSlot &a=alarms[slot];
-  // Short packet: update/disarm metadata without rewriting media.
+  // Pacchetto corto: aggiorna/disarma i metadati senza media.
   if(len<ALARM_HEADER_SIZE){
     a.configured=true; a.flags=data[5]; a.hour=data[6]; a.minute=data[7]; a.durationSec=data[8];
     if(len>9)a.reserved1=data[9]; if(len>10)a.contentType=data[10]; if(len>11)a.buzzer=data[11];
@@ -597,6 +698,8 @@ struct BulkTransferState {
 
 uint8_t textPayload[MAX_TEXT_PAYLOAD];
 size_t textPayloadReceived = 0;
+uint8_t *rawRgbData = nullptr;
+size_t rawRgbWriteOffset = 0;
 
 bool pendingDeviceInfoPush = false;
 uint32_t deviceInfoPushAt = 0;
@@ -642,8 +745,8 @@ uint16_t logicalIndex(uint8_t x, uint8_t y) {
 }
 
 uint16_t physicalXY(uint8_t x, uint8_t y) {
-  if ((y & 1) == 0) return (uint16_t)y * MATRIX_WIDTH + x;
-  return (uint16_t)y * MATRIX_WIDTH + MATRIX_WIDTH - 1 - x;
+  if ((y & 1) == 0) return (uint16_t)y * PHYSICAL_MATRIX_WIDTH + x;
+  return (uint16_t)y * PHYSICAL_MATRIX_WIDTH + PHYSICAL_MATRIX_WIDTH - 1 - x;
 }
 
 void clearFramebuffer(const CRGB &color = CRGB::Black) {
@@ -653,6 +756,26 @@ void clearFramebuffer(const CRGB &color = CRGB::Black) {
 void putPixel(int16_t x, int16_t y, const CRGB &c) {
   if (x < 0 || x >= MATRIX_WIDTH || y < 0 || y >= MATRIX_HEIGHT) return;
   framebuffer[logicalIndex((uint8_t)x, (uint8_t)y)] = c;
+}
+
+// Several hand-tuned clock/audio/scoreboard renderers were reconstructed on a
+// 16x16 reference canvas. Preserve their appearance on larger logical panels by
+// scaling that 16x16 artwork after it has been rendered. App-supplied media and
+// graffiti bypass this helper and therefore remain truly native-resolution.
+void scaleLegacy16CanvasToLogical() {
+  if (MATRIX_WIDTH == 16 && MATRIX_HEIGHT == 16) return;
+  CRGB base[16 * 16];
+  for (uint8_t y=0; y<16; y++)
+    for (uint8_t x=0; x<16; x++)
+      base[(uint16_t)y*16+x] = (x<MATRIX_WIDTH && y<MATRIX_HEIGHT) ? framebuffer[logicalIndex(x,y)] : CRGB::Black;
+
+  for (uint8_t y=0; y<MATRIX_HEIGHT; y++) {
+    const uint8_t sy=(uint16_t)y*16U/MATRIX_HEIGHT;
+    for (uint8_t x=0; x<MATRIX_WIDTH; x++) {
+      const uint8_t sx=(uint16_t)x*16U/MATRIX_WIDTH;
+      framebuffer[logicalIndex(x,y)] = base[(uint16_t)sy*16+sx];
+    }
+  }
 }
 
 void setStatusLed(bool on) {
@@ -701,17 +824,23 @@ void refreshMatrix() {
     return;
   }
   FastLED.clear();
-  for (uint8_t y = 0; y < MATRIX_HEIGHT; y++) {
-    for (uint8_t x = 0; x < MATRIX_WIDTH; x++) {
-      uint8_t px = x, py = y;
+  // Render the logical iDotMatrix framebuffer onto the actually connected
+  // matrix. If the sizes differ (e.g. logical 32x32 on physical 16x16), use
+  // nearest-neighbour down/up-sampling. This is intentionally only a preview:
+  // the BLE protocol still exposes the full logical resolution to the app.
+  for (uint8_t py = 0; py < PHYSICAL_MATRIX_HEIGHT; py++) {
+    for (uint8_t px = 0; px < PHYSICAL_MATRIX_WIDTH; px++) {
+      uint8_t outX = px, outY = py;
 #if MATRIX_MIRROR_X
-      px = MATRIX_WIDTH - 1 - px;
+      outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
 #endif
       if (flipped180) {
-        px = MATRIX_WIDTH - 1 - px;
-        py = MATRIX_HEIGHT - 1 - py;
+        outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
+        outY = PHYSICAL_MATRIX_HEIGHT - 1 - outY;
       }
-      leds[physicalXY(px, py)] = framebuffer[logicalIndex(x, y)];
+      const uint8_t sx = (uint16_t)px * MATRIX_WIDTH / PHYSICAL_MATRIX_WIDTH;
+      const uint8_t sy = (uint16_t)py * MATRIX_HEIGHT / PHYSICAL_MATRIX_HEIGHT;
+      leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(sx, sy)];
     }
   }
   FastLED.setBrightness(brightnessToFastLED(effectiveBrightnessPercent()));
@@ -738,7 +867,7 @@ void sendCommandAck(uint8_t cmd, uint8_t sub) { sendCommandStatus(cmd, sub, 0x01
 void sendTransferAck(uint8_t type, uint8_t status) { sendCommandStatus(type, 0x00, status); }
 
 void sendDeviceInfo() {
-  uint8_t r[] = {0x09,0x00,0x01,0x80,0x04,0x0E,0x01,0x01,0x00};
+  uint8_t r[] = {0x09,0x00,0x01,0x80,0x04,0x0E,0x01,IDOTMATRIX_SCREEN_TYPE,0x00};
   sendFA03(r, sizeof(r));
 }
 
@@ -788,14 +917,14 @@ void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool 
 
 // ======================================================
 // CLOCK STYLES - ricostruiti dal video dell'app.
-// 0 rainbow frame + digits in selected color
+// 0 rainbow frame + cifre colore selezionato
 // 1 Christmas: rosso + albero verde
 // 2 racing/checker: cyan/magenta, cifre arancio
-// 3 selected-color background, black digits
-// 4 hourglass: selected-color digits + orange/white hourglass
+// 3 fondo colore selezionato, cifre nere
+// 4 hourglass: cifre colore selezionato + clessidra arancio/bianca
 // 5 frame cyan/blue + cifre arancio
-// 6 cyan/blue frame + digits in selected color
-// 7 RGBY quadrant frame + digits in selected color
+// 6 frame cyan/blue + cifre colore selezionato
+// 7 frame quadranti RGBY + cifre colore selezionato
 // ======================================================
 void drawRainbowBorder() {
   uint8_t hue = (millis()/20) & 0xFF;
@@ -824,20 +953,20 @@ void drawChristmasTree() {
 }
 
 void drawCheckerRows() {
-  // Video style 3: THREE SOLID BANDS at top and bottom.
-  // Outer = cyan, middle = violet, inner = fuchsia.
-  // They are not segmented/checkered: each row is continuous.
+  // Stile 3 del video: TRE BANDE PIENE sopra e sotto.
+  // Esterna = azzurro, centrale = viola, interna = fuxia.
+  // Non sono segmentate/scacchiera: ogni riga e' continua.
   const CRGB cyan(0,255,255);
   const CRGB violet(145,0,255);
   const CRGB fuchsia(255,0,170);
 
   for (uint8_t x=0; x<16; x++) {
-    // top
+    // sopra
     putPixel(x,0,cyan);
     putPixel(x,1,violet);
     putPixel(x,2,fuchsia);
 
-    // bottom, mirrored
+    // sotto, speculare
     putPixel(x,13,fuchsia);
     putPixel(x,14,violet);
     putPixel(x,15,cyan);
@@ -848,7 +977,7 @@ void drawFrameStyle5(bool cornerBlocks) {
   CRGB cyan(0,255,255), blue(0,70,255);
 
   if (cornerBlocks) {
-    // Previous style: cyan frame with blue corner blocks.
+    // Stile precedente: cornice azzurra con blocchi blu agli angoli.
     for (uint8_t x=2;x<=13;x++) { putPixel(x,1,cyan); putPixel(x,14,cyan); }
     for (uint8_t y=2;y<=13;y++) { putPixel(1,y,cyan); putPixel(14,y,cyan); }
     for (uint8_t y=0;y<3;y++) for (uint8_t x=0;x<3;x++) {
@@ -951,9 +1080,9 @@ void renderClock() {
       drawTimeTwoRows(h,m,orange,orange,true);
       break;
     }
-    case 6: { // double frame: blue outer + cyan inner
-      // Draw digits first and frames afterward, so both borders
-      // always remain complete and cannot be overwritten.
+    case 6: { // doppia cornice: blu esterna + azzurra interna
+      // Disegniamo prima le cifre e POI le cornici, cosi' i due bordi
+      // restano sempre completi e non possono essere sovrascritti.
       drawTimeTwoRows(h,m,clockColor,clockColor,true);
       drawFrameStyle5(false);
       break;
@@ -965,6 +1094,7 @@ void renderClock() {
     }
   }
 
+  scaleLegacy16CanvasToLogical();
   refreshMatrix();
 }
 
@@ -976,6 +1106,7 @@ void renderMMSS(uint32_t sec, const CRGB &c) {
   clearFramebuffer();
   drawDigit3x5(mm/10,0,5,c); drawDigit3x5(mm%10,3,5,c); drawColon(7,5,c);
   drawDigit3x5(ss/10,9,5,c); drawDigit3x5(ss%10,12,5,c);
+  scaleLegacy16CanvasToLogical();
   refreshMatrix();
 }
 
@@ -990,6 +1121,7 @@ void renderScoreboard() {
   drawScore2Digit(scoreA,0,5,CRGB::Blue);
   drawColon(7,5,CRGB::White);
   drawScore2Digit(scoreB,9,5,CRGB::Red);
+  scaleLegacy16CanvasToLogical();
   refreshMatrix();
 }
 
@@ -1006,15 +1138,18 @@ CRGB getTextPixelColor(int16_t x, int16_t y) {
 }
 
 bool isTextPixel(uint8_t glyph,uint8_t row,uint8_t col) {
-  if (glyph>=textState.glyphCount || row>=TEXT_GLYPH_ROWS || col>=TEXT_GLYPH_WIDTH) return false;
-  return textState.bitmap[glyph][row] & (1 << col); // bit0 = sinistra
+  if (glyph>=textState.glyphCount || row>=textState.glyphHeight || col>=textState.glyphWidth) return false;
+  const uint8_t bytesPerRow=(textState.glyphWidth+7)/8;
+  const uint16_t off=(uint16_t)row*bytesPerRow+(col>>3);
+  if(off>=textState.glyphBytes) return false;
+  return textState.bitmap[glyph][off] & (1U << (col & 7)); // LSB = leftmost pixel in each byte
 }
 
 void drawTextGlyphs(uint8_t scale=255,int16_t laserRow=-1) {
   for (uint8_t g=0;g<textState.glyphCount;g++) {
-    int16_t gx=textState.offsetX+(int16_t)g*TEXT_GLYPH_ADVANCE;
+    int16_t gx=textState.offsetX+(int16_t)g*textState.glyphAdvance;
     int16_t gy=textState.offsetY;
-    for (uint8_t row=0;row<TEXT_GLYPH_ROWS;row++) for (uint8_t col=0;col<TEXT_GLYPH_WIDTH;col++) {
+    for (uint8_t row=0;row<textState.glyphHeight;row++) for (uint8_t col=0;col<textState.glyphWidth;col++) {
       if (!isTextPixel(g,row,col)) continue;
       int16_t px=gx+col, py=gy+row;
       CRGB c=getTextPixelColor(px,py);
@@ -1037,13 +1172,13 @@ void renderTextFrame() {
     case 7: {
       drawTextGlyphs();
       uint16_t ph=e/100;
-      for(uint8_t i=0;i<8;i++) putPixel((i*5+i*i*3)%16,(ph+i*3)%16,CRGB::White);
+      for(uint8_t i=0;i<8;i++) putPixel((i*5+i*i*3)%MATRIX_WIDTH,(ph+i*3)%MATRIX_HEIGHT,CRGB::White);
       break;
     }
     case 8: {
-      int16_t lr=(e/70)%16;
+      int16_t lr=(e/70)%MATRIX_HEIGHT;
       drawTextGlyphs(110,lr);
-      for(uint8_t x=0;x<16;x++){ CRGB c=CRGB::Red; c.nscale8_video(120); putPixel(x,lr,c); }
+      for(uint8_t x=0;x<MATRIX_WIDTH;x++){ CRGB c=CRGB::Red; c.nscale8_video(120); putPixel(x,lr,c); }
       break;
     }
   }
@@ -1056,13 +1191,14 @@ uint16_t textFrameInterval() {
 }
 
 void resetTextPosition() {
-  int tw=textState.glyphCount*TEXT_GLYPH_ADVANCE;
+  int tw=textState.glyphCount*textState.glyphAdvance;
+  int16_t centeredY=max((int16_t)0,(int16_t)(MATRIX_HEIGHT-textState.glyphHeight)/2);
   switch(textState.motionEffect){
-    case 1:textState.offsetX=16;textState.offsetY=1;break;
-    case 2:textState.offsetX=-tw;textState.offsetY=1;break;
-    case 3:textState.offsetX=0;textState.offsetY=16;break;
-    case 4:textState.offsetX=0;textState.offsetY=-TEXT_GLYPH_ROWS;break;
-    default:textState.offsetX=0;textState.offsetY=1;break;
+    case 1:textState.offsetX=MATRIX_WIDTH;textState.offsetY=centeredY;break;
+    case 2:textState.offsetX=-tw;textState.offsetY=centeredY;break;
+    case 3:textState.offsetX=0;textState.offsetY=MATRIX_HEIGHT;break;
+    case 4:textState.offsetX=0;textState.offsetY=-textState.glyphHeight;break;
+    default:textState.offsetX=0;textState.offsetY=centeredY;break;
   }
   textState.animationStart=millis(); textState.lastFrame=0;
 }
@@ -1074,31 +1210,57 @@ void updateTextAnimation() {
   if(textState.motionEffect>=5 || textState.colorMode>=2) interval=min((uint16_t)45,interval);
   if(now-textState.lastFrame<interval) return;
   textState.lastFrame=now;
-  int tw=textState.glyphCount*TEXT_GLYPH_ADVANCE;
+  int tw=textState.glyphCount*textState.glyphAdvance;
   switch(textState.motionEffect){
-    case 1: if(--textState.offsetX < -tw) textState.offsetX=16; break;
-    case 2: if(++textState.offsetX > 16) textState.offsetX=-tw; break;
-    case 3: if(--textState.offsetY < -TEXT_GLYPH_ROWS) textState.offsetY=16; break;
-    case 4: if(++textState.offsetY > 16) textState.offsetY=-TEXT_GLYPH_ROWS; break;
+    case 1: if(--textState.offsetX < -tw) textState.offsetX=MATRIX_WIDTH; break;
+    case 2: if(++textState.offsetX > MATRIX_WIDTH) textState.offsetX=-tw; break;
+    case 3: if(--textState.offsetY < -(int16_t)textState.glyphHeight) textState.offsetY=MATRIX_HEIGHT; break;
+    case 4: if(++textState.offsetY > MATRIX_HEIGHT) textState.offsetY=-textState.glyphHeight; break;
   }
   renderTextFrame();
 }
 
+// TEXT glyph records observed from the official app on the 32x32 profile:
+// marker 0x02: 8x16 bitmap,  4-byte meta + 16 bitmap bytes = 20 bytes/glyph
+// marker 0x05: 16x32 bitmap, 4-byte meta + 64 bitmap bytes = 68 bytes/glyph
+// SimSun/SimHei are rasterized by the app: no device-side font selection is required.
 void parseTextPayload(const uint8_t *data,size_t len) {
   if(len<TEXT_GLOBAL_HEADER) return;
-  uint8_t n=data[0];
-  size_t need=TEXT_GLOBAL_HEADER+(size_t)n*TEXT_GLYPH_BYTES;
+  uint8_t requested=data[0];
+  uint8_t n=min(requested,(uint8_t)MAX_TEXT_GLYPHS);
+  if(!n) return;
+
+  // Determine glyph format from the first record. Mixed-size records have not been observed.
+  const uint8_t marker=data[TEXT_GLOBAL_HEADER];
+  uint8_t glyphWidth=0,glyphHeight=0,glyphBytes=0;
+  if(marker==0x02 || marker==0x03){ glyphWidth=8; glyphHeight=16; glyphBytes=16; }
+  else if(marker==0x05 || marker==0x06){ glyphWidth=16; glyphHeight=32; glyphBytes=64; }
+  else {
+#if DEBUG_SERIAL
+    Serial.print("TEXT unsupported glyph marker 0x"); Serial.println(marker,HEX);
+#endif
+    return;
+  }
+  const size_t recordBytes=TEXT_GLYPH_META+glyphBytes;
+  const size_t need=TEXT_GLOBAL_HEADER+(size_t)requested*recordBytes;
   if(len<need) return;
-  n=min((uint8_t)MAX_TEXT_GLYPHS,n);
+
   textState.valid=true; textState.glyphCount=n;
+  textState.glyphWidth=glyphWidth; textState.glyphHeight=glyphHeight;
+  textState.glyphBytes=glyphBytes; textState.glyphAdvance=glyphWidth;
   textState.motionEffect=data[4]; textState.speed=data[5]; textState.colorMode=data[6];
   textState.colorR=data[7]; textState.colorG=data[8]; textState.colorB=data[9];
   textState.backgroundMode=data[10]; textState.backgroundR=data[11]; textState.backgroundG=data[12]; textState.backgroundB=data[13];
   for(uint8_t g=0;g<n;g++){
-    size_t base=TEXT_GLOBAL_HEADER+(size_t)g*TEXT_GLYPH_BYTES;
+    size_t base=TEXT_GLOBAL_HEADER+(size_t)g*recordBytes;
     for(uint8_t i=0;i<TEXT_GLYPH_META;i++) textState.meta[g][i]=data[base+i];
-    for(uint8_t r=0;r<TEXT_GLYPH_ROWS;r++) textState.bitmap[g][r]=data[base+TEXT_GLYPH_META+r];
+    memset(textState.bitmap[g],0,TEXT_MAX_BITMAP_BYTES);
+    memcpy(textState.bitmap[g],data+base+TEXT_GLYPH_META,glyphBytes);
   }
+#if DEBUG_SERIAL
+  Serial.print("TEXT glyphs=");Serial.print(n);Serial.print(" size=");Serial.print(glyphWidth);Serial.print('x');Serial.print(glyphHeight);
+  Serial.print(" marker=0x");Serial.println(marker,HEX);
+#endif
   resetTextPosition(); switchDisplayMode(DISPLAY_TEXT); renderTextFrame();
 }
 
@@ -1116,16 +1278,16 @@ CRGB effectPaletteGradient(uint8_t p){
   return blend(effectState.colors[idx%effectState.colorCount],effectState.colors[(idx+1)%effectState.colorCount],frac);
 }
 
-// Slower speed than the previous build.
+// Velocita' rallentata rispetto alla build precedente.
 uint16_t effectFrameInterval(){
   uint8_t s=min((uint8_t)100,effectState.speed);
 
-  // Effect 6 is a true per-pixel cross-fade: to make it visible
-  // smoothly, frequent refresh is required even when the speed
-  // selected in the app is very low (e.g. speed=5).
+  // L'effetto 6 e' un vero cross-fade per-pixel: per vederlo
+  // fluido serve un refresh frequente anche quando la velocita'
+  // impostata nell'app e' molto bassa (es. speed=5).
   if(effectState.effect==6) return 40;
 
-  // Other effects intentionally remain slower.
+  // Gli altri effetti restano volutamente piu' lenti.
   return map(s,0,100,360,70);
 }
 
@@ -1138,8 +1300,8 @@ uint32_t effectHash(uint32_t v){ v^=v>>16; v*=0x7FEB352DUL; v^=v>>15; v*=0x846CA
 
 void renderEffect0(){
   uint32_t ph=effectPhase()/4;
-  for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++) {
-    // Long gradient: roughly 10+ pixels per color transition.
+  for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++) {
+    // Gradiente lungo: circa 10+ pixel per transizione colore.
     uint8_t pos=(uint8_t)((y*5 + x + ph)/3);
     framebuffer[logicalIndex(x,y)]=effectPaletteGradient(pos);
   }
@@ -1149,7 +1311,7 @@ void renderEffect1(){
   clearFramebuffer(); uint32_t frame=effectPhase()/8;
   for(uint8_t i=0;i<22;i++){
     uint32_t h=effectHash((uint32_t)i*173UL+frame*31UL);
-    uint8_t x=h&15,y=(h>>4)&15;
+    uint8_t x=(uint8_t)(h%MATRIX_WIDTH),y=(uint8_t)((h>>8)%MATRIX_HEIGHT);
     CRGB c=getEffectColor((h>>8)%max((uint8_t)1,effectState.colorCount));
     c.nscale8_video(100+((h>>16)&0x9F)); putPixel(x,y,c);
   }
@@ -1158,7 +1320,7 @@ void renderEffect1(){
 void renderEffect2(){
   uint32_t ph=effectPhase()/3;
   // Fondo: fading continuo fra i colori.
-  for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++){
+  for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
     uint8_t pos=(uint8_t)(ph+x*2+y*2);
     CRGB c=effectPaletteGradient(pos); c.nscale8_video(190);
     framebuffer[logicalIndex(x,y)]=c;
@@ -1167,7 +1329,7 @@ void renderEffect2(){
   uint32_t frame=ph/4;
   for(uint8_t i=0;i<18;i++){
     uint32_t h=effectHash((uint32_t)i*223UL+frame*19UL);
-    putPixel(h&15,(h>>4)&15,CRGB::White);
+    putPixel((uint8_t)(h%MATRIX_WIDTH),(uint8_t)((h>>8)%MATRIX_HEIGHT),CRGB::White);
   }
 }
 
@@ -1177,7 +1339,7 @@ void renderEffect3(){
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
   const uint8_t stripeWidth=4;
-  for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++)
+  for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++)
     framebuffer[logicalIndex(x,y)]=getEffectColor(((x+ph)/stripeWidth)%count);
 }
 
@@ -1187,7 +1349,7 @@ void renderEffect4(){
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
   const uint8_t stripeWidth=4;
-  for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++)
+  for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++)
     framebuffer[logicalIndex(x,y)]=getEffectColor(((x+y+ph)/stripeWidth)%count);
 }
 
@@ -1197,16 +1359,16 @@ void renderEffect5(){
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
   const uint8_t colorWidth=5, blackWidth=4, block=colorWidth+blackWidth;
-  for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++){
+  for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
     uint16_t d=x+y+ph; uint8_t within=d%block;
     if(within<colorWidth) putPixel(x,y,getEffectColor((d/block)%count));
   }
 }
 
 void renderEffect6(){
-  // UI effect 7: each pixel keeps its own phase and FADE
-  // actually moves from one color to the next. There is no
-  // instantaneous color replacement.
+  // Effetto 7 UI: ogni pixel mantiene la propria fase e FADE
+  // realmente da un colore al successivo. Non esiste alcuna
+  // sostituzione istantanea del colore.
   const uint8_t count=max((uint8_t)1,effectState.colorCount);
 
   if(count==1){
@@ -1214,22 +1376,22 @@ void renderEffect6(){
     return;
   }
 
-  // In the app speed=5 is slow. At that speed a single
-  // transition lasts about 5.7 seconds; speed=100 drops to 700 ms.
-  // With a 40 ms update interval the fade has many steps and should look
-  // clearly continuous even at minimum speed.
+  // Nell'app speed=5 e' lento. A quella velocita' un singolo
+  // passaggio dura circa 5.7 secondi; speed=100 scende a 700 ms.
+  // Con update ogni 40 ms il fade ha molti step e deve risultare
+  // chiaramente continuo anche a velocita' minima.
   const uint8_t sp=constrain(effectState.speed,0,100);
   const uint32_t fadeMs=map(sp,0,100,6000,700);
   const uint32_t elapsed=millis()-effectState.startMillis;
   const uint32_t cycleMs=fadeMs*(uint32_t)count;
 
-  for(uint8_t y=0;y<16;y++){
-    for(uint8_t x=0;x<16;x++){
-      const uint16_t i=(uint16_t)y*16+x;
+  for(uint8_t y=0;y<MATRIX_HEIGHT;y++){
+    for(uint8_t x=0;x<MATRIX_WIDTH;x++){
+      const uint16_t i=(uint16_t)y*MATRIX_WIDTH+x;
       const uint32_t seed=effectHash((uint32_t)i*977UL+0x51EDUL);
 
-      // Each pixel starts at a different point of the same
-      // continuous palette cycle.
+      // Ogni pixel parte da un punto diverso dello stesso ciclo
+      // continuo della palette.
       const uint32_t local=(elapsed+(seed%cycleMs))%cycleMs;
       const uint8_t a=(uint8_t)(local/fadeMs);
       const uint8_t b=(uint8_t)((a+1)%count);
@@ -1296,15 +1458,15 @@ bool allocateGIF(size_t size){
 
 void GIFDraw(GIFDRAW *pDraw){
   if(!pDraw) return; gifFrameWasDrawn=true;
-  int y=pDraw->iY+pDraw->y; if(y<0||y>=16) return;
-  int width=pDraw->iWidth; if(pDraw->iX+width>16) width=16-pDraw->iX; if(width<=0) return;
+  int y=pDraw->iY+pDraw->y; if(y<0||y>=MATRIX_HEIGHT) return;
+  int width=pDraw->iWidth; if(pDraw->iX+width>MATRIX_WIDTH) width=MATRIX_WIDTH-pDraw->iX; if(width<=0) return;
   uint8_t *pixels=pDraw->pPixels; uint16_t *palette=pDraw->pPalette; if(!palette) return;
   if(pDraw->ucDisposalMethod==2){
     for(int x=0;x<width;x++) if(pixels[x]==pDraw->ucTransparent) pixels[x]=pDraw->ucBackground;
     pDraw->ucHasTransparency=0;
   }
   for(int x=0;x<width;x++){
-    int sx=pDraw->iX+x; if(sx<0||sx>=16) continue;
+    int sx=pDraw->iX+x; if(sx<0||sx>=MATRIX_WIDTH) continue;
     uint8_t pi=pixels[x]; if(pDraw->ucHasTransparency && pi==pDraw->ucTransparent) continue;
     uint16_t rgb=palette[pi];
     uint8_t r=((rgb>>11)&0x1F)*255/31, g=((rgb>>5)&0x3F)*255/63, b=(rgb&0x1F)*255/31;
@@ -1335,7 +1497,12 @@ void updateGIF(){
 // BULK
 // ======================================================
 bool startsWithGIF(const uint8_t *data,size_t len){ return len>=6 && (!memcmp(data,"GIF87a",6)||!memcmp(data,"GIF89a",6)); }
-void resetBulkTransfer(){ bulk=BulkTransferState(); textPayloadReceived=0; }
+void resetBulkTransfer(){
+  bulk=BulkTransferState();
+  textPayloadReceived=0;
+  if(rawRgbData){ free(rawRgbData); rawRgbData=nullptr; }
+  rawRgbWriteOffset=0;
+}
 
 bool processBulkPacket(const uint8_t *data,size_t len){
   if(len<16 || data[3]!=0x00 || data[2]>0x03) return false;
@@ -1347,20 +1514,28 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   if(!bulk.active){
     resetBulkTransfer(); bulk.active=true; bulk.dataType=type; bulk.expectedSize=total; bulk.expectedCRC=crc; bulk.runningCRC=0xFFFFFFFF;
     if(startsWithGIF(payload,payloadSize)) bulk.format="GIF";
-    else if(type==2&&total==768) bulk.format="RAW RGB 16x16";
+    else if(type==2&&total==(uint32_t)NUM_LEDS*3UL) bulk.format="RAW RGB";
     else if(type==3) bulk.format="TEXT";
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+    Serial.print("BULK BEGIN type="); Serial.print(type);
+    Serial.print(" total="); Serial.print(total);
+    Serial.print(" firstPayload="); Serial.print(payloadSize);
+    Serial.print(" format="); Serial.println(bulk.format.length() ? bulk.format : "UNKNOWN");
+#endif
     if(type==1 && !allocateGIF(total)){ resetBulkTransfer(); sendTransferAck(type,0x03); return true; }
+    if(type==2 && bulk.format=="RAW RGB"){
+      rawRgbData=(uint8_t*)malloc(total);
+      if(!rawRgbData){ resetBulkTransfer(); sendTransferAck(type,0x03); return true; }
+      rawRgbWriteOffset=0;
+    }
   }
   if(type!=bulk.dataType){ resetBulkTransfer(); return true; }
   uint32_t remain=bulk.expectedSize-bulk.receivedSize; size_t useful=min((size_t)remain,payloadSize);
   bulk.runningCRC=crc32Update(bulk.runningCRC,payload,useful);
   if(type==1 && gifData && gifWriteOffset+useful<=gifSize){ ::memcpy(gifData+gifWriteOffset,payload,useful); gifWriteOffset+=useful; }
-  if(bulk.format=="RAW RGB 16x16" && bulk.receivedSize==0 && useful>=768){
-    switchDisplayMode(DISPLAY_RAW);
-    for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++){
-      uint16_t p=(uint16_t)y*16+x, o=p*3; framebuffer[logicalIndex(x,y)]=CRGB(payload[o],payload[o+1],payload[o+2]);
-    }
-    refreshMatrix();
+  if(type==2 && rawRgbData && rawRgbWriteOffset+useful<=bulk.expectedSize){
+    ::memcpy(rawRgbData+rawRgbWriteOffset,payload,useful);
+    rawRgbWriteOffset+=useful;
   }
   if(type==3){
     size_t off=bulk.receivedSize;
@@ -1369,8 +1544,29 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   bulk.receivedSize+=useful; bulk.chunkCount++;
   if(bulk.receivedSize>=bulk.expectedSize){
     bool ok=((bulk.runningCRC^0xFFFFFFFF)==bulk.expectedCRC);
+#if DEBUG_SERIAL && TEXT_PROTOCOL_DEBUG
+    if(type==3){
+      Serial.print("TEXT RX COMPLETE len="); Serial.print(textPayloadReceived);
+      Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
+    }
+#endif
     if(type==3 && ok && textPayloadReceived) parseTextPayload(textPayload,textPayloadReceived);
     if(type==1){ if(ok && gifWriteOffset==gifSize) startGIF(); else freeGIF(); }
+    if(type==2 && ok && rawRgbData && rawRgbWriteOffset==bulk.expectedSize){
+      switchDisplayMode(DISPLAY_RAW);
+      for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
+        const uint16_t pix=(uint16_t)y*MATRIX_WIDTH+x;
+        const uint32_t o=(uint32_t)pix*3UL;
+        framebuffer[logicalIndex(x,y)]=CRGB(rawRgbData[o],rawRgbData[o+1],rawRgbData[o+2]);
+      }
+      refreshMatrix();
+    }
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+    Serial.print("BULK END type="); Serial.print(type);
+    Serial.print(" total="); Serial.print(bulk.receivedSize);
+    Serial.print(" chunks="); Serial.print(bulk.chunkCount);
+    Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
+#endif
     sendTransferAck(type,0x03); resetBulkTransfer();
   } else sendTransferAck(type,0x01);
   return true;
@@ -1695,6 +1891,7 @@ void renderAudio() {
       default: renderAudioFFT3(audioState.bands); break;             // FFT 5 validated
     }
   }
+  scaleLegacy16CanvasToLogical();
   refreshMatrix();
 }
 
@@ -1856,7 +2053,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
   if(len>=10 && cmd==0x05 && sub==0x01){
     switchDisplayMode(DISPLAY_GRAFFITI);
     uint8_t r=data[5],g=data[6],b=data[7];
-    for(size_t i=8;i+1<len;i+=2){ uint8_t x=data[i],y=data[i+1]; if(x<16&&y<16) framebuffer[logicalIndex(x,y)]=CRGB(r,g,b); }
+    for(size_t i=8;i+1<len;i+=2){ uint8_t x=data[i],y=data[i+1]; if(x<MATRIX_WIDTH&&y<MATRIX_HEIGHT) framebuffer[logicalIndex(x,y)]=CRGB(r,g,b); }
     refreshMatrix(); return;
   }
 
@@ -1870,7 +2067,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
   unknownCommandStored = (uint8_t)min(len, (size_t)OLED_UNKNOWN_BYTES);
   for (uint8_t i=0; i<unknownCommandStored; i++) unknownCommandData[i]=data[i];
 #if DEBUG_SERIAL
-  Serial.print("UNHANDLED COMMAND [");Serial.print(len);Serial.print("]: ");dumpHex(data,len);
+  Serial.print("COMANDO NON GESTITO [");Serial.print(len);Serial.print("]: ");dumpHex(data,len);
 #endif
   sendCommandAck(cmd,sub);
 }
@@ -1941,14 +2138,14 @@ void resetRuntimeState(){
 
 // -----------------------------------------------------------------------------
 // PROGRAM / SCHEDULE - BUILD 44
-// The app stores programs; the device stores only the active schedule.
-// 07 80 -> global state (bit0 enabled, bit1 sound), ACK=01
-// 05 80 -> complete activity, ACK=03
-// A new list is received into staging and committed after a short timeout.
+// L'app conserva i programmi; il device conserva solamente la schedule attiva.
+// 07 80 -> stato globale (bit0 enabled, bit1 sound), ACK=01
+// 05 80 -> attivita completa, ACK=03
+// Una nuova lista viene ricevuta in staging e committata dopo un breve timeout.
 // -----------------------------------------------------------------------------
 struct ScheduleActivity {
   bool configured = false;
-  uint8_t flags = 0;            // bit0 enabled, bit1..7 Mon..Sun
+  uint8_t flags = 0;            // bit0 enabled, bit1..7 lun..dom
   uint8_t startHour = 0;
   uint8_t startMinute = 0;
   uint8_t endHour = 0;
@@ -1969,7 +2166,7 @@ bool scheduleUploadDirty = false;
 uint32_t scheduleLastRxMs = 0;
 uint32_t scheduleReceivedMask = 0;
 int8_t scheduleActiveIndex = -1;
-int8_t scheduleFailedIndex = -1;  // avoid continuous retries when media cannot be decoded
+int8_t scheduleFailedIndex = -1;  // evita retry continuo se un media non viene decodificato
 DisplayMode schedulePreviousMode = DISPLAY_CLOCK;
 CRGB scheduleSavedFrame[NUM_LEDS];
 
@@ -2093,15 +2290,16 @@ static inline uint8_t pngPaeth(uint8_t a, uint8_t b, uint8_t c) {
   return c;
 }
 
-// Intentionally small decoder: the format observed from the app is 16x16 PNG,
-// 8-bit, non-interlaced. Supports RGB (type 2) and RGBA (type 6).
-// DEFLATE decompression is performed by ESP32 miniz.
+// Small PNG decoder for app-supplied Schedule images. The expected image
+// dimensions follow the selected logical iDotMatrix profile. Supports 8-bit,
+// non-interlaced RGB (type 2) and RGBA (type 6).
+// La decompressione DEFLATE viene eseguita dal miniz dell'ESP32.
 bool decodeSchedulePNG(File &f, uint32_t fileSize) {
 #if PNG_DIAG_SERIAL
   Serial.print("P0 n="); Serial.print(fileSize);
   Serial.print(" h="); Serial.println(ESP.getFreeHeap());
 #endif
-  if (!f || fileSize < 33 || fileSize > 8192) { PDBGLN("PF0"); return false; }
+  if (!f || fileSize < 33 || fileSize > 65536UL) { PDBGLN("PF0"); return false; }
 
   uint8_t *png = (uint8_t*)malloc(fileSize);
   if (!png) { PDBGLN("PF1"); return false; }
@@ -2131,7 +2329,7 @@ bool decodeSchedulePNG(File &f, uint32_t fileSize) {
   Serial.print("P1 "); Serial.print(w); Serial.print('x'); Serial.print(h);
   Serial.print(" ct="); Serial.print(colorType); Serial.print(" z="); Serial.println(idatBytes);
 #endif
-  if (w != 16 || h != 16 || depth != 8 || comp != 0 || filterMethod != 0 ||
+  if (w != MATRIX_WIDTH || h != MATRIX_HEIGHT || depth != 8 || comp != 0 || filterMethod != 0 ||
       interlace != 0 || (colorType != 2 && colorType != 6) || !idatBytes) {
     free(png); PDBGLN("PF6"); return false;
   }
@@ -2160,7 +2358,7 @@ bool decodeSchedulePNG(File &f, uint32_t fileSize) {
   Serial.println("P3 inflate");
   Serial.flush();
 #endif
-  // IMPORTANT: do not use tinfl_decompress_mem_to_mem() here. That wrapper
+  // IMPORTANT: non usare tinfl_decompress_mem_to_mem() qui. Quel wrapper
   // crea un tinfl_decompressor locale molto grande sullo stack del loopTask
   // e sull'ESP32 provoca lo stack-canary visto nei log. Manteniamo invece
   // lo stato dell'inflater sull'heap e chiamiamo l'API low-level.
@@ -2210,9 +2408,9 @@ bool decodeSchedulePNG(File &f, uint32_t fileSize) {
   PDBGLN("P5 filter");
 
   clearFramebuffer();
-  for (uint8_t y=0; y<16; y++) {
+  for (uint8_t y=0; y<MATRIX_HEIGHT; y++) {
     const uint8_t *row = raw + (size_t)y * (rowBytes + 1) + 1;
-    for (uint8_t x=0; x<16; x++) {
+    for (uint8_t x=0; x<MATRIX_WIDTH; x++) {
       const uint8_t *p = row + (size_t)x * bpp;
       uint8_t r=p[0], g=p[1], b=p[2];
       if (bpp == 4) {
@@ -2270,9 +2468,6 @@ bool loadScheduleMedia(uint8_t idx) {
 
 void stopScheduleActivity() {
   if (scheduleActiveIndex < 0) return;
-#if SCHEDULE_BUZZER_ENABLED && (SCHEDULE_BUZZER_PIN >= 0)
-  digitalWrite(SCHEDULE_BUZZER_PIN, LOW);
-#endif
   scheduleActiveIndex = -1;
   stopGIFPlayback();
   if (schedulePreviousMode == DISPLAY_SOLID || schedulePreviousMode == DISPLAY_RAW ||
@@ -2302,16 +2497,13 @@ void startScheduleActivity(uint8_t idx) {
   if (loadScheduleMedia(idx)) {
     scheduleActiveIndex = idx;
     scheduleFailedIndex = -1;
-#if SCHEDULE_BUZZER_ENABLED && (SCHEDULE_BUZZER_PIN >= 0)
-    if (scheduleGlobalFlags & 0x02) digitalWrite(SCHEDULE_BUZZER_PIN, HIGH);
-#endif
 
 #if PNG_DIAG_SERIAL
     Serial.print("S+"); Serial.println(idx);
 #endif
   } else {
-    // Important: without this latch updateSchedule() would retry decoding
-    // on every loop iteration, saturating CPU/heap and making the board appear frozen.
+    // Importante: senza questo latch updateSchedule() ritenterebbe il decode
+    // ad ogni giro di loop, saturando CPU/heap e facendo sembrare la scheda bloccata.
     scheduleFailedIndex = (int8_t)idx;
 #if PNG_DIAG_SERIAL
     Serial.print("S!"); Serial.println(idx);
@@ -2379,7 +2571,7 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
     return true;
   }
 
-  // Complete activity: ACK 03
+  // Attivita completa: ACK 03
   if (len >= 23 && data[2] == 0x05 && data[3] == 0x80) {
     uint16_t declared = rd16le(data);
     uint8_t idx = data[4];
@@ -2438,7 +2630,7 @@ void setupStatusOLED() {
   statusOLED.clearBuffer();
   statusOLED.setFont(u8g2_font_7x14B_tf);
   statusOLED.setCursor(0,14);
-  statusOLED.print("iDotMatrix B62");
+  statusOLED.print("iDotMatrix B63");
   statusOLED.setCursor(0,31);
   statusOLED.print("OLED LIVE STATUS");
   statusOLED.setCursor(0,48);
@@ -2470,14 +2662,14 @@ void updateStatusOLED() {
 
   uint32_t now = millis();
 
-  // Alert expired: force an immediate redraw of the normal dashboard.
+  // Scaduto l'avviso: forza un redraw immediato della dashboard normale.
   bool alertExpired = false;
   if (unknownCommandActive && (uint32_t)(now - unknownCommandAt) >= OLED_UNKNOWN_ALERT_MS) {
     unknownCommandActive = false;
     alertExpired = true;
   }
 
-  // Events that deserve an immediate OLED refresh.
+  // Eventi che meritano aggiornamento immediato dell'OLED.
   bool unknownChanged = unknownCommandActive && (unknownCommandAt != lastUnknownAtSeen);
   bool stateChanged = first || alertExpired || unknownChanged ||
                       deviceConnected != lastBle ||
@@ -2493,11 +2685,11 @@ void updateStatusOLED() {
                       countdownRunning != lastCountdownRunning ||
                       countdownPaused != lastCountdownPaused;
 
-  // BUILD 62: no periodic refresh. SW-I2C blocks the loop during
-  // sendBuffer(), so the OLED is redrawn only after a real state change.
+  // BUILD 62: nessun refresh periodico. Lo SW-I2C blocca il loop durante
+  // sendBuffer(); l'OLED viene quindi ridisegnato solo su un vero cambio di stato.
   if (!stateChanged) return;
 
-  // Snapshot of displayed state: no sendBuffer() until state changes.
+  // Snapshot dello stato visualizzato: nessun sendBuffer() finche lo stato non cambia.
   first = false;
   lastBle = deviceConnected;
   lastScreen = screenOn;
@@ -2515,11 +2707,11 @@ void updateStatusOLED() {
 
   statusOLED.clearBuffer();
 
-  // Unhandled command: immediate 8-second alert.
+  // Comando non gestito: alert immediato per 8 secondi.
   if (unknownCommandActive) {
     char line[32];
     statusOLED.setFont(u8g2_font_7x14B_tf);
-    statusOLED.drawStr(0,13,"UNKNOWN COMMAND!");
+    statusOLED.drawStr(0,13,"CMD SCONOSCIUTO!");
     statusOLED.setFont(u8g2_font_6x10_tf);
     snprintf(line,sizeof(line),"LEN:%u  N:%lu",unknownCommandLen,(unsigned long)unknownCommandCount);
     statusOLED.drawStr(0,25,line);
@@ -2589,10 +2781,7 @@ void setup(){
   setupStatusOLED();
 #endif
 #if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
-  pinMode(ALARM_BUZZER_PIN,OUTPUT); digitalWrite(ALARM_BUZZER_PIN,LOW);
-#endif
-#if SCHEDULE_BUZZER_ENABLED && (SCHEDULE_BUZZER_PIN >= 0)
-  pinMode(SCHEDULE_BUZZER_PIN,OUTPUT); digitalWrite(SCHEDULE_BUZZER_PIN,LOW);
+  pinMode(ALARM_BUZZER_PIN,OUTPUT); digitalWrite(ALARM_BUZZER_PIN,BUZZER_ACTIVE_HIGH?LOW:HIGH);
 #endif
 #if RTC_ENABLED
   Wire.begin();
@@ -2609,7 +2798,7 @@ void setup(){
 #endif
   loadAlarms();
   loadSchedule();
-  FastLED.addLeds<LED_TYPE,MATRIX_PIN,COLOR_ORDER>(leds,NUM_LEDS);
+  FastLED.addLeds<LED_TYPE,MATRIX_PIN,COLOR_ORDER>(leds,PHYSICAL_NUM_LEDS);
   loadBrightnessFromNVS(); FastLED.clear(); FastLED.show(); clearFramebuffer(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 
   BLEDevice::init(DEVICE_NAME); server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
@@ -2622,7 +2811,7 @@ void setup(){
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
-  const char mb[]={0x54,0x52,0x00,0x70,0x01}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
+  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
 
 #if OTA_ENABLED
@@ -2648,6 +2837,7 @@ void loop(){
 
   updateAlarms();
   updateSchedule();
+  updateBuzzer();
 
   if(displayMode==DISPLAY_EFFECT) updateEffect();
   if(displayMode==DISPLAY_AUDIO){ static uint32_t lastAudioRender=0; if(now-lastAudioRender>=80){ lastAudioRender=now; renderAudio(); } }
@@ -2659,11 +2849,15 @@ void loop(){
   if(displayMode==DISPLAY_COUNTDOWN){
     static uint32_t last=0; uint32_t remain=countdownRemainingMs;
     if(countdownRunning){ uint32_t e=now-countdownStartMillis; if(e>=countdownRemainingMs){remain=0;countdownRemainingMs=0;countdownRunning=false;if(!countdownFinishSent){countdownFinishSent=true;sendCommandStatus(0x08,0x80,0x03);}} else remain=countdownRemainingMs-e; }
-    if(now-last>=200){last=now;renderMMSS((remain+999)/1000UL,CRGB::Red);}
+    if(now-last>=200){
+      last=now;
+      uint32_t remainSec=(remain+999)/1000UL;
+      renderMMSS(remainSec, remainSec<=5 ? CRGB::Red : CRGB::White);
+    }
   }
 
   if(displayMode==DISPLAY_STOPWATCH){
-    static uint32_t last=0; if(now-last>=200){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderMMSS(e/1000UL,CRGB::Green);}
+    static uint32_t last=0; if(now-last>=200){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderMMSS(e/1000UL,CRGB::White);}
   }
 
 #if DEBUG_SERIAL

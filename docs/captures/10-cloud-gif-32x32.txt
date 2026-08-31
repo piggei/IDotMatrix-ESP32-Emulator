@@ -1,0 +1,23 @@
+Build 64 32x32-profile cloud GIF transfer summary
+
+GIF A:
+  total = 30321 bytes
+  first payload = 4096 bytes
+  chunks = 8
+  CRC = OK
+  intermediate ACK = 05 00 01 00 01
+  final ACK        = 05 00 01 00 03
+
+GIF B:
+  total = 2363 bytes
+  chunks = 1
+  CRC = OK
+  final ACK = 05 00 01 00 03
+
+GIF C:
+  total = 14571 bytes
+  first payload = 4096 bytes
+  chunks = 4
+  CRC = OK
+  intermediate ACK = 05 00 01 00 01
+  final ACK        = 05 00 01 00 03

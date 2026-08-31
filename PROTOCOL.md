@@ -694,3 +694,46 @@ Observed Schedule images are 16x16, 8-bit, non-interlaced PNG files. The impleme
 6. exact mathematical correspondence of some visual/audio effects to the original firmware.
 
 BUILD 62 records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.
+
+## Additional 32x32 findings (Builds 63-67)
+
+### Device profile
+
+The emulator successfully selected the application's 32x32 behavior by reporting screen type `0x03` in Device Info:
+
+`09 00 01 80 04 0E 01 03 00`
+
+The 16x16 profile uses screen type `0x01`.
+
+Observed application behavior after selecting the 32x32 profile:
+
+- cloud images/animations are different and use higher-resolution assets;
+- Graffiti exposes and transmits the larger coordinate space;
+- clock styles appear to use the same style identifiers and are rendered/scaled by the device;
+- Programs/Schedules appear to be stored separately by the app for different screen profiles.
+
+The last point is an application-side observation and is not yet known to be a protocol requirement.
+
+### Text glyph sizes
+
+For the 32x32 profile the application exposes text sizes 16 and 32.
+
+Observed glyph record markers:
+
+| Marker | Glyph bitmap | Bitmap bytes | Record size |
+| --- | --- | ---: | ---: |
+| `0x02` | 8x16 | 16 | 20 bytes |
+| `0x05` | 16x32 | 64 | 68 bytes |
+
+Each observed record consists of the marker, RGB color data and the rasterized glyph bitmap.
+
+SimSun and SimHei do not appear to be transmitted as a device-side font selector. Changing the font family and resending identical text preserves the packet structure and glyph-size marker while changing the bitmap bytes. This strongly indicates that the mobile application rasterizes the selected font before transmission.
+
+### 32x32 GIF chunking
+
+Observed cloud GIF transfers on the simulated 32x32 profile used payload chunks of up to 4096 bytes. Examples included 30,321 bytes in 8 chunks and 14,571 bytes in 4 chunks.
+
+Intermediate chunks were acknowledged with status `0x01`; transfer completion used status `0x03`. This further corroborates the interpretation:
+
+- `0x01` = accepted / continue;
+- `0x03` = transaction complete.

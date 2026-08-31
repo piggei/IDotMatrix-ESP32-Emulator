@@ -16,4 +16,5 @@ Thumbs.db
 *.bak
 *~
 
+# Windows alternate data stream sidecar files
 *Zone.Identifier

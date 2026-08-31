@@ -135,3 +135,16 @@ When a new command is observed:
 - [ ] Test with a physical 32x32 WS2812B-compatible matrix
 - [ ] Test with original 32x32 iDotMatrix hardware
 - [ ] Test with original 64x64 iDotMatrix hardware
+
+## Multi-size follow-up
+
+- [x] Simulate the 32x32 application profile from the ESP32 peripheral.
+- [x] Verify 32x32 Graffiti coordinate handling.
+- [x] Observe profile-specific cloud assets.
+- [x] Decode 16px and 32px text glyph records.
+- [x] Determine that SimSun/SimHei are rasterized by the app rather than selected on the device.
+- [x] Observe 4096-byte cloud GIF chunking on the 32x32 profile.
+- [ ] Test Build 67 with a physical 32x32 LED matrix.
+- [ ] Compare the emulator directly with an original 32x32 iDotMatrix device.
+- [ ] Verify 64x64 profile behavior.
+- [ ] Determine model/firmware-specific transfer-size limits.

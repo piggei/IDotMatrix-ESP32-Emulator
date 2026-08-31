@@ -174,3 +174,31 @@ Development history of the ESP32 iDotMatrix emulator.
 
 ### Note
 - The exact numbering/history of the earliest builds was not preserved reliably enough to create a per-build changelog without speculation.
+
+## Build 67
+
+### Added
+- Active buzzer support on GPIO 18 with a non-blocking three-pulse trill pattern for alarms and schedules.
+- Resolution-aware text glyph handling for 8x16 (`0x02`) and 16x32 (`0x05`) glyph records.
+
+### Changed
+- 16x16 restored as the default physical/logical profile while retaining the multi-size framework introduced for 32x32 experiments.
+- Stopwatch rendering is white.
+- Countdown rendering is white, switching to red for the final five seconds.
+- Schedule-specific verbose debug mode removed; normal protocol diagnostics remain available.
+
+### Protocol / research
+- The official app was successfully exercised with the emulator advertising the 32x32 profile (`screen type 0x03`).
+- The app exposes 16/32 text size selection for the 32x32 profile.
+- SimSun and SimHei selection changes glyph bitmap data rather than sending a device-side font-selection command.
+- 32x32 cloud GIF transfers were observed using 4096-byte chunks, with `0x01` intermediate acknowledgements and `0x03` completion acknowledgement.
+- Cloud assets differ by screen profile, while clock style identifiers appear unchanged and are scaled by the device renderer.
+- Graffiti coordinates operate correctly with the simulated 32x32 profile.
+- Programs created under the 16x16 profile were not shown after switching to 32x32, suggesting app-side per-profile storage.
+
+## Builds 63-66
+
+- B63 introduced the first multi-size / simulated 32x32 device profile and removed several hard-coded 16x16 assumptions.
+- B64 added focused TEXT and bulk-transfer diagnostics used to identify 16px and 32px glyph formats.
+- B65 consolidated multi-size text handling and added the first active-buzzer integration.
+- B66 introduced the non-blocking buzzer trill; B67 fixes declaration ordering and is the consolidated build.

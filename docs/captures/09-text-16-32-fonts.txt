@@ -1,0 +1,24 @@
+Build 64 focused capture summary
+
+Text: "ptova"
+
+16px / SimSun:
+  total payload: 114 bytes
+  glyph marker offsets: 14,34,54,74,94
+  marker: 0x02
+  record stride: 20 bytes
+  inferred bitmap: 8x16 = 16 bytes
+
+32px / SimSun:
+  total payload: 354 bytes
+  glyph marker offsets: 14,82,150,218,286
+  marker: 0x05
+  record stride: 68 bytes
+  inferred bitmap: 16x32 = 64 bytes
+
+32px / SimHei:
+  same payload length, marker positions and structure as SimSun;
+  glyph bitmap bytes change.
+
+Conclusion:
+  font family is rasterized by the mobile app; no independent SimSun/SimHei device command was observed.
