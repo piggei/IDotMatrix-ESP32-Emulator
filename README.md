@@ -79,6 +79,7 @@ This project focuses on the opposite BLE role from most public iDotMatrix projec
 - [`derkalle4/python3-idotmatrix-client`](https://github.com/derkalle4/python3-idotmatrix-client) — important early public Python client and reverse-engineering reference.
 - [`8none1/idotmatrix`](https://github.com/8none1/idotmatrix) — protocol research including APK/Bluetooth capture analysis and useful transfer observations.
 - [`nj-designs/go-idot`](https://github.com/nj-designs/go-idot) — Go implementation of an iDotMatrix client.
+- [`whybutter/idotmatrix`](https://github.com/whybutter/idotmatrix) — ESP32/Home Assistant-oriented controller for original iDotMatrix hardware; especially complementary to this project because it exercises the opposite BLE role and provides access to real-device testing.
 
 These projects are complementary rather than competing implementations. Findings are cross-checked where possible, while this repository keeps emulator-derived observations clearly distinguished from behavior verified on original hardware. See [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md).
 

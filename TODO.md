@@ -32,7 +32,15 @@
 
 ## Protocol / UI
 
-- [ ] Reproduce the original countdown icon/rotating hand animation
 - [ ] Continue documenting unknown commands found on larger profiles
 - [ ] Compare behaviour against original hardware captures
 - [ ] Investigate a possible WLED integration/module
+
+## Reference implementation technical debt
+
+- [ ] Move Alarm/Schedule GIF playback from the legacy full-RAM path to the validated LittleFS streaming/playback architecture
+- [ ] Remove blocking delays from BLE callbacks and other latency-sensitive paths
+- [ ] Move filesystem/bulk processing out of BLE callbacks where practical
+- [ ] Verify the experimentally unconfirmed TEXT compatibility aliases `0x03` and `0x06` against original hardware/app captures
+- [ ] Refine bulk ACK error semantics (`0x02`/`0x03`) using original-hardware captures
+- [ ] Keep transport, filesystem, decoder and RAM media limits documented separately

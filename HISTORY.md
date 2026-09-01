@@ -1,3 +1,7 @@
+# Documentation revision after BUILD 80
+
+Documentation-only consolidation; firmware remains BUILD 80 unchanged. Corrected stale GIF RAM wording, superseded TEXT record layout, multisize Graffiti coordinate wording, bulk ACK semantics, implementation-limit distinctions and brightness commentary. Added reference-implementation caveats and technical-debt items, and added `whybutter/idotmatrix` to Related Projects.
+
 # History
 
 ## BUILD 80 - clock/date pixel alignment

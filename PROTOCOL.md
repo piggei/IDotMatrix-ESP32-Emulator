@@ -222,7 +222,7 @@ In the firmware:
 
 - RGB = offsets 5..7;
 - `(x,y)` pairs follow from offset 8;
-- valid coordinates: 0..15.
+- valid coordinates depend on the active logical profile: `0..MATRIX_WIDTH-1` and `0..MATRIX_HEIGHT-1` (therefore `0..15` only for the default 16x16 profile).
 
 The byte at offset 4 is not yet semantically documented.
 
@@ -255,13 +255,31 @@ During an incomplete transfer:
 05 00 TYPE 00 01
 ```
 
-On completion:
+On transfer termination/completion:
 
 ```text
 05 00 TYPE 00 03
 ```
 
+For bulk transfers, the safest current interpretation is:
+
+- `0x01` = intermediate/continue acknowledgement: the sender may continue the transaction;
+- `0x03` = transaction terminated/completed: no further chunks are expected.
+
+`0x03` must **not** be documented as a universal success code. BUILD 80 also uses it to close some failed transactions (for example after CRC or storage errors), while refusing to publish the invalid content. The exact original-device semantics of all ACK status values remain partially unresolved.
+
 CRC32 is verified over the complete payload.
+
+### Transfer and memory limits in BUILD 80
+
+Several different limits coexist and must not be conflated:
+
+- the bulk parser accepts declared transfers up to 10 MiB; this is a transport sanity limit, not a promise that every payload can be decoded;
+- `MAX_GIF_SIZE` (128 KiB in BUILD 80) belongs to legacy/full-RAM GIF paths;
+- normal BLE GIF uploads use LittleFS and are therefore governed primarily by filesystem capacity and decoder constraints rather than by `MAX_GIF_SIZE`;
+- Alarm/Schedule stored-media playback can still use the legacy RAM path and is therefore constrained by contiguous heap availability.
+
+These are implementation limits of the reference firmware, not confirmed limits of the iDotMatrix protocol.
 
 ### RAW RGB 16x16 - CONFIRMED
 
@@ -275,7 +293,9 @@ Linear RGB pixel order. The firmware then maps logical coordinates to the physic
 
 ### GIF - CONFIRMED
 
-The payload is a standard 16x16 GIF file (`GIF87a`/`GIF89a`). It is kept in RAM and decoded with AnimatedGIF, respecting delays, palettes and transparency.
+The payload is a standard GIF file (`GIF87a`/`GIF89a`). In BUILD 80, normal BLE GIF uploads are **not kept entirely in RAM**: chunks are streamed to LittleFS using alternating RX files, a completed RX file is promoted to the PLAY file, and AnimatedGIF is opened from the normal `loop()` with a fresh decoder instance for each media change. This is the stable path validated with 16x16, 32x32 and 64x64 app profiles.
+
+**Important exception:** Alarm and Schedule media playback still contains a legacy RAM path that loads stored GIF media into `gifData`. Therefore BUILD 80 is not yet "streaming everywhere"; this is tracked as technical debt in `TODO.md`.
 
 ### TEXT - CONFIRMED for the fields currently used
 
@@ -296,13 +316,16 @@ Global payload:
 | 12 | background G |
 | 13 | background B |
 
-Each glyph is followed by a 20-byte record:
+Observed BUILD 80 glyph records use a 4-byte metadata prefix followed by a bitmap whose size is selected by the marker:
 
-```text
-7 byte META + 13 byte BITMAP
-```
+| Marker | Status | Glyph | Metadata | Bitmap | Record |
+|---:|---|---:|---:|---:|---:|
+| `0x02` | observed/confirmed | 8x16 | 4 bytes | 16 bytes | 20 bytes |
+| `0x05` | observed/confirmed | 16x32 | 4 bytes | 64 bytes | 68 bytes |
+| `0x03` | compatibility alias in reference parser; not experimentally confirmed | 8x16 | 4 bytes | 16 bytes | 20 bytes |
+| `0x06` | compatibility alias in reference parser; not experimentally confirmed | 16x32 | 4 bytes | 64 bytes | 68 bytes |
 
-Each bitmap represents 13 rows x 8 columns. In the observed format, **bit 0 is the leftmost pixel**. This orientation was verified with non-symmetric text.
+The older `7 META + 13 BITMAP` interpretation was superseded by the later 16x16/32x32 captures and must not be treated as the current protocol model. Bitmap orientation is handled by the reference renderer; `0x02` and `0x05` are the markers supported by direct experimental evidence.
 
 Observed example for `IW`:
 
@@ -722,3 +745,9 @@ The emulator now stores large media in LittleFS rather than requiring one contig
 When the app enables date display, the emulator keeps the selected clock visual effect and alternates 30 seconds of `HH:MM` with 5 seconds of `DD/MM`. The date phase uses `/` rather than the clock `:` separator. This is emulator rendering behavior derived from the app option; exact timing/presentation on every original hardware model is not yet claimed.
 
 The 16x16 stopwatch and countdown use a matching vertical layout with an animated timer icon above the numeric value. Stopwatch animation advances forward and remains white. Countdown remains white until the final five seconds, when it turns red.
+
+## Reference implementation caveats (BUILD 80)
+
+The Arduino firmware is a validated reverse-engineering reference, not a model for every future integration. Some blocking or callback-heavy operations remain, including a disconnect delay, a small main-loop delay, startup/OLED delays, and filesystem/bulk work performed from BLE callbacks. These are tolerated in the standalone experimental firmware but should **not** be copied into latency-sensitive integrations such as WLED. A WLED port should enqueue BLE work and perform filesystem, parsing and rendering operations from the normal WLED execution context.
+
+The local LED brightness ceiling (`MAX_LED_BRIGHTNESS`, currently 50) is also a hardware/test configuration choice, not a protocol rule. An integration should map iDotMatrix brightness to the host application's configured brightness range.
