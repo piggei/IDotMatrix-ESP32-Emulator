@@ -61,7 +61,7 @@ Public clients support or discuss 16x16, 32x32 and 64x64 displays, but this does
 - firmware-specific features;
 - clock/text rendering behavior.
 
-Build 62 of this emulator remains a 16x16 target. Multi-size support is a roadmap item rather than a currently supported feature.
+The emulator now defaults to native 16x16 (`0x01`) while also supporting tested app profiles `0x03` (32x32) and `0x04` (64x64). The larger profiles were exercised against the official app using an optional 64/32-to-16 diagnostic preview; that preview is disabled by default. 64x64 cloud GIF transfer and playback were verified on the classic ESP32 using LittleFS-backed media handling.
 
 ## Research policy
 
@@ -73,3 +73,4 @@ Raw captures take precedence over interpretation. When an external implementatio
 - https://github.com/8none1/idotmatrix
 - https://github.com/dallanwagz/idotmatrix-ha
 - https://github.com/markusressel/idotmatrix-api-client
+- https://github.com/nj-designs/go-idot

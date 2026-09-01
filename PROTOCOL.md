@@ -566,7 +566,7 @@ If the packet is shorter than the full header, the firmware treats it as a metad
 05 00 00 80 01
 ```
 
-The buzzer is supported by both protocol and firmware but is not present on the current development hardware.
+The buzzer is supported by both protocol and firmware and is installed on the current development hardware as an active buzzer on GPIO18. The firmware drives it with a non-blocking trill pattern.
 
 ---
 
@@ -693,7 +693,7 @@ Observed Schedule images are 16x16, 8-bit, non-interlaced PNG files. The impleme
 5. app commands/features not yet exercised;
 6. exact mathematical correspondence of some visual/audio effects to the original firmware.
 
-BUILD 62 records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.
+Current firmware records every unrecognized command and, when the OLED is enabled, immediately shows its length and first raw bytes on the diagnostic display. The OLED is pure event-driven to avoid disturbing matrix animation timing.
 
 ## Resolution profiles confirmed during emulator testing
 
@@ -715,3 +715,10 @@ Observed text records use marker `0x02` for an 8x16 glyph (16 bitmap bytes) and 
 
 The emulator now stores large media in LittleFS rather than requiring one contiguous RAM allocation. Receive and playback files are separate, and each media switch creates a fresh AnimatedGIF decoder instance. These are implementation requirements of this emulator, not claims about the original device firmware.
 
+
+
+### Clock/date presentation (emulator behavior)
+
+When the app enables date display, the emulator keeps the selected clock visual effect and alternates 30 seconds of `HH:MM` with 5 seconds of `DD/MM`. The date phase uses `/` rather than the clock `:` separator. This is emulator rendering behavior derived from the app option; exact timing/presentation on every original hardware model is not yet claimed.
+
+The 16x16 stopwatch and countdown use a matching vertical layout with an animated timer icon above the numeric value. Stopwatch animation advances forward and remains white. Countdown remains white until the final five seconds, when it turns red.

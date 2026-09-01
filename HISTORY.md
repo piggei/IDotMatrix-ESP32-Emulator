@@ -1,15 +1,28 @@
 # History
 
-## Build 76 - consolidated multisize baseline
+## BUILD 80 - clock/date pixel alignment
 
-- Restored 16x16 (`0x01`) as the default physical target.
-- Added `ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW`; diagnostic 32x32/64x64-to-16x16 scaling is disabled by default.
-- Preserved verified profiles `0x03` (32x32) and `0x04` (64x64).
-- Consolidated 8x16/16x32 text glyph handling and app-side SimSun/SimHei rasterization findings.
-- Preserved active buzzer GPIO18 and non-blocking trill.
-- Consolidated stable large-GIF architecture: LittleFS streaming, separate RX/PLAY files, deferred media switch, and a fresh AnimatedGIF decoder per GIF.
-- 64x64 cloud GIFs up to ~79 KB were received, CRC-validated and played without crashes on the classic ESP32.
-- Cleaned temporary diagnostics and documentation after the B68-B75 64x64 investigation.
+- Final micro-positioning pass for date rendering in clock effects 1, 4, 6, 7 and 8.
+- Shifted the affected date digits/clock separator geometry two pixels to the right while preserving the date slash position.
+- No protocol, BLE, GIF, Alarm, Schedule, countdown or stopwatch behavior changed.
+
+## BUILD 79 - date slash with clock effects preserved
+
+- Date display keeps the selected clock visual effect instead of switching to a separate plain renderer.
+- `HH:MM` uses the normal colon; the 5-second date phase renders `DD/MM` with a slash.
+
+## BUILD 77-78 - native 16x16 and timer UI refinement
+
+- Restored the native 16x16 (`0x01`) profile after the 64x64 experiments; logical-to-physical preview remains optional and disabled by default.
+- Added the matching vertical stopwatch/countdown design: animated timer icon above, time below.
+- Stopwatch advances forward and stays white.
+- Countdown remains white until the final five seconds, then turns red.
+- Added optional clock date cycle: 30 seconds of `HH:MM`, then 5 seconds of `DD/MM`, using the clock renderer/effect selected by the app.
+
+## BUILD 76 - first clock/date and countdown UI pass
+
+- Added the first vertical countdown timer layout and the 30 s / 5 s clock/date cycle.
+- This build was subsequently refined in B77-B80.
 
 ## Builds 68-75 - 64x64 investigation
 

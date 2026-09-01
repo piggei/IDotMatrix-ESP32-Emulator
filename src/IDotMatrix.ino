@@ -6,7 +6,7 @@
 // Incrementare ad ogni file consegnato: viene stampato
 // sulla seriale all'avvio per evitare dubbi sulla versione.
 // ======================================================
-#define FW_BUILD 76
+#define FW_BUILD 80
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 1
 #define BULK_PROTOCOL_DEBUG 1
@@ -134,20 +134,16 @@ uint8_t unknownCommandStored = 0;
 #define NUM_LEDS       ((uint16_t)MATRIX_WIDTH * (uint16_t)MATRIX_HEIGHT)
 #define LOGICAL_FRAME_BYTES ((size_t)NUM_LEDS * sizeof(CRGB))
 
+// Optional development preview: rescale a larger logical canvas onto the physical panel.
+// Keep disabled for normal/native operation.
+#define ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW 0
+
 // Physical LED panel connected to the ESP32.
 // Keep these at 16x16 to emulate a larger logical iDotMatrix with the existing
 // panel. Set them to the real panel size when larger WS2812B hardware is used.
 #define PHYSICAL_MATRIX_WIDTH   16
 #define PHYSICAL_MATRIX_HEIGHT  16
 #define PHYSICAL_NUM_LEDS       ((uint16_t)PHYSICAL_MATRIX_WIDTH * (uint16_t)PHYSICAL_MATRIX_HEIGHT)
-
-// Diagnostic preview only: allows a larger logical profile to be scaled onto
-// the 16x16 development panel. Keep disabled for normal/native operation.
-#define ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW 0
-
-#if !ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW && ((MATRIX_WIDTH != PHYSICAL_MATRIX_WIDTH) || (MATRIX_HEIGHT != PHYSICAL_MATRIX_HEIGHT))
-  #error "Logical and physical matrix sizes differ. Enable ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW only for diagnostic emulation."
-#endif
 
 #define LED_TYPE       WS2812B
 #define COLOR_ORDER    GRB
@@ -316,6 +312,7 @@ uint8_t clockStyle = 0;
 bool clock24h = false;
 bool clockShowDate = false;
 CRGB clockColor = CRGB::White;
+uint32_t clockCycleStartedAt = 0;
 
 // ======================================================
 // ECO
@@ -860,8 +857,10 @@ void refreshMatrix() {
     return;
   }
   FastLED.clear();
-#if ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW
-  // Diagnostic-only nearest-neighbour preview of a larger logical framebuffer.
+  // Render the logical iDotMatrix framebuffer onto the actually connected
+  // matrix. If the sizes differ (e.g. logical 32x32 on physical 16x16), use
+  // nearest-neighbour down/up-sampling. This is intentionally only a preview:
+  // the BLE protocol still exposes the full logical resolution to the app.
   for (uint8_t py = 0; py < PHYSICAL_MATRIX_HEIGHT; py++) {
     for (uint8_t px = 0; px < PHYSICAL_MATRIX_WIDTH; px++) {
       uint8_t outX = px, outY = py;
@@ -872,27 +871,17 @@ void refreshMatrix() {
         outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
         outY = PHYSICAL_MATRIX_HEIGHT - 1 - outY;
       }
+#if ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW
       const uint8_t sx = (uint16_t)px * MATRIX_WIDTH / PHYSICAL_MATRIX_WIDTH;
       const uint8_t sy = (uint16_t)py * MATRIX_HEIGHT / PHYSICAL_MATRIX_HEIGHT;
       leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(sx, sy)];
-    }
-  }
 #else
-  // Native 1:1 rendering. No resolution scaling in normal operation.
-  for (uint8_t y = 0; y < PHYSICAL_MATRIX_HEIGHT; y++) {
-    for (uint8_t x = 0; x < PHYSICAL_MATRIX_WIDTH; x++) {
-      uint8_t outX = x, outY = y;
-#if MATRIX_MIRROR_X
-      outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
+      // Native mode: no rescaling. Logical and physical dimensions are expected to match.
+      if (px < MATRIX_WIDTH && py < MATRIX_HEIGHT)
+        leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(px, py)];
 #endif
-      if (flipped180) {
-        outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
-        outY = PHYSICAL_MATRIX_HEIGHT - 1 - outY;
-      }
-      leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(x, y)];
     }
   }
-#endif
   FastLED.setBrightness(brightnessToFastLED(effectiveBrightnessPercent()));
   FastLED.show();
 }
@@ -927,6 +916,7 @@ void sendDeviceInfo() {
 void stopGIFPlayback();
 void switchDisplayMode(DisplayMode m) {
   if (displayMode == DISPLAY_GIF && m != DISPLAY_GIF) stopGIFPlayback();
+  if (m == DISPLAY_CLOCK && displayMode != DISPLAY_CLOCK) clockCycleStartedAt = millis();
   displayMode = m;
 }
 
@@ -953,16 +943,29 @@ void drawDigit3x5(uint8_t d, int16_t x, int16_t y, const CRGB &c) {
       if (digits3x5[d][row] & (1 << (2-col))) putPixel(x+col, y+row, c);
 }
 
+bool clockRenderingDate = false;
+
 void drawColon(int16_t x, int16_t y, const CRGB &c) {
-  putPixel(x,y+1,c); putPixel(x,y+3,c);
+  // Preserve the selected clock renderer/effect exactly. During the 5-second
+  // date phase only the separator changes from ':' to '/'.
+  if (clockRenderingDate) {
+    putPixel(x+1,y,c);
+    putPixel(x+1,y+1,c);
+    putPixel(x,y+2,c);
+    putPixel(x,y+3,c);
+    return;
+  }
+  putPixel(x,y+1,c);
+  putPixel(x,y+3,c);
 }
 
-void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool leftColon=false) {
-  drawDigit3x5(h/10, 4, 2, hc);
-  drawDigit3x5(h%10, 8, 2, hc);
-  drawDigit3x5(m/10, 4, 9, mc);
-  drawDigit3x5(m%10, 8, 9, mc);
-  drawColon(leftColon ? 2 : 12, 9, mc);
+void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool leftColon=false, int8_t xShift=0) {
+  drawDigit3x5(h/10, 4 + xShift, 2, hc);
+  drawDigit3x5(h%10, 8 + xShift, 2, hc);
+  drawDigit3x5(m/10, 4 + xShift, 9, mc);
+  drawDigit3x5(m%10, 8 + xShift, 9, mc);
+  // For the date keep '/' exactly where it was; for time move ':' with the digits.
+  drawColon((leftColon ? 2 : 12) + (clockRenderingDate ? 0 : xShift), 9, mc);
 }
 
 // ======================================================
@@ -1082,10 +1085,7 @@ void drawHourglassIcon() {
   putPixel(0,13,sand); putPixel(1,13,sand); putPixel(2,13,sand); putPixel(3,13,sand); putPixel(4,13,sand);
 }
 
-void renderClock() {
-  uint8_t h,m,s;
-  getCurrentTime(h,m,s);
-  if (!clock24h) { if (h==0) h=12; else if (h>12) h-=12; }
+void renderClockValues(uint8_t h, uint8_t m) {
   clearFramebuffer();
 
 #if DEBUG_SERIAL
@@ -1094,7 +1094,7 @@ void renderClock() {
   switch (clockStyle & 0x07) {
     case 0: { // rainbow frame, selected digits
       drawRainbowBorder();
-      drawTimeTwoRows(h,m,clockColor,clockColor,true);
+      drawTimeTwoRows(h,m,clockColor,clockColor,true,2);
       break;
     }
     case 1: { // Christmas
@@ -1108,14 +1108,19 @@ void renderClock() {
       drawCheckerRows();
       CRGB orange(255,170,0);
       drawDigit3x5(h/10,1,5,orange); drawDigit3x5(h%10,5,5,orange);
-      putPixel(8,6,CRGB::White); putPixel(8,8,CRGB::White);
+      if (clockRenderingDate) {
+        putPixel(9,5,CRGB::White); putPixel(9,6,CRGB::White);
+        putPixel(8,7,CRGB::White); putPixel(8,8,CRGB::White);
+      } else {
+        putPixel(8,6,CRGB::White); putPixel(8,8,CRGB::White);
+      }
       drawDigit3x5(m/10,10,5,orange); drawDigit3x5(m%10,13,5,orange);
       break;
     }
     case 3: { // inverted blue/selected background
       clearFramebuffer(clockColor);
       CRGB black(0,0,0);
-      drawTimeTwoRows(h,m,black,black,true);
+      drawTimeTwoRows(h,m,black,black,true,2);
       break;
     }
     case 4: { // hourglass
@@ -1127,25 +1132,48 @@ void renderClock() {
     case 5: { // cyan rounded-ish frame + blue corners + orange digits
       drawFrameStyle5(true);
       CRGB orange(255,165,0);
-      drawTimeTwoRows(h,m,orange,orange,true);
+      drawTimeTwoRows(h,m,orange,orange,true,2);
       break;
     }
     case 6: { // doppia cornice: blu esterna + azzurra interna
       // Disegniamo prima le cifre e POI le cornici, cosi' i due bordi
       // restano sempre completi e non possono essere sovrascritti.
-      drawTimeTwoRows(h,m,clockColor,clockColor,true);
+      drawTimeTwoRows(h,m,clockColor,clockColor,true,2);
       drawFrameStyle5(false);
       break;
     }
     case 7: { // RGBY quadrant frame + selected digits
       drawQuadrantBorder();
-      drawTimeTwoRows(h,m,clockColor,clockColor,true);
+      drawTimeTwoRows(h,m,clockColor,clockColor,true,2);
       break;
     }
   }
 
   scaleLegacy16CanvasToLogical();
   refreshMatrix();
+}
+
+
+void renderDateDDMM() {
+  uint16_t y; uint8_t mo,d,h,mi,se;
+  getAlarmDateTime(y,mo,d,h,mi,se);
+  // Reuse the *unchanged* selected clock renderer/effect. The only
+  // difference is that drawColon() renders '/' while this flag is true.
+  clockRenderingDate = true;
+  renderClockValues(d, mo);
+  clockRenderingDate = false;
+}
+
+void renderClock() {
+  // If the app enables date display, show 30 s of time followed by 5 s DD/MM.
+  if (clockShowDate) {
+    const uint32_t phase = (millis() - clockCycleStartedAt) % 35000UL;
+    if (phase >= 30000UL) { renderDateDDMM(); return; }
+  }
+  uint8_t h,m,s;
+  getCurrentTime(h,m,s);
+  if (!clock24h) { if (h==0) h=12; else if (h>12) h-=12; }
+  renderClockValues(h,m);
 }
 
 // ======================================================
@@ -1156,6 +1184,68 @@ void renderMMSS(uint32_t sec, const CRGB &c) {
   clearFramebuffer();
   drawDigit3x5(mm/10,0,5,c); drawDigit3x5(mm%10,3,5,c); drawColon(7,5,c);
   drawDigit3x5(ss/10,9,5,c); drawDigit3x5(ss%10,12,5,c);
+  scaleLegacy16CanvasToLogical();
+  refreshMatrix();
+}
+
+void drawCountdownTimerIcon(uint8_t phase) {
+  const CRGB rim(255,145,0);
+  const CRGB hand(255,45,20);
+  const CRGB center(255,220,120);
+  const int8_t cx=7, cy=4;
+
+  // 9x9 pixel-art timer in the upper half of the 16x16 canvas.
+  putPixel(6,0,rim); putPixel(7,0,rim); putPixel(8,0,rim);
+  putPixel(7,1,rim);
+  putPixel(4,1,rim); putPixel(10,1,rim);
+  putPixel(3,2,rim); putPixel(11,2,rim);
+  putPixel(2,3,rim); putPixel(12,3,rim);
+  putPixel(2,4,rim); putPixel(12,4,rim);
+  putPixel(2,5,rim); putPixel(12,5,rim);
+  putPixel(3,6,rim); putPixel(11,6,rim);
+  putPixel(4,7,rim); putPixel(10,7,rim);
+  putPixel(5,8,rim); putPixel(6,8,rim); putPixel(7,8,rim); putPixel(8,8,rim); putPixel(9,8,rim);
+
+  static const int8_t hx[8]={ 7,10,11,10,7,4,3,4 };
+  static const int8_t hy[8]={ 1, 2, 4, 6,7,6,4,2 };
+  int8_t ex=hx[phase&7], ey=hy[phase&7];
+  // One intermediate pixel keeps diagonal hands visually connected.
+  putPixel(cx,cy,center);
+  putPixel((cx+ex)/2,(cy+ey)/2,hand);
+  putPixel(ex,ey,hand);
+}
+
+void renderCountdown(uint32_t remainMs) {
+  const uint32_t remainSec=(remainMs+999UL)/1000UL;
+  const CRGB digits = remainSec<=5 ? CRGB::Red : CRGB::White;
+  const uint8_t mm=(remainSec/60UL)%100UL, ss=remainSec%60UL;
+  clearFramebuffer();
+
+  // Countdown decreases, so invert the phase to keep the hand rotating clockwise.
+  const uint8_t phase=(uint8_t)((8U-((remainMs/125UL)&7U))&7U);
+  drawCountdownTimerIcon(phase);
+
+  // Full-width MM:SS below the timer, rows 10..14.
+  drawDigit3x5(mm/10,0,10,digits); drawDigit3x5(mm%10,3,10,digits);
+  drawColon(7,10,digits);
+  drawDigit3x5(ss/10,9,10,digits); drawDigit3x5(ss%10,12,10,digits);
+  scaleLegacy16CanvasToLogical();
+  refreshMatrix();
+}
+
+void renderStopwatch(uint32_t elapsedMs) {
+  const uint32_t elapsedSec=elapsedMs/1000UL;
+  const uint8_t mm=(elapsedSec/60UL)%100UL, ss=elapsedSec%60UL;
+  clearFramebuffer();
+
+  // Same timer face as countdown, but the hand advances with elapsed time.
+  const uint8_t phase=(uint8_t)((elapsedMs/125UL)&7U);
+  drawCountdownTimerIcon(phase);
+
+  const CRGB digits=CRGB::White;
+  drawDigit3x5(mm/10,0,10,digits); drawDigit3x5(mm%10,3,10,digits);
+  drawColon(7,10,digits);
+  drawDigit3x5(ss/10,9,10,digits); drawDigit3x5(ss%10,12,10,digits);
   scaleLegacy16CanvasToLogical();
   refreshMatrix();
 }
@@ -2219,6 +2309,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
     Serial.print(" DATE="); Serial.print(clockShowDate ? 1 : 0);
     Serial.print(" RGB="); Serial.print(data[5]); Serial.print(','); Serial.print(data[6]); Serial.print(','); Serial.println(data[7]);
 #endif
+    clockCycleStartedAt=millis();
     switchDisplayMode(DISPLAY_CLOCK); renderClock(); sendCommandAck(cmd,sub); return;
   }
 
@@ -3137,13 +3228,12 @@ void loop(){
     if(countdownRunning){ uint32_t e=now-countdownStartMillis; if(e>=countdownRemainingMs){remain=0;countdownRemainingMs=0;countdownRunning=false;if(!countdownFinishSent){countdownFinishSent=true;sendCommandStatus(0x08,0x80,0x03);}} else remain=countdownRemainingMs-e; }
     if(now-last>=200){
       last=now;
-      uint32_t remainSec=(remain+999)/1000UL;
-      renderMMSS(remainSec, remainSec<=5 ? CRGB::Red : CRGB::White);
+      renderCountdown(remain);
     }
   }
 
   if(displayMode==DISPLAY_STOPWATCH){
-    static uint32_t last=0; if(now-last>=200){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderMMSS(e/1000UL,CRGB::White);}
+    static uint32_t last=0; if(now-last>=200){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderStopwatch(e);}
   }
 
 #if DEBUG_SERIAL
