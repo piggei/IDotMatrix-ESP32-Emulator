@@ -1,8 +1,99 @@
-# Documentation revision after BUILD 80
-
-Documentation-only consolidation; firmware remains BUILD 80 unchanged. Corrected stale GIF RAM wording, superseded TEXT record layout, multisize Graffiti coordinate wording, bulk ACK semantics, implementation-limit distinctions and brightness commentary. Added reference-implementation caveats and technical-debt items, and added `whybutter/idotmatrix` to Related Projects.
-
 # History
+
+## BUILD 89 - v0.3.1 consolidation: Alarm/Schedule GIF LittleFS playback
+
+- Hardware validation confirmed BUILD 88 fixed the false multi-packet Bulk timeout regression.
+- Alarm and Schedule GIF playback no longer allocates the compressed GIF as one contiguous DRAM buffer.
+- Added a dedicated disposable `/event_play.gif` path. Persistent Alarm/Schedule media is copied to this path and CRC-checked before AnimatedGIF opens it.
+- The persistent Alarm/Schedule source files are therefore never held open by the decoder and remain safe to rename during later staging/backup/rollback transactions.
+- Event GIF playback uses the same LittleFS file callbacks and fresh AnimatedGIF decoder lifecycle as normal GIF playback.
+- Removed the now-unused `gifData`/`allocateGIF()` full-RAM path and its `MAX_GIF_SIZE` limit. Alarm/Schedule media remains subject to the independent 8192-byte reconstructed-packet transport ceiling.
+- `/event_play.gif` is removed when event playback stops and at boot because it is disposable, not persistent state.
+
+## BUILD 88 - v0.3.1 consolidation: Bulk timeout mutex hotfix
+
+- Hardware log from BUILD 87 exposed a deterministic false Bulk timeout on multi-packet transfers (for example a 4189-byte GIF sent as 4096 + 93 bytes).
+- Root cause originated in BUILD 86: `loop()` captured `millis()` before waiting for the runtime-state mutex. While it waited, the BLE callback could update `bulkLastRxMs` / `packetLastRxMs` to a newer timestamp. Unsigned elapsed-time subtraction then wrapped and looked like a huge timeout.
+- BUILD 88 now captures the loop time snapshot only after the mutex has been acquired, so timeout evaluation and the protected receive timestamps use a consistent ordering.
+- Single-packet transfers were unaffected because the Bulk transaction completed before the loop could evaluate an active transfer.
+- No BLE framing, ACK value, timeout duration, filesystem policy, renderer or media format was changed.
+
+## BUILD 87 - v0.3.1 consolidation: OTA and LittleFS safety
+
+- Hardware validation status: not yet tested; BUILD 86 was confirmed by the user to compile, flash and operate normally.
+- ArduinoOTA remains disabled by default. When enabled, compile-time assertions now reject the repository Wi-Fi placeholders, the default development OTA password, empty credentials and OTA passwords shorter than eight characters.
+- Replaced implicit `LittleFS.begin(true)` formatting with a non-formatting mount by default. A mount error no longer silently erases stored media.
+- Added explicit `LITTLEFS_FORMAT_ON_MOUNT_FAIL`, disabled by default, for intentional first-use/recovery formatting only.
+- Added a `littleFsReady` runtime state so recovery, playback and media-write paths fail safely when storage is unavailable while Preferences metadata can still be loaded.
+- Normal Bulk GIF reception now checks current LittleFS free space before opening the RX file and terminates the transfer if the declared GIF cannot fit.
+- Alarm/Schedule GIF streaming migration was deliberately deferred: directly opening their transactional source files would race with rename/backup replacement. A future build should use an isolated event PLAY file/path instead.
+- No observed BLE packet framing, successful-command ACK, renderer output or protocol field interpretation was intentionally changed.
+
+## BUILD 86 - v0.3.1 consolidation: cross-core synchronization
+
+- Added a FreeRTOS task mutex that serializes shared protocol/runtime state between FA02/server BLE callbacks and the Arduino `loop()` task.
+- Removed `volatile` from the deferred GIF and packet/Bulk timeout fields now covered by the mutex; `volatile` is no longer used as a substitute for cross-core synchronization on those paths.
+- Packet/Bulk timeout cleanup, normal command processing, renderer/runtime updates and deferred GIF promotion/open now cannot mutate the same shared state concurrently.
+- Removed the blocking `delay(300)` from the BLE disconnect callback. Advertising restart is deferred to `loop()` after the same 300 ms interval.
+- The mutex is a scheduler/task mutex, not a critical-section spinlock, so filesystem/decoder/rendering operations never run with interrupts disabled.
+- Full FA02 parsing and filesystem/Bulk work still execute from the BLE callback and remain technical debt for a future architectural cleanup.
+- No observed packet framing, command payload or ACK value was intentionally changed.
+
+## BUILD 85 - v0.3.1 consolidation: runtime correctness
+
+- Hardware test confirmed successful compilation, flashing and normal operation of the BUILD 85 runtime changes.
+- ECO/power-saving output now re-evaluates effective brightness once per second so static display modes react when configured time boundaries are crossed.
+- Added sanity validation for incoming power-saving hour/minute/reduction fields; malformed records are ignored while the existing compatibility ACK is preserved because original-device error semantics remain unknown.
+- Runtime soft reset now clears transient renderer state, active Alarm/Schedule runtime markers, timer state and deferred GIF-open state instead of leaving stale flags that could resurrect content later. Persistent Alarm/Schedule configuration, time sync, brightness, ECO settings and screen power remain intact.
+- When optional RTC support is enabled, `rtc.lostPower()` now marks RTC time invalid. Alarm, Schedule and ECO only consume RTC time after it is valid; a successful BLE time sync marks the adjusted RTC valid again.
+- No successful-command packet framing or known ACK value was intentionally changed. ECO polling and soft-reset state policy remain emulator implementation behavior, not claims about original hardware.
+
+## BUILD 84 - v0.3.1 consolidation: Arduino compile hotfix
+
+- Hardware test after the hotfix confirmed successful compilation, flashing and normal operation of the BUILD 83 hardening path.
+- Fixed Arduino `.ino` preprocessing compatibility introduced by BUILD 83.
+- Added an explicit `AlarmSlot` forward declaration so the generated prototype for `saveAlarmMetaValue()` sees the type.
+- Added an explicit `clearFramebuffer()` declaration before Alarm code and moved its default argument to the declaration.
+- No protocol, persistence, renderer or runtime behavior changes relative to BUILD 83.
+
+## BUILD 83 - v0.3.1 consolidation: transactional state/media hardening
+
+- Alarm updates are staged and validated before the live slot is modified. Full-media updates use temporary + backup files and only publish the new in-memory metadata after media replacement and NVS persistence succeed.
+- Added best-effort Alarm rollback on filesystem/NVS failure and startup reconciliation of `.bin`/`.bak` media against persisted size/CRC metadata.
+- Schedule global flags are now staged during an upload instead of being published before the activity list commits.
+- Schedule commit preflights every received temporary media file by size/CRC, backs up the previous media set, promotes the new set, persists metadata, and publishes runtime state only after those steps succeed.
+- Added best-effort Schedule filesystem/preferences rollback. Startup recovery reconciles destination/backup files against persisted activity metadata after an interrupted replacement.
+- Normal GIF RX -> PLAY promotion now preserves the previous PLAY file until the new file has been renamed successfully; reboot recovery restores a lone PLAY backup and discards non-resumable RX remnants.
+- Fixed Alarm/Schedule preemption ordering: an active Schedule is stopped/restored before Alarm media starts, so Schedule teardown cannot immediately stop the Alarm GIF.
+- Alarm restores SOLID/RAW/GRAFFITI framebuffer-backed modes after completion; other dynamic modes still fall back to clock/blank because their prior runtime state is not generically reconstructible.
+- Added hour/minute sanity validation for Alarm and Schedule configurations.
+- No successful-command packet framing or experimentally established ACK value was intentionally changed. Transaction/timeout policies remain emulator implementation behavior, not original-device protocol claims.
+
+## BUILD 82 - v0.3.1 consolidation: parser and transfer hardening
+
+- Added calendar validation for BLE time synchronization before updating the software clock or optional RTC.
+- Preserved the existing time-sync ACK on malformed input because negative/error ACK semantics remain experimentally unknown.
+- Added a conservative 5-second inactivity timeout for incomplete logical-packet reassembly.
+- Added a conservative 30-second inactivity timeout for active Bulk transfers.
+- Added cleanup of partial GIF RX files when transfers are aborted, time out, overflow, or the BLE connection closes.
+- Rejects declared TEXT Bulk payloads larger than `MAX_TEXT_PAYLOAD` (4096 bytes) instead of silently retaining only a prefix.
+- Timeout values are emulator safety guards and are not claimed as observed original-device protocol timings.
+- No known command framing, successful-transfer ACK behavior, rendering path, or media format was intentionally changed.
+
+## BUILD 81 - v0.3.1 consolidation: documentation and hygiene
+
+- First development build toward `v0.3.1`; public stable baseline remains `v0.3.0 / BUILD 80`.
+- No intentional protocol or runtime behavior changes; only the internal build identifier is incremented.
+- Corrected stale TEXT documentation so the canonical records are `4-byte metadata + bitmap` (20 bytes for marker `0x02`, 68 bytes for marker `0x05`).
+- Removed the obsolete `7 META + 13 BITMAP` example and related open-question wording.
+- Clarified that Alarm playback currently implements GIF and RAW media; TEXT has been observed in captures but is not implemented by `loadAlarmMedia()`.
+- Clarified Schedule staging/commit behavior: the emulator commits after an inactivity timeout, but the current filesystem replacement is not guaranteed to be atomic.
+- Clarified that Schedule restore-to-previous-mode is only implemented for selected framebuffer-backed modes, with fallback to clock/none for other modes.
+- Documented the 8192-byte logical packet ceiling that also constrains embedded Alarm/Schedule media, independently of legacy GIF/RAM limits.
+- Corrected the local brightness comment to `50/255` and translated the remaining Italian Alarm header label in `PROTOCOL.md`.
+- Updated the WLED TODO: WLED integration is now a separate project rather than a pending module of this emulator.
+- Added explicit release/build mapping and security considerations to the README.
+
 
 ## BUILD 80 - clock/date pixel alignment
 
@@ -39,8 +130,6 @@ Documentation-only consolidation; firmware remains BUILD 80 unchanged. Corrected
 - B72 isolated receive and playback files.
 - B73/B74 investigated AnimatedGIF lifecycle corruption.
 - B75 established the stable solution: fresh decoder instance per GIF; repeated small/large media switches no longer corrupt heap.
-
-# HISTORY
 
 ## Documentation update after Build 62
 
@@ -147,7 +236,7 @@ Development history of the ESP32 iDotMatrix emulator.
 ### Fixed
 - Stabilized Schedule PNG loading and rendering.
 - Identified and fixed stack overflow during PNG inflate by moving heavy state/buffers away from the loop-task stack.
-- Correct handling of multiple activities and return to the previous display mode.
+- Stabilized handling of multiple activities and restoration of supported framebuffer-backed previous modes; other modes fall back to clock/none in the consolidated firmware.
 
 ### Protocol
 - Discovered that Schedule activity ACK must end with status `0x03`; `0x01` makes the app stop sending and report an error.
@@ -157,7 +246,7 @@ Development history of the ESP32 iDotMatrix emulator.
 
 ### Added
 - 10 persistent Alarm slots in flash/LittleFS.
-- Alarm-associated media: GIF, images and text according to received payloads.
+- Alarm-associated media storage/playback for GIF and RAW images. TEXT content has also been observed in Alarm captures, but Alarm TEXT playback is not implemented in the consolidated firmware.
 - Weekdays, duration, enable and buzzer flags.
 - Persistent Programs/Schedules with timed activities.
 - Schedule support for GIF, text and PNG.

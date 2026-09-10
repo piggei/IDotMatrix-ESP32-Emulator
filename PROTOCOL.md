@@ -132,6 +132,8 @@ Captured example:
 
 The firmware uses this synchronization as the base for its software clock. If `RTC_ENABLED=1`, the same command can also synchronize a DS3231.
 
+Implementation hardening in BUILD 82 validates the calendar fields before updating either clock: month must be 1-12, day must exist in that month (including leap-year handling), hour must be 0-23, and minute/second must be 0-59. A malformed synchronization packet is ignored but receives the same compatibility ACK as a valid one because an original-device negative/error ACK for this command has not yet been established.
+
 ACK:
 
 ```text
@@ -182,7 +184,9 @@ Implemented interpretation:
 | EH:EM | end time |
 | REDUCTION | reduction percentage |
 
-The logic also supports time ranges crossing midnight.
+The logic also supports time ranges crossing midnight. BUILD 85 validates `SH/SM`, `EH/EM` and `REDUCTION` before publishing a new ECO configuration. Invalid records are ignored while the existing ACK is preserved because an original-device error status is not yet known.
+
+The configured reduction is re-evaluated once per second. This is an emulator runtime guard so static content reacts when an ECO interval boundary is crossed; the one-second polling policy is not claimed as observed original-device behavior. If optional RTC support is compiled in, an RTC reporting `lostPower()` is not accepted as a valid time source until BLE time synchronization updates it.
 
 ## Runtime soft reset - PARTIAL
 
@@ -190,7 +194,9 @@ The logic also supports time ranges crossing midnight.
 04 00 03 80
 ```
 
-The firmware replies with an ACK and resets runtime graphics state shortly afterward. Exact correspondence with original hardware behavior cannot be verified.
+The firmware replies with an ACK and resets runtime graphics state shortly afterward. BUILD 85 makes this internal reset deterministic: transient display/animation state, active Alarm/Schedule runtime markers and deferred GIF-open state are cleared, while persistent Alarm/Schedule definitions, synchronized time, brightness, ECO configuration and screen-power state are retained. A Schedule whose configured time window is still active may therefore become active again on a following scheduler pass.
+
+This is emulator-defined behavior intended to avoid stale runtime state; exact correspondence with original hardware behavior cannot currently be verified.
 
 ---
 
@@ -249,6 +255,8 @@ Implemented types:
 | `02` | RAW RGB 16x16 when size=768 |
 | `03` | TEXT |
 
+BUILD 82 adds implementation-only inactivity guards: 5 seconds for an incomplete reconstructed logical packet and 30 seconds between Bulk packets for an active transaction. These values are emulator safety limits, not observed protocol timings. BUILD 88 fixes a mutex/timestamp-ordering regression introduced in BUILD 86 that could falsely trigger those guards on a valid multi-packet transfer; the timeout values themselves are unchanged. Aborted GIF transfers close and remove their partial RX file. TEXT transfers whose declared payload exceeds 4096 bytes are rejected rather than truncated.
+
 During an incomplete transfer:
 
 ```text
@@ -266,20 +274,24 @@ For bulk transfers, the safest current interpretation is:
 - `0x01` = intermediate/continue acknowledgement: the sender may continue the transaction;
 - `0x03` = transaction terminated/completed: no further chunks are expected.
 
-`0x03` must **not** be documented as a universal success code. BUILD 80 also uses it to close some failed transactions (for example after CRC or storage errors), while refusing to publish the invalid content. The exact original-device semantics of all ACK status values remain partially unresolved.
+`0x03` must **not** be documented as a universal success code. BUILD 82 (continuing the established behavior) also uses it to close some failed transactions (for example after CRC or storage errors), while refusing to publish the invalid content. The exact original-device semantics of all ACK status values remain partially unresolved.
 
 CRC32 is verified over the complete payload.
 
-### Transfer and memory limits in BUILD 80
+### Transfer, filesystem and memory limits as of BUILD 89
 
 Several different limits coexist and must not be conflated:
 
 - the bulk parser accepts declared transfers up to 10 MiB; this is a transport sanity limit, not a promise that every payload can be decoded;
-- `MAX_GIF_SIZE` (128 KiB in BUILD 80) belongs to legacy/full-RAM GIF paths;
-- normal BLE GIF uploads use LittleFS and are therefore governed primarily by filesystem capacity and decoder constraints rather than by `MAX_GIF_SIZE`;
-- Alarm/Schedule stored-media playback can still use the legacy RAM path and is therefore constrained by contiguous heap availability.
+- normal BLE GIF uploads use LittleFS and are governed primarily by filesystem capacity and decoder constraints; BUILD 87 also rejects a GIF at transfer start when its declared payload is larger than the currently available LittleFS free space;
+- BUILD 89 removes the active full-RAM compressed-GIF path: Alarm/Schedule GIF playback is also LittleFS-backed and no longer depends on one contiguous compressed-media allocation;
+- Alarm and Schedule media are still embedded in a single reconstructed logical packet, so the current `MAX_PACKET_SIZE = 8192` imposes a separate practical transport ceiling (roughly 8168 bytes of Alarm media after its 24-byte header and 8169 bytes of Schedule payload after its 23-byte header);
+- Alarm/Schedule GIF playback requires temporary filesystem capacity for a second copy of the selected GIF in `/event_play.gif`; this copy isolates the decoder from transactional source-file renames.
+- TEXT has a 4096-byte payload ceiling. With the current canonical record sizes and the 64-glyph storage cap, this permits up to 64 8x16 glyphs or 60 16x32 glyphs in one TEXT payload.
 
 These are implementation limits of the reference firmware, not confirmed limits of the iDotMatrix protocol.
+
+BUILD 87 also changes storage failure policy: LittleFS is mounted without implicit formatting. `LITTLEFS_FORMAT_ON_MOUNT_FAIL=1` is an explicit emulator recovery option, disabled by default, and is not part of the iDotMatrix protocol. If storage is unavailable, filesystem-backed media operations fail while Preferences metadata remains readable.
 
 ### RAW RGB 16x16 - CONFIRMED
 
@@ -293,9 +305,9 @@ Linear RGB pixel order. The firmware then maps logical coordinates to the physic
 
 ### GIF - CONFIRMED
 
-The payload is a standard GIF file (`GIF87a`/`GIF89a`). In BUILD 80, normal BLE GIF uploads are **not kept entirely in RAM**: chunks are streamed to LittleFS using alternating RX files, a completed RX file is promoted to the PLAY file, and AnimatedGIF is opened from the normal `loop()` with a fresh decoder instance for each media change. This is the stable path validated with 16x16, 32x32 and 64x64 app profiles.
+The payload is a standard GIF file (`GIF87a`/`GIF89a`). Since BUILD 87, normal BLE GIF uploads are **not kept entirely in RAM**: chunks are streamed to LittleFS using alternating RX files, a completed RX file is promoted to the PLAY file, and AnimatedGIF is opened from the normal `loop()` with a fresh decoder instance for each media change. This is the stable path validated with 16x16, 32x32 and 64x64 app profiles.
 
-**Important exception:** Alarm and Schedule media playback still contains a legacy RAM path that loads stored GIF media into `gifData`. Therefore BUILD 80 is not yet "streaming everywhere"; this is tracked as technical debt in `TODO.md`.
+BUILD 89 removes the previous Alarm/Schedule exception. Before an Alarm/Schedule GIF starts, the emulator copies the persistent source file to `/event_play.gif`, verifies the copied stream against the stored size/CRC, and opens that disposable file through the LittleFS AnimatedGIF callbacks. The decoder therefore never holds an Alarm/Schedule transactional source file open while later configuration updates may rename it. `/event_play.gif` is implementation-only transient state and is deleted when playback stops and at boot.
 
 ### TEXT - CONFIRMED for the fields currently used
 
@@ -316,7 +328,7 @@ Global payload:
 | 12 | background G |
 | 13 | background B |
 
-Observed BUILD 80 glyph records use a 4-byte metadata prefix followed by a bitmap whose size is selected by the marker:
+Observed glyph records used by the BUILD 86 reference parser use a 4-byte metadata prefix followed by a bitmap whose size is selected by the marker:
 
 | Marker | Status | Glyph | Metadata | Bitmap | Record |
 |---:|---|---:|---:|---:|---:|
@@ -327,19 +339,14 @@ Observed BUILD 80 glyph records use a 4-byte metadata prefix followed by a bitma
 
 The older `7 META + 13 BITMAP` interpretation was superseded by the later 16x16/32x32 captures and must not be treated as the current protocol model. Bitmap orientation is handled by the reference renderer; `0x02` and `0x05` are the markers supported by direct experimental evidence.
 
-Observed example for `IW`:
+The canonical record boundaries are therefore:
 
 ```text
-GLYPH 0
-META   : 02 FF FF FF 00 00 00
-BITMAP : 3E 08 08 08 08 08 08 08 08 08 3E 00 00
-
-GLYPH 1
-META   : 02 FF FF FF 00 00 00
-BITMAP : 6B 2A 2A 2A 2A 2A 36 14 14 14 14 00 00
+0x02 record: 4 metadata bytes (marker included) + 16 bitmap bytes = 20 bytes
+0x05 record: 4 metadata bytes (marker included) + 64 bitmap bytes = 68 bytes
 ```
 
-The complete semantics of the 7 META bytes are not yet decoded.
+The complete semantics of all metadata bytes after the marker are not yet decoded. Historical examples that split a record as `7 META + 13 BITMAP` are obsolete and must not be used to implement new parsers.
 
 ---
 
@@ -521,6 +528,11 @@ Visual modes:
 
 # Alarms
 
+### BUILD 83 persistence/preemption hardening
+
+Alarm configuration is still interpreted from the same observed packet shape, but the emulator now stages a candidate slot before publishing it. Hour/minute fields are sanity-checked; full-media updates write to a temporary file, preserve the previous media as a backup, and update the live slot only after media replacement and Preferences persistence succeed. The compatibility ACK is intentionally unchanged because an original-device Alarm storage-failure status has not been established. At runtime Alarm has explicit priority over Schedule: an active Schedule is stopped/restored before Alarm media is loaded. These transaction and priority rules are emulator implementation behavior, not claims about original hardware.
+
+
 ## Command - CONFIRMED for the implemented structure
 
 Alarm packets use:
@@ -533,7 +545,7 @@ The firmware provides 10 slots (`0..9`).
 
 ### Full packet
 
-Header da 24 byte:
+24-byte header:
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -697,7 +709,7 @@ The firmware uses `02` when validation fails; the original meaning of this statu
 
 ### Commit
 
-No explicit end-of-list command was observed. The firmware therefore uses temporary staging and considers the upload complete after about 900 ms without new activities. It then atomically replaces the previous Schedule.
+No explicit end-of-list command was observed. The firmware therefore uses temporary staging and considers the upload complete after about 900 ms without new activities. It then commits the staged Schedule. In BUILD 83 this remains an emulator implementation strategy rather than an observed protocol rule. The commit now preflights staged media by size/CRC, backs up the previous media set, promotes the new files, persists Preferences metadata, and only then publishes the new runtime Schedule. Failures use best-effort rollback. On boot, destination/backup media are reconciled against the metadata that actually persisted. This reduces partial-update risk but is **not claimed to be a filesystem-wide ACID transaction**, especially across unexpected power loss.
 
 This is an emulator design choice, not a confirmed field or behavior of the original protocol.
 
@@ -712,7 +724,7 @@ Observed Schedule images are 16x16, 8-bit, non-interlaced PNG files. The impleme
 1. exact original-device response to stopwatch `09 80`;
 2. complete general semantics of ACK statuses `01`, `02`, `03`;
 3. meaning of several reserved bytes in Bulk, Alarm and Schedule headers;
-4. complete meaning of the 7 META bytes for each TEXT glyph;
+4. complete meaning of the currently observed 4-byte TEXT metadata prefix (marker included), especially the bytes after the marker;
 5. app commands/features not yet exercised;
 6. exact mathematical correspondence of some visual/audio effects to the original firmware.
 
@@ -746,8 +758,10 @@ When the app enables date display, the emulator keeps the selected clock visual 
 
 The 16x16 stopwatch and countdown use a matching vertical layout with an animated timer icon above the numeric value. Stopwatch animation advances forward and remains white. Countdown remains white until the final five seconds, when it turns red.
 
-## Reference implementation caveats (BUILD 80)
+## Reference implementation caveats (BUILD 86)
 
-The Arduino firmware is a validated reverse-engineering reference, not a model for every future integration. Some blocking or callback-heavy operations remain, including a disconnect delay, a small main-loop delay, startup/OLED delays, and filesystem/bulk work performed from BLE callbacks. These are tolerated in the standalone experimental firmware but should **not** be copied into latency-sensitive integrations such as WLED. A WLED port should enqueue BLE work and perform filesystem, parsing and rendering operations from the normal WLED execution context.
+The Arduino firmware is a validated reverse-engineering reference, not a model for every future integration. BUILD 86 serializes the shared FA02/server-callback runtime state with the Arduino loop through a FreeRTOS task mutex and defers the historical 300 ms advertising restart out of the disconnect callback. This removes known cross-core data races on those shared fields without using an interrupt-disabled critical section.
+
+Some callback-heavy operations still remain, especially filesystem/Bulk processing performed from FA02 writes, together with a small main-loop delay and startup/OLED delays. These are tolerated in the standalone experimental firmware but should **not** be copied into latency-sensitive integrations such as WLED. A WLED port should enqueue BLE work and perform filesystem, parsing and rendering operations from the normal WLED execution context.
 
 The local LED brightness ceiling (`MAX_LED_BRIGHTNESS`, currently 50) is also a hardware/test configuration choice, not a protocol rule. An integration should map iDotMatrix brightness to the host application's configured brightness range.

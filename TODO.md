@@ -34,13 +34,25 @@
 
 - [ ] Continue documenting unknown commands found on larger profiles
 - [ ] Compare behaviour against original hardware captures
-- [ ] Investigate a possible WLED integration/module
+- [x] Keep WLED integration as a separate project (`IDotMatrix-WLED-UserMod`) rather than coupling it to this standalone emulator
 
 ## Reference implementation technical debt
 
-- [ ] Move Alarm/Schedule GIF playback from the legacy full-RAM path to the validated LittleFS streaming/playback architecture
-- [ ] Remove blocking delays from BLE callbacks and other latency-sensitive paths
+- [ ] Document/reproduce the exact Arduino-ESP32 and library versions used for validated builds
+- [x] Validate incoming time/date fields before they can reach calendar logic (BUILD 82)
+- [x] Add reassembly and bulk-transfer timeouts plus cleanup of abandoned RX files (BUILD 82; false multi-packet timeout after BUILD 86 mutex integration fixed in BUILD 88)
+- [x] Make Alarm/Schedule state and filesystem replacement transactional where practical (BUILD 83: staging, backup, validation and best-effort rollback/recovery)
+- [x] Resolve Alarm/Schedule preemption and restore semantics explicitly (BUILD 83: Alarm preempts Schedule first; framebuffer-backed restore is exact, dynamic modes fall back to clock/blank)
+- [x] Make ECO brightness transitions independent of renderer refresh and validate incoming ECO fields (BUILD 85)
+- [x] Make runtime soft reset clear stale transient/Alarm/Schedule/GIF state deterministically (BUILD 85)
+- [x] Gate optional RTC consumers when `lostPower()` indicates invalid time (BUILD 85; physical RTC validation still pending)
+- [x] Add compile-time safeguards before OTA can be enabled with placeholder/default credentials (BUILD 87)
+- [x] Disable implicit LittleFS formatting and add an explicit opt-in recovery/first-use format path (BUILD 87)
+- [x] Move Alarm/Schedule GIF playback from the legacy full-RAM path to an isolated LittleFS PLAY architecture (BUILD 89)
+- [x] Serialize shared BLE/runtime state across the BLE task and Arduino loop with a FreeRTOS task mutex (BUILD 86; timestamp ordering hotfix in BUILD 88)
+- [x] Remove the blocking disconnect delay from the BLE callback; advertising restart is deferred to `loop()` (BUILD 86)
+- [ ] Remove or defer any remaining callback-heavy operations from latency-sensitive BLE paths
 - [ ] Move filesystem/bulk processing out of BLE callbacks where practical
 - [ ] Verify the experimentally unconfirmed TEXT compatibility aliases `0x03` and `0x06` against original hardware/app captures
 - [ ] Refine bulk ACK error semantics (`0x02`/`0x03`) using original-hardware captures
-- [ ] Keep transport, filesystem, decoder and RAM media limits documented separately
+- [x] Keep transport, filesystem, decoder and RAM media limits documented separately (BUILD 87 documentation pass)

@@ -1,12 +1,14 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // ======================================================
 // FIRMWARE BUILD ID
 // Incrementare ad ogni file consegnato: viene stampato
 // sulla seriale all'avvio per evitare dubbi sulla versione.
 // ======================================================
-#define FW_BUILD 80
+#define FW_BUILD 89
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 1
 #define BULK_PROTOCOL_DEBUG 1
@@ -15,6 +17,7 @@
 // Keep 0 when no RTC hardware is installed: alarms use BLE time sync.
 #define RTC_ENABLED             0
 struct ScheduleActivity;
+struct AlarmSlot;
 #define RTC_SYNC_FROM_BLE       1
 
 // ======================================================
@@ -22,6 +25,9 @@ struct ScheduleActivity;
 // ======================================================
 #define DEBUG_SERIAL        1
 #define OTA_ENABLED         0
+// Never format LittleFS implicitly on a normal mount failure. Set to 1 only
+// for an intentional recovery/first-use operation after reading the docs.
+#define LITTLEFS_FORMAT_ON_MOUNT_FAIL 0
 #define MATRIX_PIN          17
 #define STATUS_LED_PIN      25
 
@@ -72,6 +78,7 @@ uint8_t unknownCommandStored = 0;
   #include <RTClib.h>
   RTC_DS3231 rtc;
   bool rtcReady = false;
+  bool rtcTimeValid = false;
 #endif
 
 #if OTA_ENABLED
@@ -81,9 +88,30 @@ uint8_t unknownCommandStored = 0;
   #define WIFI_PASSWORD   "TUA_PASSWORD"
   #define OTA_HOSTNAME    "idotmatrix-esp"
   #define OTA_PASSWORD    "idotmatrix-ota"
+
+  // BUILD 87: OTA is intentionally impossible to compile with the repository
+  // placeholders/default password. This is an emulator safety guard, not a
+  // protocol requirement. Replace all credentials before setting OTA_ENABLED=1.
+  constexpr bool compileTimeStringEqual(const char *a, const char *b) {
+    return (*a == *b) && (*a == '\0' || compileTimeStringEqual(a + 1, b + 1));
+  }
+  static_assert(sizeof(WIFI_SSID) > 1, "OTA: WIFI_SSID must not be empty");
+  static_assert(sizeof(WIFI_PASSWORD) > 1, "OTA: WIFI_PASSWORD must not be empty");
+  static_assert(sizeof(OTA_PASSWORD) > 1, "OTA: OTA_PASSWORD must not be empty");
+  static_assert(!compileTimeStringEqual(WIFI_SSID, "TUO_WIFI"),
+                "OTA: replace the WIFI_SSID placeholder before enabling OTA");
+  static_assert(!compileTimeStringEqual(WIFI_PASSWORD, "TUA_PASSWORD"),
+                "OTA: replace the WIFI_PASSWORD placeholder before enabling OTA");
+  static_assert(!compileTimeStringEqual(OTA_PASSWORD, "idotmatrix-ota"),
+                "OTA: replace the default OTA password before enabling OTA");
+  static_assert(sizeof(OTA_PASSWORD) - 1 >= 8,
+                "OTA: use an OTA password of at least 8 characters");
+
   bool otaReady = false;
   bool otaRunning = false;
 #endif
+
+bool littleFsReady = false;
 
 #if DEBUG_SERIAL
   #define DBG_BEGIN(x)       Serial.begin(x)
@@ -149,7 +177,7 @@ uint8_t unknownCommandStored = 0;
 #define COLOR_ORDER    GRB
 #define MATRIX_MIRROR_X 1
 
-// Abbassato come richiesto: 100% app = 64/255 FastLED.
+// Local hardware/test ceiling: 100% app = 50/255 FastLED.
 #define MAX_LED_BRIGHTNESS 50
 
 // Persistenza luminosita
@@ -224,8 +252,9 @@ void loadBrightnessFromNVS() {
 #define TEXT_GLOBAL_HEADER     14
 #define TEXT_GLYPH_META        4   // marker + RGB; glyph bitmap follows
 #define TEXT_MAX_BITMAP_BYTES  64  // 16x32 glyph = 64 bytes
-#define MAX_GIF_SIZE        (128UL * 1024UL)
 #define MAX_EFFECT_COLORS   16
+#define PACKET_REASSEMBLY_TIMEOUT_MS  5000UL
+#define BULK_TRANSFER_TIMEOUT_MS      30000UL
 
 // ======================================================
 // ALARMS
@@ -273,6 +302,21 @@ BLECharacteristic *fa03 = nullptr;
 BLECharacteristic *ae01 = nullptr;
 BLECharacteristic *ae02 = nullptr;
 bool deviceConnected = false;
+
+// BUILD 86: BLE callbacks and Arduino loop() run on different FreeRTOS tasks
+// (and typically different ESP32 cores). Protect shared protocol/runtime state
+// with a task mutex instead of relying on volatile flags. This is a scheduler
+// mutex, not a spinlock: filesystem and renderer work must never run inside an
+// interrupt/critical section.
+SemaphoreHandle_t runtimeStateMutex = nullptr;
+
+bool lockRuntimeState() {
+  return runtimeStateMutex && xSemaphoreTake(runtimeStateMutex, portMAX_DELAY) == pdTRUE;
+}
+
+void unlockRuntimeState() {
+  if (runtimeStateMutex) xSemaphoreGive(runtimeStateMutex);
+}
 
 CRGB leds[PHYSICAL_NUM_LEDS];
 // Logical buffers are allocated from the heap at runtime. Keeping 64x64
@@ -323,6 +367,11 @@ struct EnergySavingState {
   uint8_t endHour = 0, endMinute = 0;
   uint8_t reductionPercent = 0;
 } energySaving;
+
+// Last brightness actually pushed to FastLED. This lets static display modes
+// react when an ECO interval begins/ends even if no renderer requests refresh.
+uint8_t lastAppliedOutputBrightness = 0xFF;
+uint32_t lastEnergySavingCheckMs = 0;
 
 // ======================================================
 // COUNTDOWN / STOPWATCH / SCOREBOARD
@@ -400,14 +449,20 @@ struct AudioState {
 // Dichiarare qui simboli e funzioni evita di dipendere dalla
 // generazione automatica dei prototipi dell'IDE Arduino.
 // ======================================================
-extern uint8_t *gifData;
-extern size_t gifWriteOffset;
-
-bool allocateGIF(size_t size);
 void freeGIF();
 bool startGIF();
+bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uint32_t expectedCRC);
+void stopGIFPlayback();
 void switchDisplayMode(DisplayMode m);
 void renderClock();
+void stopScheduleActivity();
+extern uint8_t scheduleGlobalFlags;
+extern int8_t scheduleActiveIndex;
+extern int8_t scheduleFailedIndex;
+extern CRGB *scheduleSavedFrame;
+uint32_t crc32Update(uint32_t crc, const uint8_t *data, size_t len);
+bool fileMatchesMedia(const String &path, uint32_t expectedSize, uint32_t expectedCRC);
+void clearFramebuffer(const CRGB &color = CRGB::Black);
 
 
 // ======================================================
@@ -438,12 +493,44 @@ uint32_t alarmEndsAt = 0;
 DisplayMode alarmPreviousMode = DISPLAY_CLOCK;
 
 String alarmFileName(uint8_t slot) { return String("/alarm") + slot + ".bin"; }
+String alarmTempFileName(uint8_t slot) { return String("/alarm") + slot + ".tmp"; }
+String alarmBackupFileName(uint8_t slot) { return String("/alarm") + slot + ".bak"; }
 
-void saveAlarmMeta(uint8_t slot) {
-  if (slot >= ALARM_SLOT_COUNT) return;
+bool saveAlarmMetaValue(uint8_t slot, const AlarmSlot &value) {
+  if (slot >= ALARM_SLOT_COUNT) return false;
   char key[12];
   snprintf(key,sizeof(key),"a%u",slot);
-  alarmPrefs.putBytes(key,&alarms[slot],sizeof(AlarmSlot));
+  return alarmPrefs.putBytes(key,&value,sizeof(AlarmSlot)) == sizeof(AlarmSlot);
+}
+
+bool saveAlarmMeta(uint8_t slot) {
+  return slot < ALARM_SLOT_COUNT && saveAlarmMetaValue(slot, alarms[slot]);
+}
+
+void recoverAlarmFile(uint8_t slot) {
+  if (!littleFsReady || slot >= ALARM_SLOT_COUNT) return;
+  const AlarmSlot &a = alarms[slot];
+  String dst = alarmFileName(slot), tmp = alarmTempFileName(slot), bak = alarmBackupFileName(slot);
+  LittleFS.remove(tmp);
+
+  if (!a.configured || !a.mediaSize) {
+    LittleFS.remove(dst);
+    LittleFS.remove(bak);
+    return;
+  }
+
+  bool dstOK = fileMatchesMedia(dst, a.mediaSize, a.mediaCRC);
+  bool bakOK = fileMatchesMedia(bak, a.mediaSize, a.mediaCRC);
+  if (dstOK) {
+    LittleFS.remove(bak);
+  } else if (bakOK) {
+    LittleFS.remove(dst);
+    if (!LittleFS.rename(bak, dst)) {
+#if DEBUG_SERIAL
+      Serial.print("ALARM RECOVERY rename failed slot="); Serial.println(slot);
+#endif
+    }
+  }
 }
 
 void loadAlarms() {
@@ -453,6 +540,7 @@ void loadAlarms() {
     size_t n=alarmPrefs.getBytesLength(key);
     if(n==sizeof(AlarmSlot)) alarmPrefs.getBytes(key,&alarms[i],sizeof(AlarmSlot));
     alarms[i].lastTriggerMinuteKey=0xFFFFFFFFUL;
+    recoverAlarmFile(i);
 #if DEBUG_SERIAL
     if(alarms[i].configured){
       Serial.print("ALARM LOAD slot="); Serial.print(i);
@@ -465,14 +553,28 @@ void loadAlarms() {
       Serial.print(" buzzer="); Serial.print(alarms[i].buzzer);
       Serial.print(" bytes="); Serial.print(alarms[i].mediaSize);
       Serial.print(" mediaId=0x"); Serial.print(alarms[i].mediaId,HEX);
-      Serial.print(" file="); Serial.println(LittleFS.exists(alarmFileName(i))?"YES":"NO");
+      Serial.print(" file=");
+      Serial.println(!littleFsReady ? "FS-OFFLINE" : (LittleFS.exists(alarmFileName(i)) ? "YES" : "NO"));
     }
 #endif
   }
 }
 
+bool isLeapYear(uint16_t y){
+  return (y%4==0 && y%100!=0) || (y%400==0);
+}
+
+bool isValidDateTime(uint16_t y,uint8_t mo,uint8_t d,uint8_t h,uint8_t mi,uint8_t se){
+  if(mo<1 || mo>12 || h>23 || mi>59 || se>59) return false;
+  static const uint8_t mdays[]={31,28,31,30,31,30,31,31,30,31,30,31};
+  uint8_t dim=mdays[mo-1];
+  if(mo==2 && isLeapYear(y)) dim=29;
+  return d>=1 && d<=dim;
+}
+
 uint8_t currentWeekdayBit(uint16_t y,uint8_t m,uint8_t d){
-  // Sakamoto: 0=Sunday. Protocollo: bit1=Monday ... bit7=Sunday.
+  // Sakamoto: 0=Sunday. Protocol: bit1=Monday ... bit7=Sunday.
+  if(!isValidDateTime(y,m,d,0,0,0)) return 0;
   static const uint8_t t[]={0,3,2,5,0,3,5,1,4,6,2,4};
   uint16_t yy=y; if(m<3) yy--;
   uint8_t dow=(yy+yy/4-yy/100+yy/400+t[m-1]+d)%7;
@@ -481,7 +583,7 @@ uint8_t currentWeekdayBit(uint16_t y,uint8_t m,uint8_t d){
 
 void getAlarmDateTime(uint16_t &y,uint8_t &mo,uint8_t &d,uint8_t &h,uint8_t &mi,uint8_t &se){
 #if RTC_ENABLED
-  if(rtcReady){
+  if(rtcReady && rtcTimeValid){
     DateTime now=rtc.now();
     y=now.year(); mo=now.month(); d=now.day(); h=now.hour(); mi=now.minute(); se=now.second();
     return;
@@ -495,13 +597,13 @@ void getAlarmDateTime(uint16_t &y,uint8_t &mo,uint8_t &d,uint8_t &h,uint8_t &mi,
   static const uint8_t mdays[]={31,28,31,30,31,30,31,31,30,31,30,31};
   while(dayCarry--){
     uint8_t dim=mdays[mo-1];
-    bool leap=((y%4==0&&y%100!=0)||(y%400==0)); if(mo==2&&leap) dim=29;
+    if(mo==2&&isLeapYear(y)) dim=29;
     if(++d>dim){ d=1; if(++mo>12){mo=1;y++;} }
   }
 }
 
 bool loadAlarmMedia(uint8_t slot){
-  if(slot>=ALARM_SLOT_COUNT) return false;
+  if(!littleFsReady || slot>=ALARM_SLOT_COUNT) return false;
   AlarmSlot &a=alarms[slot];
   File f=LittleFS.open(alarmFileName(slot),"r");
   if(!f || (uint32_t)f.size()!=a.mediaSize){ if(f)f.close(); return false; }
@@ -512,10 +614,8 @@ bool loadAlarmMedia(uint8_t slot){
     f.close(); refreshMatrix(); return true;
   }
   if(a.contentType==ALARM_CONTENT_GIF){
-    if(!allocateGIF(a.mediaSize)){f.close();return false;}
-    size_t got=f.read(gifData,a.mediaSize); f.close(); gifWriteOffset=got;
-    if(got!=a.mediaSize){freeGIF();return false;}
-    return startGIF();
+    f.close();
+    return startStoredGIFPlayback(alarmFileName(slot), a.mediaSize, a.mediaCRC);
   }
   f.close(); return false;
 }
@@ -535,10 +635,6 @@ static inline void setBuzzerOutput(bool on) {
                on ? (BUZZER_ACTIVE_HIGH ? HIGH : LOW)
                   : (BUZZER_ACTIVE_HIGH ? LOW : HIGH));
 }
-
-// Schedule state is defined later in the sketch; forward declarations are required here.
-extern uint8_t scheduleGlobalFlags;
-extern int8_t scheduleActiveIndex;
 
 static bool buzzerRequested() {
   bool wanted = false;
@@ -594,7 +690,13 @@ void updateBuzzer() {}
 void startAlarm(uint8_t slot){
   if(slot>=ALARM_SLOT_COUNT || alarmActive) return;
   AlarmSlot &a=alarms[slot];
+
+  // Alarm has priority over Schedule. Stop the Schedule first so its restore
+  // path cannot tear down media that the Alarm has just started.
+  if(scheduleActiveIndex>=0) stopScheduleActivity();
+
   alarmPreviousMode=displayMode;
+  if(scheduleSavedFrame) ::memcpy(scheduleSavedFrame, framebuffer, LOGICAL_FRAME_BYTES);
   alarmActive=true; activeAlarmSlot=slot; alarmEndsAt=millis()+(uint32_t)a.durationSec*1000UL;
   loadAlarmMedia(slot);
 #if DEBUG_SERIAL
@@ -605,14 +707,26 @@ void startAlarm(uint8_t slot){
 void stopAlarm(){
   if(!alarmActive) return;
   alarmActive=false; activeAlarmSlot=0xFF;
-  // Se il contenuto era GIF, la precedente GIF non e' piu' disponibile: torniamo all'orologio.
-  switchDisplayMode(DISPLAY_CLOCK); renderClock();
+  stopGIFPlayback();
+
+  // Restore framebuffer-backed modes exactly. Other dynamic modes cannot be
+  // reconstructed generically, so fall back to the synchronized clock/blank.
+  if(scheduleSavedFrame && (alarmPreviousMode==DISPLAY_SOLID || alarmPreviousMode==DISPLAY_RAW ||
+      alarmPreviousMode==DISPLAY_GRAFFITI)) {
+    ::memcpy(framebuffer, scheduleSavedFrame, LOGICAL_FRAME_BYTES);
+    displayMode=alarmPreviousMode;
+    refreshMatrix();
+  } else if(clockSynced) {
+    switchDisplayMode(DISPLAY_CLOCK); renderClock();
+  } else {
+    switchDisplayMode(DISPLAY_NONE); clearFramebuffer(); refreshMatrix();
+  }
 }
 
 void updateAlarms(){
   if(alarmActive){ if((int32_t)(millis()-alarmEndsAt)>=0) stopAlarm(); return; }
 #if RTC_ENABLED
-  if(!clockSynced && !rtcReady) return;
+  if(!clockSynced && !(rtcReady && rtcTimeValid)) return;
 #else
   if(!clockSynced) return;
 #endif
@@ -634,45 +748,83 @@ void updateAlarms(){
 bool processAlarmCommand(const uint8_t *data,size_t len){
   if(len<12 || data[2]!=0x00 || data[3]!=0x80) return false;
   uint8_t slot=data[4]; if(slot>=ALARM_SLOT_COUNT){sendCommandAck(0x00,0x80);return true;}
-  AlarmSlot &a=alarms[slot];
-  // Pacchetto corto: aggiorna/disarma i metadati senza media.
-  if(len<ALARM_HEADER_SIZE){
-    a.configured=true; a.flags=data[5]; a.hour=data[6]; a.minute=data[7]; a.durationSec=data[8];
-    if(len>9)a.reserved1=data[9]; if(len>10)a.contentType=data[10]; if(len>11)a.buzzer=data[11];
-    saveAlarmMeta(slot);
+
+  AlarmSlot previous=alarms[slot];
+  AlarmSlot candidate=previous;
+  candidate.configured=true; candidate.flags=data[5]; candidate.hour=data[6]; candidate.minute=data[7]; candidate.durationSec=data[8];
+  if(candidate.hour>23 || candidate.minute>59){
 #if DEBUG_SERIAL
-    Serial.print("ALARM META slot=");Serial.print(slot);Serial.print(" flags=0x");Serial.print(a.flags,HEX);Serial.print(" ");Serial.print(a.hour);Serial.print(":");Serial.println(a.minute);
+    Serial.println("ALARM ERROR: invalid time");
 #endif
     sendCommandAck(0x00,0x80); return true;
   }
-  a.configured=true; a.flags=data[5]; a.hour=data[6]; a.minute=data[7]; a.durationSec=data[8];
-  a.reserved1=data[9]; a.contentType=data[10]; a.buzzer=data[11]; a.reserved2=data[12];
-  a.mediaSize=(uint32_t)data[13]|((uint32_t)data[14]<<8)|((uint32_t)data[15]<<16)|((uint32_t)data[16]<<24);
-  a.mediaCRC=(uint32_t)data[17]|((uint32_t)data[18]<<8)|((uint32_t)data[19]<<16)|((uint32_t)data[20]<<24);
-  a.reserved3=(uint16_t)data[21]|((uint16_t)data[22]<<8); a.mediaId=data[23];
-  if(a.mediaSize > len-ALARM_HEADER_SIZE){
+
+  // Short packet: stage metadata first and publish it to RAM only after NVS
+  // accepted the complete record. Existing media metadata/file are preserved.
+  if(len<ALARM_HEADER_SIZE){
+    if(len>9)candidate.reserved1=data[9]; if(len>10)candidate.contentType=data[10]; if(len>11)candidate.buzzer=data[11];
+    bool stored=saveAlarmMetaValue(slot,candidate);
+    if(stored) alarms[slot]=candidate;
+    else saveAlarmMetaValue(slot,previous);
+#if DEBUG_SERIAL
+    Serial.print("ALARM META slot=");Serial.print(slot);Serial.print(" flags=0x");Serial.print(candidate.flags,HEX);Serial.print(" ");Serial.print(candidate.hour);Serial.print(":");Serial.print(candidate.minute);Serial.print(" stored=");Serial.println(stored?"YES":"NO");
+#endif
+    sendCommandAck(0x00,0x80); return true;
+  }
+
+  candidate.reserved1=data[9]; candidate.contentType=data[10]; candidate.buzzer=data[11]; candidate.reserved2=data[12];
+  if(!littleFsReady){
+#if DEBUG_SERIAL
+    Serial.println("ALARM ERROR: LittleFS unavailable for media update");
+#endif
+    sendCommandAck(0x00,0x80); return true;
+  }
+  candidate.mediaSize=(uint32_t)data[13]|((uint32_t)data[14]<<8)|((uint32_t)data[15]<<16)|((uint32_t)data[16]<<24);
+  candidate.mediaCRC=(uint32_t)data[17]|((uint32_t)data[18]<<8)|((uint32_t)data[19]<<16)|((uint32_t)data[20]<<24);
+  candidate.reserved3=(uint16_t)data[21]|((uint16_t)data[22]<<8); candidate.mediaId=data[23];
+  if(candidate.mediaSize > len-ALARM_HEADER_SIZE){
 #if DEBUG_SERIAL
     Serial.println("ALARM ERROR: media size > packet");
 #endif
     sendCommandAck(0x00,0x80); return true;
   }
   const uint8_t *media=data+ALARM_HEADER_SIZE;
-  uint32_t calc=crc32Update(0xFFFFFFFF,media,a.mediaSize)^0xFFFFFFFF;
-  if(calc!=a.mediaCRC){
+  uint32_t calc=crc32Update(0xFFFFFFFF,media,candidate.mediaSize)^0xFFFFFFFF;
+  if(calc!=candidate.mediaCRC){
 #if DEBUG_SERIAL
-    Serial.print("ALARM CRC ERROR calc=0x");Serial.print(calc,HEX);Serial.print(" expected=0x");Serial.println(a.mediaCRC,HEX);
+    Serial.print("ALARM CRC ERROR calc=0x");Serial.print(calc,HEX);Serial.print(" expected=0x");Serial.println(candidate.mediaCRC,HEX);
 #endif
     sendCommandAck(0x00,0x80); return true;
   }
-  File f=LittleFS.open(alarmFileName(slot),"w");
-  bool stored=f && f.write(media,a.mediaSize)==a.mediaSize; if(f)f.close();
-  if(stored) saveAlarmMeta(slot);
+
+  String dst=alarmFileName(slot), tmp=alarmTempFileName(slot), bak=alarmBackupFileName(slot);
+  LittleFS.remove(tmp); LittleFS.remove(bak);
+  File f=LittleFS.open(tmp,"w");
+  bool stored=f && (!candidate.mediaSize || f.write(media,candidate.mediaSize)==candidate.mediaSize); if(f)f.close();
+  bool hadOld=LittleFS.exists(dst);
+  if(stored && hadOld) stored=LittleFS.rename(dst,bak);
+  if(stored) stored=LittleFS.rename(tmp,dst);
+  if(!stored){
+    LittleFS.remove(tmp);
+    if(hadOld && LittleFS.exists(bak) && !LittleFS.exists(dst)) LittleFS.rename(bak,dst);
+  } else if(!saveAlarmMetaValue(slot,candidate)){
+    // Metadata did not commit: roll the filesystem and NVS back to the previous slot.
+    LittleFS.remove(dst);
+    if(hadOld && LittleFS.exists(bak)) LittleFS.rename(bak,dst);
+    saveAlarmMetaValue(slot,previous);
+    stored=false;
+  } else {
+    alarms[slot]=candidate;
+    LittleFS.remove(bak);
+  }
 #if DEBUG_SERIAL
-  Serial.print("ALARM SAVE slot=");Serial.print(slot);Serial.print(" flags=0x");Serial.print(a.flags,HEX);
-  Serial.print(" time=");Serial.print(a.hour);Serial.print(":");Serial.print(a.minute);Serial.print(" dur=");Serial.print(a.durationSec);
-  Serial.print(" type=");Serial.print(a.contentType);Serial.print(" buzzer=");Serial.print(a.buzzer);Serial.print(" bytes=");Serial.print(a.mediaSize);
-  Serial.print(" mediaId=0x");Serial.print(a.mediaId,HEX);Serial.print(" stored=");Serial.println(stored?"YES":"NO");
+  Serial.print("ALARM SAVE slot=");Serial.print(slot);Serial.print(" flags=0x");Serial.print(candidate.flags,HEX);
+  Serial.print(" time=");Serial.print(candidate.hour);Serial.print(":");Serial.print(candidate.minute);Serial.print(" dur=");Serial.print(candidate.durationSec);
+  Serial.print(" type=");Serial.print(candidate.contentType);Serial.print(" buzzer=");Serial.print(candidate.buzzer);Serial.print(" bytes=");Serial.print(candidate.mediaSize);
+  Serial.print(" mediaId=0x");Serial.print(candidate.mediaId,HEX);Serial.print(" stored=");Serial.println(stored?"YES":"NO");
 #endif
+  // Preserve the compatibility ACK while the original device's error status
+  // for Alarm storage failures remains unknown.
   sendCommandAck(0x00,0x80); return true;
 }
 
@@ -683,15 +835,67 @@ AnimatedGIF *gif = nullptr;
 bool gifDecoderTeardownPending = false;
 bool gifDecoderOpenPending = false;
 uint32_t gifDecoderOpenAt = 0;
-uint8_t *gifData = nullptr;
 size_t gifSize = 0;
-size_t gifWriteOffset = 0;
 bool gifStoredOnFS = false;
+bool gifEventPlaybackFileActive = false;
 // B73: RX and playback files are deliberately different.  BLE writes happen
 // on Core 0 while AnimatedGIF playback runs from loop() on Core 1; touching
 // the file/decoder currently in use from the BLE callback can corrupt the heap.
 const char *GIF_PLAY_FILE = "/gif_play.gif";
+const char *GIF_PLAY_BACKUP_FILE = "/gif_play.bak";
 const char *GIF_RX_FILES[2] = { "/gif_rx0.tmp", "/gif_rx1.tmp" };
+// Alarm/Schedule GIFs use a disposable PLAY copy. Their persistent source
+// files remain free to participate in staging/backup/rollback transactions.
+const char *EVENT_GIF_PLAY_FILE = "/event_play.gif";
+
+uint32_t storedFileSize(const char *path) {
+  if(!littleFsReady) return 0;
+  File f=LittleFS.open(path,"r");
+  if(!f) return 0;
+  uint32_t size=(uint32_t)f.size();
+  f.close();
+  return size;
+}
+
+void recoverGifPlayFile() {
+  if(!littleFsReady) return;
+  bool havePlay=LittleFS.exists(GIF_PLAY_FILE);
+  bool haveBackup=LittleFS.exists(GIF_PLAY_BACKUP_FILE);
+  if(havePlay) LittleFS.remove(GIF_PLAY_BACKUP_FILE);
+  else if(haveBackup) LittleFS.rename(GIF_PLAY_BACKUP_FILE,GIF_PLAY_FILE);
+  // RX files belong to an interrupted BLE session and are never resumable.
+  LittleFS.remove(GIF_RX_FILES[0]);
+  LittleFS.remove(GIF_RX_FILES[1]);
+  // Event PLAY is an ephemeral copy and is never authoritative after reboot.
+  LittleFS.remove(EVENT_GIF_PLAY_FILE);
+}
+
+bool promoteGifRxToPlay(uint8_t slot) {
+  if(!littleFsReady || slot>1) return false;
+  const char *rxPath=GIF_RX_FILES[slot];
+  if(!LittleFS.exists(rxPath)) return false;
+
+  // Reconcile any leftover backup from an earlier interrupted promotion before
+  // starting a new replacement; never discard the only known-good PLAY file.
+  if(!LittleFS.exists(GIF_PLAY_FILE) && LittleFS.exists(GIF_PLAY_BACKUP_FILE)) {
+    if(!LittleFS.rename(GIF_PLAY_BACKUP_FILE,GIF_PLAY_FILE)) return false;
+  } else if(LittleFS.exists(GIF_PLAY_FILE) && LittleFS.exists(GIF_PLAY_BACKUP_FILE)) {
+    LittleFS.remove(GIF_PLAY_BACKUP_FILE);
+  }
+
+  bool hadOld=LittleFS.exists(GIF_PLAY_FILE);
+  if(hadOld && !LittleFS.rename(GIF_PLAY_FILE,GIF_PLAY_BACKUP_FILE)) return false;
+
+  if(!LittleFS.rename(rxPath,GIF_PLAY_FILE)){
+    if(hadOld && LittleFS.exists(GIF_PLAY_BACKUP_FILE))
+      LittleFS.rename(GIF_PLAY_BACKUP_FILE,GIF_PLAY_FILE);
+    return false;
+  }
+
+  LittleFS.remove(GIF_PLAY_BACKUP_FILE);
+  return true;
+}
+
 File gifBulkFile;
 size_t gifRxWriteOffset = 0;
 uint8_t nextGifRxSlot = 0;
@@ -702,9 +906,9 @@ bool gifFrameWasDrawn = false;
 // A completed BLE GIF transfer is acknowledged immediately and opened later
 // from loop().  AnimatedGIF/LittleFS initialization must not run inside the
 // BLE write callback: complex 64x64 GIFs can otherwise corrupt/crash Core 0.
-volatile bool pendingGifStart = false;
-volatile int8_t pendingGifSlot = -1;
-volatile uint32_t pendingGifSize = 0;
+bool pendingGifStart = false;
+int8_t pendingGifSlot = -1;
+uint32_t pendingGifSize = 0;
 uint32_t pendingGifStartAt = 0;
 uint32_t gifNextFrameAt = 0;
 CRGB *gifFrame = nullptr;
@@ -715,6 +919,8 @@ CRGB *gifFrame = nullptr;
 uint8_t packetBuffer[MAX_PACKET_SIZE];
 size_t packetReceived = 0;
 size_t packetExpected = 0;
+uint32_t packetLastRxMs = 0;
+uint32_t bulkLastRxMs = 0;
 
 struct BulkTransferState {
   bool active = false;
@@ -738,6 +944,8 @@ bool pendingDeviceInfoPush = false;
 uint32_t deviceInfoPushAt = 0;
 bool pendingSoftReset = false;
 uint32_t softResetAt = 0;
+bool pendingAdvertisingRestart = false;
+uint32_t advertisingRestartAt = 0;
 
 // ======================================================
 // UTILITY
@@ -773,6 +981,24 @@ uint32_t crc32Update(uint32_t crc, const uint8_t *data, size_t len) {
   return crc;
 }
 
+bool fileMatchesMedia(const String &path, uint32_t expectedSize, uint32_t expectedCRC) {
+  if(!littleFsReady) return false;
+  File f=LittleFS.open(path,"r");
+  if(!f || (uint32_t)f.size()!=expectedSize){ if(f)f.close(); return false; }
+  uint8_t buf[256];
+  uint32_t crc=0xFFFFFFFF;
+  uint32_t remaining=expectedSize;
+  while(remaining){
+    size_t want=remaining>sizeof(buf)?sizeof(buf):(size_t)remaining;
+    size_t got=f.read(buf,want);
+    if(got!=want){f.close();return false;}
+    crc=crc32Update(crc,buf,got);
+    remaining-=(uint32_t)got;
+  }
+  f.close();
+  return (crc^0xFFFFFFFF)==expectedCRC;
+}
+
 uint16_t logicalIndex(uint8_t x, uint8_t y) {
   return (uint16_t)y * MATRIX_WIDTH + x;
 }
@@ -782,7 +1008,7 @@ uint16_t physicalXY(uint8_t x, uint8_t y) {
   return (uint16_t)y * PHYSICAL_MATRIX_WIDTH + PHYSICAL_MATRIX_WIDTH - 1 - x;
 }
 
-void clearFramebuffer(const CRGB &color = CRGB::Black) {
+void clearFramebuffer(const CRGB &color) {
   fill_solid(framebuffer, NUM_LEDS, color);
 }
 
@@ -826,9 +1052,19 @@ void getCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s) {
 }
 
 bool isEnergySavingActive() {
-  if (!energySaving.enabled || !clockSynced) return false;
-  uint8_t h, m, s;
+  if (!energySaving.enabled) return false;
+  uint8_t h=0, m=0, s=0;
+#if RTC_ENABLED
+  if (rtcReady && rtcTimeValid) {
+    DateTime now=rtc.now();
+    h=now.hour(); m=now.minute(); s=now.second();
+  } else if (clockSynced) {
+    getCurrentTime(h, m, s);
+  } else return false;
+#else
+  if (!clockSynced) return false;
   getCurrentTime(h, m, s);
+#endif
   uint16_t now = (uint16_t)h * 60 + m;
   uint16_t start = (uint16_t)energySaving.startHour * 60 + energySaving.startMinute;
   uint16_t end = (uint16_t)energySaving.endHour * 60 + energySaving.endMinute;
@@ -854,6 +1090,7 @@ void refreshMatrix() {
   if (!screenOn) {
     FastLED.clear();
     FastLED.show();
+    lastAppliedOutputBrightness = 0xFF;
     return;
   }
   FastLED.clear();
@@ -882,8 +1119,20 @@ void refreshMatrix() {
 #endif
     }
   }
-  FastLED.setBrightness(brightnessToFastLED(effectiveBrightnessPercent()));
+  uint8_t outputBrightness=brightnessToFastLED(effectiveBrightnessPercent());
+  FastLED.setBrightness(outputBrightness);
+  lastAppliedOutputBrightness=outputBrightness;
   FastLED.show();
+}
+
+void updateEnergySavingOutput(uint32_t now) {
+  // ECO is a local emulator policy inferred from the app command. Check once
+  // per second so static images also change brightness at interval boundaries.
+  if ((uint32_t)(now-lastEnergySavingCheckMs) < 1000UL) return;
+  lastEnergySavingCheckMs=now;
+  if (!screenOn) return;
+  uint8_t wanted=brightnessToFastLED(effectiveBrightnessPercent());
+  if (wanted != lastAppliedOutputBrightness) refreshMatrix();
 }
 
 // ======================================================
@@ -1602,7 +1851,12 @@ void destroyGIFDecoder(){
     gif=nullptr;
   }
 }
-void stopGIFPlayback(){ destroyGIFDecoder(); }
+void stopGIFPlayback(){
+  bool removeEventFile=gifEventPlaybackFileActive;
+  destroyGIFDecoder();
+  gifEventPlaybackFileActive=false;
+  if(removeEventFile && littleFsReady) LittleFS.remove(EVENT_GIF_PLAY_FILE);
+}
 void freeGIF(){
   pendingGifStart=false;
   pendingGifSlot=-1;
@@ -1611,20 +1865,15 @@ void freeGIF(){
   gifDecoderTeardownPending=false;
   gifDecoderOpenPending=false;
   gifDecoderOpenAt=0;
-  destroyGIFDecoder();
-  if(gifData){ free(gifData); gifData=nullptr; }
-  gifSize=gifWriteOffset=0;
+  stopGIFPlayback();
+  gifSize=0;
   gifStoredOnFS=false;
 }
-bool allocateGIF(size_t size){
-  freeGIF(); if(!size || size>MAX_GIF_SIZE) return false;
-  gifData=(uint8_t*)malloc(size); if(!gifData) return false;
-  gifSize=size; gifWriteOffset=0; gifStoredOnFS=false; return true;
-}
 
-// AnimatedGIF file callbacks. Large GIFs are kept in LittleFS so the
-// compressed media never needs one large contiguous DRAM allocation.
+// AnimatedGIF file callbacks. BUILD 89 keeps all compressed GIF playback
+// file-backed, so no GIF requires one large contiguous DRAM allocation.
 void *GIFOpenFile(const char *fname, int32_t *pSize){
+  if(!littleFsReady) return nullptr;
   File *f=new File(LittleFS.open(fname,"r"));
   if(!f || !(*f)){ if(f) delete f; return nullptr; }
   *pSize=(int32_t)f->size();
@@ -1672,8 +1921,8 @@ void GIFDraw(GIFDRAW *pDraw){
   }
 }
 
-bool startGIF(){
-  if((!gifStoredOnFS && (!gifData||!gifSize)) || (gifStoredOnFS && !LittleFS.exists(GIF_PLAY_FILE))) return false;
+bool startGIFFile(const char *path, bool eventPlayback){
+  if(!littleFsReady || !path || !gifSize || !LittleFS.exists(path)) return false;
   if(gif) destroyGIFDecoder();
   fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
@@ -1693,12 +1942,7 @@ bool startGIF(){
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
   Serial.println("GIF NEW open");
 #endif
-  bool opened=false;
-  if(gifStoredOnFS){
-    opened=gif->open(GIF_PLAY_FILE,GIFOpenFile,GIFCloseFile,GIFReadFile,GIFSeekFile,GIFDraw);
-  } else {
-    opened=gif->open(gifData,(int)gifSize,GIFDraw);
-  }
+  bool opened=gif->open(path,GIFOpenFile,GIFCloseFile,GIFReadFile,GIFSeekFile,GIFDraw);
   if(!opened){
 #if DEBUG_SERIAL
     Serial.println("GIF NEW open FAILED");
@@ -1714,7 +1958,76 @@ bool startGIF(){
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
   Serial.println("GIF NEW reset OK");
 #endif
+  gifStoredOnFS=true;
+  gifEventPlaybackFileActive=eventPlayback;
   gifLoaded=gifPlaying=true; gifNextFrameAt=millis(); displayMode=DISPLAY_GIF; return true;
+}
+
+bool startGIF(){
+  return startGIFFile(GIF_PLAY_FILE,false);
+}
+
+bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uint32_t expectedCRC){
+  if(!littleFsReady || !expectedSize) return false;
+  File src=LittleFS.open(sourcePath,"r");
+  if(!src || (uint32_t)src.size()!=expectedSize){ if(src) src.close(); return false; }
+
+  // Never decode an Alarm/Schedule source file directly: it can later be
+  // renamed as part of a transactional update. Copy it to a disposable PLAY
+  // file so AnimatedGIF owns a stable file for the whole playback lifetime.
+  stopGIFPlayback();
+  LittleFS.remove(EVENT_GIF_PLAY_FILE);
+  size_t fsTotal=LittleFS.totalBytes();
+  size_t fsUsed=LittleFS.usedBytes();
+  size_t fsFree=fsTotal>fsUsed ? fsTotal-fsUsed : 0;
+  if((uint64_t)expectedSize>(uint64_t)fsFree){
+#if DEBUG_SERIAL
+    Serial.print("EVENT GIF rejected: bytes="); Serial.print(expectedSize);
+    Serial.print(" LittleFS free="); Serial.println(fsFree);
+#endif
+    src.close();
+    return false;
+  }
+
+  File dst=LittleFS.open(EVENT_GIF_PLAY_FILE,"w");
+  if(!dst){ src.close(); return false; }
+  uint8_t buf[512];
+  uint32_t remaining=expectedSize;
+  uint32_t runningCRC=0xFFFFFFFF;
+  bool ok=true;
+  while(remaining && ok){
+    size_t want=min((size_t)remaining,sizeof(buf));
+    int n=src.read(buf,want);
+    if(n<=0){ ok=false; break; }
+    runningCRC=crc32Update(runningCRC,buf,(size_t)n);
+    if(dst.write(buf,(size_t)n)!=(size_t)n){ ok=false; break; }
+    remaining-=(uint32_t)n;
+  }
+  dst.flush();
+  dst.close();
+  src.close();
+  runningCRC^=0xFFFFFFFF;
+  if(!ok || remaining || runningCRC!=expectedCRC || storedFileSize(EVENT_GIF_PLAY_FILE)!=expectedSize){
+#if DEBUG_SERIAL
+    Serial.println("EVENT GIF copy/CRC failed");
+#endif
+    LittleFS.remove(EVENT_GIF_PLAY_FILE);
+    return false;
+  }
+
+  gifSize=expectedSize;
+  gifStoredOnFS=true;
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.print("EVENT GIF PLAY copy bytes="); Serial.print(expectedSize);
+  Serial.print(" source="); Serial.println(sourcePath);
+#endif
+  if(!startGIFFile(EVENT_GIF_PLAY_FILE,true)){
+    gifStoredOnFS=false;
+    gifSize=0;
+    LittleFS.remove(EVENT_GIF_PLAY_FILE);
+    return false;
+  }
+  return true;
 }
 
 void updateGIF(){
@@ -1731,12 +2044,36 @@ void updateGIF(){
 // BULK
 // ======================================================
 bool startsWithGIF(const uint8_t *data,size_t len){ return len>=6 && (!memcmp(data,"GIF87a",6)||!memcmp(data,"GIF89a",6)); }
-void resetBulkTransfer(){
+void resetBulkTransfer(bool removePartialGif=false){
+  int8_t rxSlot=bulk.gifRxSlot;
   if(gifBulkFile) gifBulkFile.close();
+  if(littleFsReady && removePartialGif && rxSlot>=0 && rxSlot<=1){
+    // Never remove a completed file already queued for deferred playback.
+    if(!(pendingGifStart && pendingGifSlot==rxSlot)) LittleFS.remove(GIF_RX_FILES[(uint8_t)rxSlot]);
+  }
   bulk=BulkTransferState();
+  bulkLastRxMs=0;
   textPayloadReceived=0;
   if(rawRgbData){ free(rawRgbData); rawRgbData=nullptr; }
   rawRgbWriteOffset=0;
+}
+
+void expireStalledTransfers(uint32_t now){
+  // These are emulator safety timeouts, not inferred protocol timings.
+  if(packetReceived && packetLastRxMs && (uint32_t)(now-packetLastRxMs)>PACKET_REASSEMBLY_TIMEOUT_MS){
+#if DEBUG_SERIAL
+    Serial.println("PACKET RX timeout; dropping incomplete logical packet");
+#endif
+    packetReceived=packetExpected=0;
+    packetLastRxMs=0;
+    resetBulkTransfer(true);
+  }
+  if(bulk.active && bulkLastRxMs && (uint32_t)(now-bulkLastRxMs)>BULK_TRANSFER_TIMEOUT_MS){
+#if DEBUG_SERIAL
+    Serial.println("BULK timeout; aborting stalled transfer");
+#endif
+    resetBulkTransfer(true);
+  }
 }
 
 bool processBulkPacket(const uint8_t *data,size_t len){
@@ -1745,6 +2082,15 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   uint32_t total=(uint32_t)data[5]|((uint32_t)data[6]<<8)|((uint32_t)data[7]<<16)|((uint32_t)data[8]<<24);
   uint32_t crc=(uint32_t)data[9]|((uint32_t)data[10]<<8)|((uint32_t)data[11]<<16)|((uint32_t)data[12]<<24);
   if(!total || total>10UL*1024UL*1024UL) return false;
+  if(type==3 && total>MAX_TEXT_PAYLOAD){
+#if DEBUG_SERIAL
+    Serial.print("TEXT RX rejected: declared payload "); Serial.print(total);
+    Serial.print(" exceeds MAX_TEXT_PAYLOAD="); Serial.println(MAX_TEXT_PAYLOAD);
+#endif
+    resetBulkTransfer(true);
+    sendTransferAck(type,0x03);
+    return true;
+  }
   const uint8_t *payload=data+16; size_t payloadSize=len-16;
   if(!bulk.active){
     resetBulkTransfer(); bulk.active=true; bulk.dataType=type; bulk.expectedSize=total; bulk.expectedCRC=crc; bulk.runningCRC=0xFFFFFFFF;
@@ -1758,19 +2104,35 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     Serial.print(" format="); Serial.println(bulk.format.length() ? bulk.format : "UNKNOWN");
 #endif
     if(type==1){
+      if(!littleFsReady){
+#if DEBUG_SERIAL
+        Serial.println("BULK GIF rejected: LittleFS unavailable");
+#endif
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
       // B73: every incoming GIF is streamed to an RX file.  Crucially, do not
       // call freeGIF()/gif.close() here: this function runs in the BLE callback
       // while loop() may simultaneously be inside gif.playFrame() on Core 1.
       // The currently playing GIF is left completely untouched until loop()
-      // performs the atomic RX -> PLAY hand-off after CRC validation.
+      // performs the deferred RX -> PLAY hand-off after CRC validation.
       int8_t slot=(int8_t)(nextGifRxSlot & 1U);
       nextGifRxSlot ^= 1U;
       if(pendingGifStart && slot==pendingGifSlot) slot ^= 1;
       bulk.gifRxSlot=slot;
       const char *rxPath=GIF_RX_FILES[(uint8_t)slot];
       LittleFS.remove(rxPath);
+      size_t fsTotal=LittleFS.totalBytes();
+      size_t fsUsed=LittleFS.usedBytes();
+      size_t fsFree=fsTotal>fsUsed ? fsTotal-fsUsed : 0;
+      if((uint64_t)total > (uint64_t)fsFree){
+#if DEBUG_SERIAL
+        Serial.print("BULK GIF rejected: bytes="); Serial.print(total);
+        Serial.print(" LittleFS free="); Serial.println(fsFree);
+#endif
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
       gifBulkFile=LittleFS.open(rxPath,"w");
-      if(!gifBulkFile){ resetBulkTransfer(); sendTransferAck(type,0x03); return true; }
+      if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
       bulk.gifToFS=true;
       gifRxWriteOffset=0;
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
@@ -1779,11 +2141,12 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     }
     if(type==2 && bulk.format=="RAW RGB"){
       rawRgbData=(uint8_t*)malloc(total);
-      if(!rawRgbData){ resetBulkTransfer(); sendTransferAck(type,0x03); return true; }
+      if(!rawRgbData){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
       rawRgbWriteOffset=0;
     }
   }
-  if(type!=bulk.dataType){ resetBulkTransfer(); return true; }
+  bulkLastRxMs=millis();
+  if(type!=bulk.dataType){ resetBulkTransfer(true); return true; }
   uint32_t remain=bulk.expectedSize-bulk.receivedSize; size_t useful=min((size_t)remain,payloadSize);
   bulk.runningCRC=crc32Update(bulk.runningCRC,payload,useful);
   if(type==1){
@@ -1794,7 +2157,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
 #if DEBUG_SERIAL
         Serial.println("BULK GIF LittleFS RX write error");
 #endif
-        resetBulkTransfer(); sendTransferAck(type,0x03); return true;
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
       }
     }
   }
@@ -2253,15 +2616,27 @@ void processFA02Packet(const uint8_t *data,size_t len){
   if(len==4 && cmd==0x01 && sub==0x80){ sendDeviceInfo(); return; }
 
   if(len==11 && cmd==0x01 && sub==0x80){
-    syncYear=2000+data[4]; syncMonth=data[5]; syncDay=data[6]; syncHour=data[8]; syncMinute=data[9]; syncSecond=data[10]; syncMillis=millis(); clockSynced=true;
+    uint16_t y=2000+data[4];
+    uint8_t mo=data[5], d=data[6], h=data[8], mi=data[9], se=data[10];
+    if(isValidDateTime(y,mo,d,h,mi,se)){
+      syncYear=y; syncMonth=mo; syncDay=d; syncHour=h; syncMinute=mi; syncSecond=se; syncMillis=millis(); clockSynced=true;
 #if RTC_ENABLED && RTC_SYNC_FROM_BLE
-    if(rtcReady){
-      rtc.adjust(DateTime(syncYear,syncMonth,syncDay,syncHour,syncMinute,syncSecond));
+      if(rtcReady){
+        rtc.adjust(DateTime(syncYear,syncMonth,syncDay,syncHour,syncMinute,syncSecond));
+        rtcTimeValid=true;
 #if DEBUG_SERIAL
-      Serial.println("RTC: synchronized from BLE time");
+        Serial.println("RTC: synchronized from BLE time");
+#endif
+      }
+#endif
+    } else {
+#if DEBUG_SERIAL
+      Serial.print("TIME SYNC rejected: "); Serial.print(y); Serial.print('-'); Serial.print(mo); Serial.print('-'); Serial.print(d);
+      Serial.print(' '); Serial.print(h); Serial.print(':'); Serial.print(mi); Serial.print(':'); Serial.println(se);
 #endif
     }
-#endif
+    // ACK compatibility is preserved even when malformed fields are ignored;
+    // negative/error ACK semantics are not yet experimentally established.
     sendCommandAck(0x01,0x80); return;
   }
 
@@ -2269,8 +2644,18 @@ void processFA02Packet(const uint8_t *data,size_t len){
   if(len==5 && cmd==0x06 && sub==0x80){ flipped180=data[4]!=0; refreshMatrix(); sendCommandAck(cmd,sub); return; }
 
   if(len==10 && cmd==0x02 && sub==0x80){
-    energySaving.enabled=data[4]!=0; energySaving.startHour=data[5]; energySaving.startMinute=data[6]; energySaving.endHour=data[7]; energySaving.endMinute=data[8]; energySaving.reductionPercent=data[9];
-    refreshMatrix(); sendCommandAck(cmd,sub); return;
+    bool valid=data[5]<24 && data[6]<60 && data[7]<24 && data[8]<60 && data[9]<=100;
+    if(valid){
+      energySaving.enabled=data[4]!=0; energySaving.startHour=data[5]; energySaving.startMinute=data[6]; energySaving.endHour=data[7]; energySaving.endMinute=data[8]; energySaving.reductionPercent=data[9];
+      refreshMatrix();
+    } else {
+#if DEBUG_SERIAL
+      Serial.println("POWER SAVING rejected: invalid time/reduction fields");
+#endif
+    }
+    // Preserve the compatibility ACK: an original-device error status has not
+    // been established for malformed power-saving records.
+    sendCommandAck(cmd,sub); return;
   }
 
   if(len==4 && cmd==0x03 && sub==0x80){ sendCommandAck(cmd,sub); pendingSoftReset=true; softResetAt=millis()+100; return; }
@@ -2360,14 +2745,34 @@ void processFA02Packet(const uint8_t *data,size_t len){
 // ======================================================
 // BLE CALLBACKS
 // ======================================================
+// Caller must hold runtimeStateMutex: this function mutates reassembly, Bulk and renderer state.
+void processFA02Write(const uint8_t *data, size_t len) {
+  uint32_t now=millis();
+  expireStalledTransfers(now);
+  // Any fragment arriving while a Bulk transaction is active proves the BLE
+  // link is making progress toward the next reconstructed logical packet.
+  if(bulk.active) bulkLastRxMs=now;
+  if(packetReceived==0){
+    if(len<2) return;
+    packetExpected=(uint16_t)data[0]|((uint16_t)data[1]<<8);
+    if(packetExpected<2||packetExpected>MAX_PACKET_SIZE){ packetExpected=packetReceived=0; packetLastRxMs=0; resetBulkTransfer(true); return; }
+  }
+  packetLastRxMs=now;
+  if(packetReceived+len>MAX_PACKET_SIZE){ packetExpected=packetReceived=0; packetLastRxMs=0; resetBulkTransfer(true); return; }
+  ::memcpy(packetBuffer+packetReceived,data,len); packetReceived+=len;
+  if(packetReceived>=packetExpected){
+    processFA02Packet(packetBuffer,packetExpected);
+    packetReceived=packetExpected=0;
+    packetLastRxMs=0;
+  }
+}
+
 class FA02Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
     String value=c->getValue(); if(!value.length()) return;
-    const uint8_t *data=(const uint8_t*)value.c_str(); size_t len=value.length();
-    if(packetReceived==0){ if(len<2)return; packetExpected=(uint16_t)data[0]|((uint16_t)data[1]<<8); if(!packetExpected||packetExpected>MAX_PACKET_SIZE){packetExpected=packetReceived=0;return;} }
-    if(packetReceived+len>MAX_PACKET_SIZE){packetExpected=packetReceived=0;resetBulkTransfer();return;}
-    ::memcpy(packetBuffer+packetReceived,data,len); packetReceived+=len;
-    if(packetReceived>=packetExpected){ processFA02Packet(packetBuffer,packetExpected); packetReceived=packetExpected=0; }
+    if(!lockRuntimeState()) return;
+    processFA02Write((const uint8_t*)value.c_str(),value.length());
+    unlockRuntimeState();
   }
 };
 
@@ -2384,13 +2789,30 @@ class ServerCallbacks : public BLEServerCallbacks {
 #if PNG_DIAG_SERIAL
     Serial.println("BLE C");
 #endif
-    deviceConnected=true; screenOn=true; setStatusLed(true); refreshMatrix(); pendingDeviceInfoPush=true; deviceInfoPushAt=millis()+1200;
+    if(!lockRuntimeState()) return;
+    deviceConnected=true;
+    screenOn=true;
+    setStatusLed(true);
+    refreshMatrix();
+    pendingAdvertisingRestart=false;
+    pendingDeviceInfoPush=true;
+    deviceInfoPushAt=millis()+1200;
+    unlockRuntimeState();
   }
   void onDisconnect(BLEServer*) override {
 #if PNG_DIAG_SERIAL
     Serial.println("BLE D");
 #endif
-    deviceConnected=false; resetBulkTransfer(); delay(300); BLEDevice::startAdvertising();
+    if(!lockRuntimeState()) return;
+    deviceConnected=false;
+    packetReceived=packetExpected=0;
+    packetLastRxMs=0;
+    resetBulkTransfer(true);
+    // Do not sleep inside the BLE callback. Preserve the historical 300 ms
+    // restart delay by deferring advertising restart to the Arduino loop.
+    pendingAdvertisingRestart=true;
+    advertisingRestartAt=millis()+300;
+    unlockRuntimeState();
   }
 };
 
@@ -2413,7 +2835,22 @@ void setupOTA(){
 // RESET RUNTIME
 // ======================================================
 void resetRuntimeState(){
-  stopGIFPlayback(); diyMode=false; effectState.valid=false; textState.valid=false; countdownRunning=false; stopwatchRunning=false; scoreA=scoreB=0; displayMode=DISPLAY_NONE; clearFramebuffer(); refreshMatrix();
+  // Emulator-defined runtime reset. Persistent Alarm/Schedule configuration,
+  // time sync, brightness, ECO settings and screen power are deliberately kept.
+  // Clear every transient state that could otherwise resurrect content after
+  // the reset (notably deferred GIF open and active Alarm/Schedule markers).
+  int8_t queuedGifSlot=pendingGifSlot;
+  freeGIF();
+  if(littleFsReady && queuedGifSlot>=0 && queuedGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)queuedGifSlot]);
+
+  alarmActive=false; activeAlarmSlot=0xFF; alarmEndsAt=0;
+  scheduleActiveIndex=-1; scheduleFailedIndex=-1;
+  diyMode=false; effectState.valid=false; textState.valid=false; audioState.valid=false;
+  countdownRunning=false; countdownPaused=false; countdownRemainingMs=0; countdownFinishSent=false;
+  stopwatchRunning=false; stopwatchElapsedMs=0; scoreA=scoreB=0;
+  displayMode=DISPLAY_NONE;
+  clearFramebuffer();
+  refreshMatrix();
 }
 
 // ======================================================
@@ -2446,6 +2883,7 @@ ScheduleActivity scheduleActivities[SCHEDULE_MAX_ACTIVITIES];
 ScheduleActivity scheduleStaging[SCHEDULE_MAX_ACTIVITIES];
 Preferences schedulePrefs;
 uint8_t scheduleGlobalFlags = 0;
+uint8_t scheduleStagingGlobalFlags = 0;
 bool scheduleUploadOpen = false;
 bool scheduleUploadDirty = false;
 uint32_t scheduleLastRxMs = 0;
@@ -2465,28 +2903,78 @@ static inline uint32_t rd32le(const uint8_t *p) {
 
 String scheduleFileName(uint8_t idx) { return String("/sch") + idx + ".bin"; }
 String scheduleTempFileName(uint8_t idx) { return String("/scht") + idx + ".bin"; }
+String scheduleBackupFileName(uint8_t idx) { return String("/schb") + idx + ".bin"; }
 
-void saveScheduleGlobal() {
-  schedulePrefs.putUChar("flags", scheduleGlobalFlags);
+bool saveScheduleGlobalValue(uint8_t flags) {
+  return schedulePrefs.putUChar("flags", flags) == 1;
 }
 
-void saveScheduleMeta(uint8_t idx) {
-  if (idx >= SCHEDULE_MAX_ACTIVITIES) return;
-  char key[10]; snprintf(key, sizeof(key), "s%u", idx);
-  schedulePrefs.putBytes(key, &scheduleActivities[idx], sizeof(ScheduleActivity));
+bool saveScheduleGlobal() {
+  return saveScheduleGlobalValue(scheduleGlobalFlags);
 }
 
-void clearScheduleMeta(uint8_t idx) {
-  if (idx >= SCHEDULE_MAX_ACTIVITIES) return;
+bool saveScheduleMetaValue(uint8_t idx, const ScheduleActivity &value) {
+  if (idx >= SCHEDULE_MAX_ACTIVITIES) return false;
   char key[10]; snprintf(key, sizeof(key), "s%u", idx);
-  schedulePrefs.remove(key);
-  scheduleActivities[idx] = ScheduleActivity();
-  LittleFS.remove(scheduleFileName(idx));
+  return schedulePrefs.putBytes(key, &value, sizeof(ScheduleActivity)) == sizeof(ScheduleActivity);
+}
+
+bool saveScheduleMeta(uint8_t idx) {
+  return idx < SCHEDULE_MAX_ACTIVITIES && saveScheduleMetaValue(idx, scheduleActivities[idx]);
+}
+
+bool removeScheduleMetaValue(uint8_t idx) {
+  if (idx >= SCHEDULE_MAX_ACTIVITIES) return false;
+  char key[10]; snprintf(key, sizeof(key), "s%u", idx);
+  if (!schedulePrefs.isKey(key)) return true;
+  return schedulePrefs.remove(key);
+}
+
+void cleanupScheduleTempFiles() {
+  if(!littleFsReady) return;
+  for (uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++) LittleFS.remove(scheduleTempFileName(i));
+}
+
+void cleanupScheduleBackupFiles() {
+  if(!littleFsReady) return;
+  for (uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++) LittleFS.remove(scheduleBackupFileName(i));
+}
+
+void cleanupScheduleTransactionFiles() {
+  cleanupScheduleTempFiles();
+  cleanupScheduleBackupFiles();
+}
+
+void recoverScheduleFile(uint8_t idx) {
+  if (!littleFsReady || idx >= SCHEDULE_MAX_ACTIVITIES) return;
+  String dst=scheduleFileName(idx), tmp=scheduleTempFileName(idx), bak=scheduleBackupFileName(idx);
+  LittleFS.remove(tmp);
+
+  const ScheduleActivity &a=scheduleActivities[idx];
+  if (!a.configured || !a.mediaSize) {
+    LittleFS.remove(dst);
+    LittleFS.remove(bak);
+    return;
+  }
+
+  bool dstOK=fileMatchesMedia(dst,a.mediaSize,a.mediaCRC);
+  bool bakOK=fileMatchesMedia(bak,a.mediaSize,a.mediaCRC);
+  if(dstOK){
+    LittleFS.remove(bak);
+  } else if(bakOK){
+    LittleFS.remove(dst);
+    if(!LittleFS.rename(bak,dst)){
+#if DEBUG_SERIAL
+      Serial.print("SCH RECOVERY rename failed i="); Serial.println(idx);
+#endif
+    }
+  }
 }
 
 void loadSchedule() {
   schedulePrefs.begin("idot-sched", false);
   scheduleGlobalFlags = schedulePrefs.getUChar("flags", 0);
+  scheduleStagingGlobalFlags = scheduleGlobalFlags;
   uint8_t count = 0;
   for (uint8_t i = 0; i < SCHEDULE_MAX_ACTIVITIES; i++) {
     char key[10]; snprintf(key, sizeof(key), "s%u", i);
@@ -2495,63 +2983,161 @@ void loadSchedule() {
       schedulePrefs.getBytes(key, &scheduleActivities[i], sizeof(ScheduleActivity));
       if (scheduleActivities[i].configured) count++;
     }
+    recoverScheduleFile(i);
   }
 
   Serial.print("SCH LOAD "); Serial.print(scheduleGlobalFlags, HEX); Serial.print("/"); Serial.println(count);
 }
 
 bool writeScheduleTemp(uint8_t idx, const uint8_t *payload, uint32_t size, uint32_t expectedCRC) {
-  if (idx >= SCHEDULE_MAX_ACTIVITIES || !payload || !size) return false;
+  if (!littleFsReady || idx >= SCHEDULE_MAX_ACTIVITIES || !payload || !size) return false;
   uint32_t calc = crc32Update(0xFFFFFFFF, payload, size) ^ 0xFFFFFFFF;
   if (calc != expectedCRC) {
 
     Serial.print("SCH CRC FAIL i="); Serial.println(idx);
     return false;
   }
-  File f = LittleFS.open(scheduleTempFileName(idx), "w");
+  String tmp=scheduleTempFileName(idx);
+  LittleFS.remove(tmp);
+  File f = LittleFS.open(tmp, "w");
   if (!f) return false;
   size_t wrote = f.write(payload, size);
   f.close();
-  return wrote == size;
+  if(wrote != size){ LittleFS.remove(tmp); return false; }
+  return true;
 }
 
 void beginScheduleUpload(uint8_t flags) {
-  scheduleGlobalFlags = flags;
-  saveScheduleGlobal();
+  scheduleStagingGlobalFlags = flags;
   scheduleUploadOpen = true;
   scheduleUploadDirty = false;
   scheduleFailedIndex = -1;
   scheduleReceivedMask = 0;
   scheduleLastRxMs = millis();
   for (uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++) {
+    recoverScheduleFile(i);
     scheduleStaging[i] = ScheduleActivity();
-    LittleFS.remove(scheduleTempFileName(i));
   }
 
   Serial.print("SCH OPEN "); Serial.println(flags, HEX);
 }
 
-void commitScheduleUpload() {
+bool rollbackScheduleFilesystem(uint32_t backedUpMask, uint32_t promotedMask) {
+  bool ok=true;
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++){
+    uint32_t bit=(1UL<<i);
+    if(promotedMask & bit) LittleFS.remove(scheduleFileName(i));
+  }
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++){
+    uint32_t bit=(1UL<<i);
+    if(!(backedUpMask & bit)) continue;
+    String bak=scheduleBackupFileName(i), dst=scheduleFileName(i);
+    LittleFS.remove(dst);
+    if(LittleFS.exists(bak) && !LittleFS.rename(bak,dst)) ok=false;
+  }
+  return ok;
+}
+
+void restoreSchedulePreferences(uint8_t oldFlags) {
+  saveScheduleGlobalValue(oldFlags);
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++){
+    if(scheduleActivities[i].configured) saveScheduleMetaValue(i,scheduleActivities[i]);
+    else removeScheduleMetaValue(i);
+  }
+}
+
+bool commitScheduleUpload() {
+  if (!littleFsReady) {
+    scheduleUploadOpen=false; scheduleUploadDirty=false;
+    return false;
+  }
   if (!scheduleUploadOpen || !scheduleUploadDirty) {
     scheduleUploadOpen = false;
-    return;
+    return false;
   }
-  for (uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++) {
-    bool received = (scheduleReceivedMask & (1UL << i)) != 0;
-    if (received) {
-      scheduleActivities[i] = scheduleStaging[i];
-      String tmp = scheduleTempFileName(i), dst = scheduleFileName(i);
-      LittleFS.remove(dst);
-      if (LittleFS.exists(tmp)) LittleFS.rename(tmp, dst);
-      saveScheduleMeta(i);
-    } else if (scheduleActivities[i].configured) {
-      clearScheduleMeta(i);
+
+  // Preflight every staged media file before touching the active Schedule.
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++){
+    if(!(scheduleReceivedMask & (1UL<<i))) continue;
+    const ScheduleActivity &a=scheduleStaging[i];
+    if(!a.configured || !fileMatchesMedia(scheduleTempFileName(i),a.mediaSize,a.mediaCRC)){
+#if DEBUG_SERIAL
+      Serial.print("SCH COMMIT preflight failed i="); Serial.println(i);
+#endif
+      scheduleUploadOpen=false; scheduleUploadDirty=false;
+      cleanupScheduleTransactionFiles();
+      return false;
     }
   }
-  scheduleUploadOpen = false;
-  scheduleUploadDirty = false;
+
+  uint32_t backedUpMask=0, promotedMask=0;
+  bool fsOK=true;
+
+  // Preserve every old destination first. Entries omitted by the new upload
+  // remain only in backup until the new metadata has committed successfully.
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES && fsOK;i++){
+    String dst=scheduleFileName(i), bak=scheduleBackupFileName(i);
+    LittleFS.remove(bak);
+    if(LittleFS.exists(dst)){
+      if(LittleFS.rename(dst,bak)) backedUpMask|=(1UL<<i);
+      else fsOK=false;
+    }
+  }
+
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES && fsOK;i++){
+    uint32_t bit=(1UL<<i);
+    if(!(scheduleReceivedMask & bit)) continue;
+    if(LittleFS.rename(scheduleTempFileName(i),scheduleFileName(i))) promotedMask|=bit;
+    else fsOK=false;
+  }
+
+  if(!fsOK){
+    bool rollbackOK=rollbackScheduleFilesystem(backedUpMask,promotedMask);
+    scheduleUploadOpen=false; scheduleUploadDirty=false;
+    cleanupScheduleTempFiles();
+    if(rollbackOK) cleanupScheduleBackupFiles();
+#if DEBUG_SERIAL
+    Serial.println("SCH COMMIT filesystem rollback");
+#endif
+    return false;
+  }
+
+  // NVS is updated only after all media files are in place. Runtime state is
+  // published last; on a preference failure the previous files/metadata are
+  // restored best-effort and the active Schedule remains unchanged.
+  uint8_t oldFlags=scheduleGlobalFlags;
+  bool prefsOK=saveScheduleGlobalValue(scheduleStagingGlobalFlags);
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES && prefsOK;i++){
+    if(scheduleReceivedMask & (1UL<<i)) prefsOK=saveScheduleMetaValue(i,scheduleStaging[i]);
+    else prefsOK=removeScheduleMetaValue(i);
+  }
+
+  if(!prefsOK){
+    restoreSchedulePreferences(oldFlags);
+    bool rollbackOK=rollbackScheduleFilesystem(backedUpMask,promotedMask);
+    scheduleUploadOpen=false; scheduleUploadDirty=false;
+    cleanupScheduleTempFiles();
+    if(rollbackOK) cleanupScheduleBackupFiles();
+#if DEBUG_SERIAL
+    Serial.println("SCH COMMIT preference rollback");
+#endif
+    return false;
+  }
+
+  if(scheduleActiveIndex>=0) stopScheduleActivity();
+  scheduleGlobalFlags=scheduleStagingGlobalFlags;
+  for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++){
+    if(scheduleReceivedMask & (1UL<<i)) scheduleActivities[i]=scheduleStaging[i];
+    else scheduleActivities[i]=ScheduleActivity();
+    LittleFS.remove(scheduleBackupFileName(i));
+    LittleFS.remove(scheduleTempFileName(i));
+  }
+  scheduleUploadOpen=false;
+  scheduleUploadDirty=false;
+  scheduleFailedIndex=-1;
 
   Serial.print("SCH COMMIT "); Serial.println(scheduleReceivedMask, HEX);
+  return true;
 }
 
 bool scheduleTimeInside(const ScheduleActivity &a, uint16_t nowMin) {
@@ -2716,18 +3302,15 @@ bool decodeSchedulePNG(File &f, uint32_t fileSize) {
 }
 
 bool loadScheduleMedia(uint8_t idx) {
-  if (idx >= SCHEDULE_MAX_ACTIVITIES) return false;
+  if (!littleFsReady || idx >= SCHEDULE_MAX_ACTIVITIES) return false;
   ScheduleActivity &a = scheduleActivities[idx];
   if (!a.configured || !a.mediaSize) return false;
   File f = LittleFS.open(scheduleFileName(idx), "r");
   if (!f || (uint32_t)f.size() != a.mediaSize) { if(f)f.close(); return false; }
 
   if (a.contentType == SCHEDULE_CONTENT_GIF) {
-    if (!allocateGIF(a.mediaSize)) { f.close(); return false; }
-    size_t got = f.read(gifData, a.mediaSize); f.close();
-    gifWriteOffset = got;
-    if (got != a.mediaSize) { freeGIF(); return false; }
-    return startGIF();
+    f.close();
+    return startStoredGIFPlayback(scheduleFileName(idx), a.mediaSize, a.mediaCRC);
   }
 
   if (a.contentType == SCHEDULE_CONTENT_TEXT) {
@@ -2807,7 +3390,7 @@ void updateSchedule() {
     return;
   }
 #if RTC_ENABLED
-  bool haveTime = rtcReady || clockSynced;
+  bool haveTime = (rtcReady && rtcTimeValid) || clockSynced;
 #else
   bool haveTime = clockSynced;
 #endif
@@ -2840,14 +3423,17 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
       data[2] == 0x07 && data[3] == 0x80) {
     uint8_t flags = data[4];
     if (!(flags & 0x01)) {
-      scheduleGlobalFlags = flags;
-      saveScheduleGlobal();
       scheduleUploadOpen = false;
       scheduleUploadDirty = false;
+      scheduleReceivedMask = 0;
+      cleanupScheduleTempFiles();
+      scheduleGlobalFlags = flags;
+      scheduleStagingGlobalFlags = flags;
+      bool persisted=saveScheduleGlobal();
       scheduleFailedIndex = -1;
       if (scheduleActiveIndex >= 0) stopScheduleActivity();
 
-      Serial.print("SCH OFF f="); Serial.println(flags, HEX);
+      Serial.print("SCH OFF f="); Serial.print(flags, HEX); Serial.print(" nvs="); Serial.println(persisted?1:0);
     } else {
       beginScheduleUpload(flags);
     }
@@ -2873,7 +3459,8 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
       a.mediaCRC = rd32le(data + 16);
       a.reserved = rd16le(data + 20);
       a.mediaId = data[22];
-      ok = writeScheduleTemp(idx, data + 23, payloadSize, a.mediaCRC);
+      ok = a.startHour < 24 && a.endHour < 24 && a.startMinute < 60 && a.endMinute < 60;
+      if (ok) ok = writeScheduleTemp(idx, data + 23, payloadSize, a.mediaCRC);
       if (ok) {
         scheduleStaging[idx] = a;
         scheduleReceivedMask |= (1UL << idx);
@@ -3103,20 +3690,59 @@ void setup(){
 #if RTC_ENABLED
   Wire.begin();
   rtcReady=rtc.begin();
+  rtcTimeValid=rtcReady && !rtc.lostPower();
 #if DEBUG_SERIAL
   Serial.print("RTC DS3231: "); Serial.println(rtcReady?"OK":"NOT FOUND");
-  if(rtcReady && rtc.lostPower()) Serial.println("RTC: lost power; waiting for BLE time sync");
+  if(rtcReady && !rtcTimeValid) Serial.println("RTC: lost power; time invalid until BLE synchronization");
 #endif
 #endif
-  bool fsOK=LittleFS.begin(true);
+  // BUILD 87: mount without implicit formatting. A transient mount/partition
+  // problem must not silently erase persisted media. Formatting is available
+  // only through the explicit compile-time recovery switch above.
+  littleFsReady=LittleFS.begin(false);
+#if LITTLEFS_FORMAT_ON_MOUNT_FAIL
+  if(!littleFsReady){
 #if DEBUG_SERIAL
-  Serial.print("LittleFS: "); Serial.println(fsOK ? "OK" : "ERROR");
+    Serial.println("LittleFS: mount failed; explicit format-on-fail enabled");
+#endif
+    // Reuse the Arduino-ESP32 mount-and-format path that older builds used,
+    // but only after the explicit opt-in above.
+    littleFsReady=LittleFS.begin(true);
+  }
+#endif
+#if DEBUG_SERIAL
+  Serial.print("LittleFS: "); Serial.println(littleFsReady ? "OK" : "ERROR (not formatted)");
+  if(!littleFsReady && !LITTLEFS_FORMAT_ON_MOUNT_FAIL)
+    Serial.println("LittleFS: set LITTLEFS_FORMAT_ON_MOUNT_FAIL=1 only for intentional recovery/first use");
+  if(littleFsReady){
+    Serial.print("LittleFS capacity: used="); Serial.print(LittleFS.usedBytes());
+    Serial.print(" total="); Serial.println(LittleFS.totalBytes());
+  }
   Serial.print("ALARM SLOTS: "); Serial.println(ALARM_SLOT_COUNT);
 #endif
+  if(littleFsReady) recoverGifPlayFile();
+  // Preferences metadata is still loaded when LittleFS is offline so the
+  // device can report/retain configuration; media recovery simply no-ops.
   loadAlarms();
   loadSchedule();
   FastLED.addLeds<LED_TYPE,MATRIX_PIN,COLOR_ORDER>(leds,PHYSICAL_NUM_LEDS);
   loadBrightnessFromNVS(); FastLED.clear(); FastLED.show(); clearFramebuffer(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
+
+  runtimeStateMutex=xSemaphoreCreateMutex();
+  if(!runtimeStateMutex){
+#if DEBUG_SERIAL
+    Serial.println("FATAL: runtime state mutex allocation failed");
+#endif
+#if OLED_STATUS_ENABLED
+    statusOLED.clearBuffer();
+    statusOLED.setFont(u8g2_font_6x10_tf);
+    statusOLED.drawStr(0,14,"RUNTIME ERROR");
+    statusOLED.drawStr(0,28,"Mutex allocation");
+    statusOLED.drawStr(0,42,"failed");
+    statusOLED.sendBuffer();
+#endif
+    while(true) delay(1000);
+  }
 
   BLEDevice::init(DEVICE_NAME); server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService *fas=server->createService(FA_SERVICE_UUID);
@@ -3141,20 +3767,32 @@ void setup(){
 // LOOP
 // ======================================================
 void loop(){
+  bool restartAdvertisingNow=false;
+#if OTA_ENABLED
+  if(otaReady)ArduinoOTA.handle(); if(otaRunning){delay(1);return;}
+#endif
+  if(!lockRuntimeState()){ delay(1); return; }
+  // BUILD 88: take the time snapshot only after the runtime mutex is held.
+  // If loop() captures millis() before blocking on the mutex, a BLE callback
+  // can update packetLastRxMs/bulkLastRxMs to a newer value while loop() waits.
+  // Unsigned subtraction would then wrap and falsely look like a huge timeout.
   uint32_t now=millis();
+  expireStalledTransfers(now);
   flushBrightnessSaveIfNeeded();
 #if OLED_STATUS_ENABLED
   updateStatusOLED();
 #endif
-#if OTA_ENABLED
-  if(otaReady)ArduinoOTA.handle(); if(otaRunning){delay(1);return;}
-#endif
+  if(pendingAdvertisingRestart && (long)(now-advertisingRestartAt)>=0){
+    pendingAdvertisingRestart=false;
+    restartAdvertisingNow=true;
+  }
   if(pendingDeviceInfoPush && (long)(now-deviceInfoPushAt)>=0){pendingDeviceInfoPush=false;if(deviceConnected)sendDeviceInfo();}
   if(pendingSoftReset && (long)(now-softResetAt)>=0){pendingSoftReset=false;resetRuntimeState();}
 
   updateAlarms();
   updateSchedule();
   updateBuzzer();
+  updateEnergySavingOutput(now);
 
   // B73: a decoder instance is never reused.  Switching GIFs is split across
   // separate loop iterations: first destroy the old AnimatedGIF object and
@@ -3172,16 +3810,23 @@ void loop(){
       Serial.print(" bytes="); Serial.println(newSize);
       reportHeap("before GIF teardown");
 #endif
-      destroyGIFDecoder();
-      if(gifData){ free(gifData); gifData=nullptr; }
-      gifWriteOffset=0; gifStoredOnFS=false; gifSize=0;
+      bool restartPrevious=(littleFsReady && displayMode==DISPLAY_GIF && gifStoredOnFS &&
+                            !gifEventPlaybackFileActive && LittleFS.exists(GIF_PLAY_FILE));
+      uint32_t previousPlaySize=restartPrevious ? storedFileSize(GIF_PLAY_FILE) : 0;
+      stopGIFPlayback();
+      gifStoredOnFS=false; gifSize=0;
 
-      LittleFS.remove(GIF_PLAY_FILE);
-      bool promoted=LittleFS.exists(rxPath) && LittleFS.rename(rxPath,GIF_PLAY_FILE);
+      bool promoted=promoteGifRxToPlay((uint8_t)slot);
       if(!promoted){
 #if DEBUG_SERIAL
-        Serial.println("GIF RX -> PLAY rename FAILED");
+        Serial.println("GIF RX -> PLAY rename FAILED; previous PLAY preserved");
 #endif
+        if(restartPrevious && previousPlaySize && littleFsReady && LittleFS.exists(GIF_PLAY_FILE)){
+          gifStoredOnFS=true;
+          gifSize=previousPlaySize;
+          gifDecoderOpenPending=true;
+          gifDecoderOpenAt=millis()+1;
+        }
       } else {
         gifStoredOnFS=true;
         gifSize=newSize;
@@ -3239,5 +3884,7 @@ void loop(){
 #if DEBUG_SERIAL
   static uint32_t lastHeap=0; if(now-lastHeap>=30000){lastHeap=now;reportHeap("periodic");}
 #endif
+  unlockRuntimeState();
+  if(restartAdvertisingNow) BLEDevice::startAdvertising();
   delay(5);
 }
