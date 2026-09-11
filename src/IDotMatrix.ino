@@ -9,11 +9,14 @@
 // FW_BUILD is the internal incremental development identifier.
 // ======================================================
 #define FW_RELEASE "0.4.0-dev"
-#define FW_BUILD 97
+#define FW_RELEASE_MAJOR 0
+#define FW_RELEASE_MINOR 4
+#define FW_BUILD 109
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 1
 #define BULK_PROTOCOL_DEBUG 1
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
+#define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
 #define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
@@ -275,6 +278,7 @@ void loadBrightnessFromNVS() {
 #define BUZZER_PULSE_GAP_MS      70UL
 #define BUZZER_TRILL_PAUSE_MS   550UL
 #define BUZZER_TRILL_PULSES       3
+#define COUNTDOWN_BUZZER_ENABLED   1
 #define ALARM_MEDIA_BASE_ID    0x14
 #define ALARM_CONTENT_GIF      0x01
 #define ALARM_CONTENT_RAW      0x02
@@ -472,6 +476,14 @@ bool handleCarouselCommand(const uint8_t *data, size_t len);
 void loadCarousel();
 void updateCarousel(uint32_t now);
 void stopCarouselPlayback();
+void clearPersistentDeviceState();
+void applyBootDisplayPolicy();
+int8_t nextCarouselSlot(int8_t current);
+bool startCarouselSlot(uint8_t slot);
+extern bool carouselActive;
+extern int8_t carouselActiveSlot;
+extern bool gifCarouselPlaybackFileActive;
+extern bool carouselEnterRequested;
 
 
 // ======================================================
@@ -500,6 +512,8 @@ bool alarmActive = false;
 uint8_t activeAlarmSlot = 0xFF;
 uint32_t alarmEndsAt = 0;
 DisplayMode alarmPreviousMode = DISPLAY_CLOCK;
+bool alarmPreviousCarousel = false;
+int8_t alarmPreviousCarouselSlot = -1;
 
 String alarmFileName(uint8_t slot) { return String("/alarm") + slot + ".bin"; }
 String alarmTempFileName(uint8_t slot) { return String("/alarm") + slot + ".tmp"; }
@@ -635,6 +649,8 @@ bool loadAlarmMedia(uint8_t slot){
 #if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
 static bool buzzerOutputOn = false;
 static bool buzzerPatternRunning = false;
+static bool countdownBuzzerOneShot = false;
+static bool scheduleBuzzerOneShot = false;
 static uint8_t buzzerPulseIndex = 0;
 static uint32_t buzzerNextChangeAt = 0;
 
@@ -645,22 +661,39 @@ static inline void setBuzzerOutput(bool on) {
                   : (BUZZER_ACTIVE_HIGH ? LOW : HIGH));
 }
 
-static bool buzzerRequested() {
+static bool continuousBuzzerRequested() {
   bool wanted = false;
 
   if (alarmActive && activeAlarmSlot < ALARM_SLOT_COUNT)
     wanted |= alarms[activeAlarmSlot].buzzer != 0;
 
-#if SCHEDULE_BUZZER_ENABLED && (SCHEDULE_BUZZER_PIN >= 0)
-  if (scheduleActiveIndex >= 0)
-    wanted |= (scheduleGlobalFlags & 0x02) != 0;
-#endif
-
   return wanted;
 }
 
+void triggerCountdownFinishBuzzer() {
+#if COUNTDOWN_BUZZER_ENABLED
+  countdownBuzzerOneShot = true;
+#endif
+}
+
+void cancelCountdownFinishBuzzer() {
+  countdownBuzzerOneShot = false;
+}
+
+void triggerScheduleStartBuzzer() {
+#if SCHEDULE_BUZZER_ENABLED && (SCHEDULE_BUZZER_PIN >= 0)
+  scheduleBuzzerOneShot = true;
+#endif
+}
+
+void cancelScheduleStartBuzzer() {
+  scheduleBuzzerOneShot = false;
+}
+
 void updateBuzzer() {
-  const bool wanted = buzzerRequested();
+  const bool continuousWanted = continuousBuzzerRequested();
+  const bool oneShotWanted = countdownBuzzerOneShot || scheduleBuzzerOneShot;
+  const bool wanted = continuousWanted || oneShotWanted;
   const uint32_t now = millis();
 
   if (!wanted) {
@@ -683,9 +716,21 @@ void updateBuzzer() {
   if (buzzerOutputOn) {
     setBuzzerOutput(false);
     ++buzzerPulseIndex;
-    buzzerNextChangeAt = now +
-      (buzzerPulseIndex >= BUZZER_TRILL_PULSES ? BUZZER_TRILL_PAUSE_MS
-                                               : BUZZER_PULSE_GAP_MS);
+
+    if (buzzerPulseIndex >= BUZZER_TRILL_PULSES) {
+      // Countdown completion and Schedule start are one-shot trills. Alarm
+      // remains the only repeating buzzer request.
+      countdownBuzzerOneShot = false;
+      scheduleBuzzerOneShot = false;
+      if (!continuousWanted) {
+        buzzerPatternRunning = false;
+        buzzerPulseIndex = 0;
+        return;
+      }
+      buzzerNextChangeAt = now + BUZZER_TRILL_PAUSE_MS;
+    } else {
+      buzzerNextChangeAt = now + BUZZER_PULSE_GAP_MS;
+    }
   } else {
     if (buzzerPulseIndex >= BUZZER_TRILL_PULSES) buzzerPulseIndex = 0;
     setBuzzerOutput(true);
@@ -693,6 +738,10 @@ void updateBuzzer() {
   }
 }
 #else
+void triggerCountdownFinishBuzzer() {}
+void cancelCountdownFinishBuzzer() {}
+void triggerScheduleStartBuzzer() {}
+void cancelScheduleStartBuzzer() {}
 void updateBuzzer() {}
 #endif
 
@@ -705,6 +754,8 @@ void startAlarm(uint8_t slot){
   if(scheduleActiveIndex>=0) stopScheduleActivity();
 
   alarmPreviousMode=displayMode;
+  alarmPreviousCarousel=carouselActive || gifCarouselPlaybackFileActive;
+  alarmPreviousCarouselSlot=carouselActiveSlot;
   if(scheduleSavedFrame) ::memcpy(scheduleSavedFrame, framebuffer, LOGICAL_FRAME_BYTES);
   alarmActive=true; activeAlarmSlot=slot; alarmEndsAt=millis()+(uint32_t)a.durationSec*1000UL;
   loadAlarmMedia(slot);
@@ -717,6 +768,15 @@ void stopAlarm(){
   if(!alarmActive) return;
   alarmActive=false; activeAlarmSlot=0xFF;
   stopGIFPlayback();
+
+  if(alarmPreviousCarousel && nextCarouselSlot(-1)>=0){
+    carouselEnterRequested=true;
+    int8_t slot=alarmPreviousCarouselSlot;
+    if(slot<0 || slot>=CAROUSEL_SLOT_COUNT) slot=nextCarouselSlot(-1);
+    alarmPreviousCarousel=false; alarmPreviousCarouselSlot=-1;
+    if(slot>=0){ startCarouselSlot((uint8_t)slot); return; }
+  }
+  alarmPreviousCarousel=false; alarmPreviousCarouselSlot=-1;
 
   // Restore framebuffer-backed modes exactly. Other dynamic modes cannot be
   // reconstructed generically, so fall back to the synchronized clock/blank.
@@ -1095,6 +1155,13 @@ void setStatusLed(bool on) {
 }
 
 void getCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s) {
+#if RTC_ENABLED
+  if (rtcReady && rtcTimeValid) {
+    DateTime now = rtc.now();
+    h = now.hour(); m = now.minute(); s = now.second();
+    return;
+  }
+#endif
   if (!clockSynced) { h = m = s = 0; return; }
   uint32_t elapsed = (millis() - syncMillis) / 1000UL;
   uint32_t total = ((uint32_t)syncHour * 3600UL + (uint32_t)syncMinute * 60UL + syncSecond + elapsed) % 86400UL;
@@ -1208,7 +1275,14 @@ void sendCommandAck(uint8_t cmd, uint8_t sub) { sendCommandStatus(cmd, sub, 0x01
 void sendTransferAck(uint8_t type, uint8_t status) { sendCommandStatus(type, 0x00, status); }
 
 void sendDeviceInfo() {
-  uint8_t r[] = {0x09,0x00,0x01,0x80,0x04,0x0E,0x01,IDOTMATRIX_SCREEN_TYPE,0x00};
+  uint8_t r[] = {0x09,0x00,0x01,0x80,FW_RELEASE_MAJOR,FW_RELEASE_MINOR,0x01,IDOTMATRIX_SCREEN_TYPE,0x00};
+#if DEVICE_INFO_PROTOCOL_DEBUG
+  Serial.print("DEVICE INFO TX: release="); Serial.print(FW_RELEASE);
+  Serial.print(" build="); Serial.print(FW_BUILD);
+  Serial.print(" screenType="); Serial.print(IDOTMATRIX_SCREEN_TYPE);
+  Serial.print(" raw="); dumpHex(r, sizeof(r));
+  Serial.println("DEVICE INFO NOTE: original 64x64 reports MCU 5.11; byte encoding still unknown");
+#endif
   sendFA03(r, sizeof(r));
 }
 
@@ -1255,6 +1329,7 @@ void drawDigit3x5(uint8_t d, int16_t x, int16_t y, const CRGB &c) {
 }
 
 bool clockRenderingDate = false;
+bool clockColonVisible = true;
 
 void drawColon(int16_t x, int16_t y, const CRGB &c) {
   // Preserve the selected clock renderer/effect exactly. During the 5-second
@@ -1266,17 +1341,18 @@ void drawColon(int16_t x, int16_t y, const CRGB &c) {
     putPixel(x,y+3,c);
     return;
   }
+  if (!clockColonVisible) return;
   putPixel(x,y+1,c);
   putPixel(x,y+3,c);
 }
 
-void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool leftColon=false, int8_t xShift=0) {
+void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool leftColon=false, int8_t xShift=0, int8_t colonShift=0) {
   drawDigit3x5(h/10, 4 + xShift, 2, hc);
   drawDigit3x5(h%10, 8 + xShift, 2, hc);
   drawDigit3x5(m/10, 4 + xShift, 9, mc);
   drawDigit3x5(m%10, 8 + xShift, 9, mc);
   // For the date keep '/' exactly where it was; for time move ':' with the digits.
-  drawColon((leftColon ? 2 : 12) + (clockRenderingDate ? 0 : xShift), 9, mc);
+  drawColon((leftColon ? 2 : 12) + (clockRenderingDate ? 0 : xShift + colonShift), 9, mc);
 }
 
 // ======================================================
@@ -1405,12 +1481,12 @@ void renderClockValues(uint8_t h, uint8_t m) {
   switch (clockStyle & 0x07) {
     case 0: { // rainbow frame, selected digits
       drawRainbowBorder();
-      drawTimeTwoRows(h,m,clockColor,clockColor,true,2);
+      drawTimeTwoRows(h,m,clockColor,clockColor,true,2,-1);
       break;
     }
     case 1: { // Christmas
       CRGB red(255,0,0);
-      drawDigit3x5(h/10,2,1,red); drawDigit3x5(h%10,6,1,red); drawColon(10,1,red);
+      drawDigit3x5(h/10,2,1,red); drawDigit3x5(h%10,6,1,red); drawColon(clockRenderingDate ? 10 : 11,1,red);
       drawChristmasTree();
       drawDigit3x5(m/10,7,9,red); drawDigit3x5(m%10,11,9,red);
       break;
@@ -1418,24 +1494,24 @@ void renderClockValues(uint8_t h, uint8_t m) {
     case 2: { // racing/checker
       drawCheckerRows();
       CRGB orange(255,170,0);
-      drawDigit3x5(h/10,1,5,orange); drawDigit3x5(h%10,5,5,orange);
+      drawDigit3x5(h/10,0,5,orange); drawDigit3x5(h%10,4,5,orange);
       if (clockRenderingDate) {
         putPixel(9,5,CRGB::White); putPixel(9,6,CRGB::White);
         putPixel(8,7,CRGB::White); putPixel(8,8,CRGB::White);
       } else {
-        putPixel(8,6,CRGB::White); putPixel(8,8,CRGB::White);
+        if (clockColonVisible) { putPixel(8,6,CRGB::White); putPixel(8,8,CRGB::White); }
       }
-      drawDigit3x5(m/10,10,5,orange); drawDigit3x5(m%10,13,5,orange);
+      drawDigit3x5(m/10,9,5,orange); drawDigit3x5(m%10,13,5,orange);
       break;
     }
     case 3: { // inverted blue/selected background
       clearFramebuffer(clockColor);
       CRGB black(0,0,0);
-      drawTimeTwoRows(h,m,black,black,true,2);
+      drawTimeTwoRows(h,m,black,black,true,2,-1);
       break;
     }
     case 4: { // hourglass
-      drawDigit3x5(h/10,2,1,clockColor); drawDigit3x5(h%10,6,1,clockColor); drawColon(11,1,clockColor);
+      drawDigit3x5(h/10,2,1,clockColor); drawDigit3x5(h%10,6,1,clockColor); drawColon(clockRenderingDate ? 11 : 10,1,clockColor);
       drawHourglassIcon();
       drawDigit3x5(m/10,6,9,clockColor); drawDigit3x5(m%10,10,9,clockColor);
       break;
@@ -1443,19 +1519,19 @@ void renderClockValues(uint8_t h, uint8_t m) {
     case 5: { // cyan rounded-ish frame + blue corners + orange digits
       drawFrameStyle5(true);
       CRGB orange(255,165,0);
-      drawTimeTwoRows(h,m,orange,orange,true,2);
+      drawTimeTwoRows(h,m,orange,orange,true,2,0);
       break;
     }
     case 6: { // double frame: blue outer + cyan inner
       // Draw digits first and frames afterward so both borders remain
       // complete and cannot be overwritten.
-      drawTimeTwoRows(h,m,clockColor,clockColor,true,2);
+      drawTimeTwoRows(h,m,clockColor,clockColor,true,2,-1);
       drawFrameStyle5(false);
       break;
     }
     case 7: { // RGBY quadrant frame + selected digits
       drawQuadrantBorder();
-      drawTimeTwoRows(h,m,clockColor,clockColor,true,2);
+      drawTimeTwoRows(h,m,clockColor,clockColor,true,2,-1);
       break;
     }
   }
@@ -1483,6 +1559,7 @@ void renderClock() {
   }
   uint8_t h,m,s;
   getCurrentTime(h,m,s);
+  clockColonVisible = ((s & 0x01) == 0);
   if (!clock24h) { if (h==0) h=12; else if (h>12) h-=12; }
   renderClockValues(h,m);
 }
@@ -3207,8 +3284,8 @@ void processFA02Packet(const uint8_t *data,size_t len){
   if(len==7 && cmd==0x08 && sub==0x80){
     uint8_t mode=data[4]; uint32_t req=((uint32_t)data[5]*60UL+data[6])*1000UL;
     switch(mode){
-      case 0:countdownRunning=false;countdownPaused=false;countdownRemainingMs=0;countdownFinishSent=false;break;
-      case 1:countdownRemainingMs=req;countdownStartMillis=millis();countdownRunning=true;countdownPaused=false;countdownFinishSent=false;break;
+      case 0:cancelCountdownFinishBuzzer();countdownRunning=false;countdownPaused=false;countdownRemainingMs=0;countdownFinishSent=false;break;
+      case 1:cancelCountdownFinishBuzzer();countdownRemainingMs=req;countdownStartMillis=millis();countdownRunning=true;countdownPaused=false;countdownFinishSent=false;break;
       case 2:if(countdownRunning){uint32_t e=millis()-countdownStartMillis;countdownRemainingMs=(e<countdownRemainingMs)?countdownRemainingMs-e:0;}countdownRunning=false;countdownPaused=true;break;
       case 3:if(countdownRemainingMs){countdownStartMillis=millis();countdownRunning=true;countdownPaused=false;}break;
     }
@@ -3342,24 +3419,30 @@ void setupOTA(){
 // RESET RUNTIME
 // ======================================================
 void resetRuntimeState(){
-  // Emulator-defined runtime reset. Persistent Alarm/Schedule configuration,
-  // time sync, brightness, ECO settings and screen power are deliberately kept.
-  // Clear every transient state that could otherwise resurrect content after
-  // the reset (notably deferred GIF open and active Alarm/Schedule markers).
+  // BUILD 101: an app-issued reset clears emulator-managed persistent device
+  // state but is not treated as an electrical power cycle. BLE remains up,
+  // the already synchronized software clock is preserved, and the logical
+  // screen remains ON with a black framebuffer ready for the next command.
   int8_t queuedGifSlot=pendingGifSlot;
   carouselEnterRequested=false; carouselUploadOpen=false; carouselUploadBlackout=false; carouselStartPending=false;
   carouselActive=false; carouselActiveSlot=-1;
   freeGIF();
   if(littleFsReady && queuedGifSlot>=0 && queuedGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)queuedGifSlot]);
-
   alarmActive=false; activeAlarmSlot=0xFF; alarmEndsAt=0;
   scheduleActiveIndex=-1; scheduleFailedIndex=-1;
   diyMode=false; effectState.valid=false; textState.valid=false; audioState.valid=false;
-  countdownRunning=false; countdownPaused=false; countdownRemainingMs=0; countdownFinishSent=false;
+  cancelCountdownFinishBuzzer(); cancelScheduleStartBuzzer(); countdownRunning=false; countdownPaused=false; countdownRemainingMs=0; countdownFinishSent=false;
   stopwatchRunning=false; stopwatchElapsedMs=0; scoreA=scoreB=0;
   displayMode=DISPLAY_NONE;
   clearFramebuffer();
+  clearPersistentDeviceState();
+  screenOn=true;
+  setStatusLed(true);
+  clearFramebuffer();
   refreshMatrix();
+#if DEBUG_SERIAL
+  Serial.println("DEVICE RESET: runtime ready, screen ON/black, volatile time preserved");
+#endif
 }
 
 // ======================================================
@@ -3400,6 +3483,8 @@ uint32_t scheduleReceivedMask = 0;
 int8_t scheduleActiveIndex = -1;
 int8_t scheduleFailedIndex = -1;  // evita retry continuo se un media non viene decodificato
 DisplayMode schedulePreviousMode = DISPLAY_CLOCK;
+bool schedulePreviousCarousel = false;
+int8_t schedulePreviousCarouselSlot = -1;
 CRGB *scheduleSavedFrame = nullptr;
 
 static inline uint16_t rd16le(const uint8_t *p) {
@@ -3847,6 +3932,18 @@ void stopScheduleActivity() {
   if (scheduleActiveIndex < 0) return;
   scheduleActiveIndex = -1;
   stopGIFPlayback();
+  if (schedulePreviousCarousel && nextCarouselSlot(-1) >= 0) {
+    carouselEnterRequested = true;
+    int8_t slot = schedulePreviousCarouselSlot;
+    if (slot < 0 || slot >= CAROUSEL_SLOT_COUNT || !carouselSlots[(uint8_t)slot].configured)
+      slot = nextCarouselSlot(-1);
+    if (slot >= 0) startCarouselSlot((uint8_t)slot);
+    schedulePreviousCarousel = false;
+    schedulePreviousCarouselSlot = -1;
+    return;
+  }
+  schedulePreviousCarousel = false;
+  schedulePreviousCarouselSlot = -1;
   if (schedulePreviousMode == DISPLAY_SOLID || schedulePreviousMode == DISPLAY_RAW ||
       schedulePreviousMode == DISPLAY_GRAFFITI) {
     ::memcpy(framebuffer, scheduleSavedFrame, LOGICAL_FRAME_BYTES);
@@ -3870,10 +3967,13 @@ void startScheduleActivity(uint8_t idx) {
   if (scheduleActiveIndex == idx) return;
   if (scheduleActiveIndex >= 0) stopScheduleActivity();
   schedulePreviousMode = displayMode;
+  schedulePreviousCarousel = carouselActive || gifCarouselPlaybackFileActive;
+  schedulePreviousCarouselSlot = carouselActiveSlot;
   ::memcpy(scheduleSavedFrame, framebuffer, LOGICAL_FRAME_BYTES);
   if (loadScheduleMedia(idx)) {
     scheduleActiveIndex = idx;
     scheduleFailedIndex = -1;
+    if (scheduleGlobalFlags & 0x02) triggerScheduleStartBuzzer();
 
 #if PNG_DIAG_SERIAL
     Serial.print("S+"); Serial.println(idx);
@@ -3986,6 +4086,94 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
     return true;
   }
   return false;
+}
+
+// ======================================================
+// PERSISTENT RESET + BOOT POLICY - BUILD 99
+// ======================================================
+void clearPersistentDeviceState() {
+  alarmPrefs.clear();
+  for (uint8_t i=0;i<ALARM_SLOT_COUNT;i++) alarms[i]=AlarmSlot();
+
+  schedulePrefs.clear();
+  scheduleGlobalFlags=0; scheduleStagingGlobalFlags=0;
+  scheduleUploadOpen=false; scheduleUploadDirty=false; scheduleReceivedMask=0;
+  for (uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++) {
+    scheduleActivities[i]=ScheduleActivity();
+    scheduleStaging[i]=ScheduleActivity();
+  }
+
+  if (carouselPrefsReady) carouselPrefs.clear();
+  carouselOrderCount=0;
+  for (uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++) {
+    carouselOrder[i]=0;
+    carouselSlots[i]=CarouselSlotMeta();
+  }
+
+  if (littleFsReady) {
+    for (uint8_t i=0;i<ALARM_SLOT_COUNT;i++) {
+      LittleFS.remove(alarmFileName(i));
+      LittleFS.remove(String("/alarm")+i+".tmp");
+      LittleFS.remove(String("/alarm")+i+".bak");
+    }
+    for (uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++) {
+      LittleFS.remove(scheduleFileName(i));
+      LittleFS.remove(String("/sch")+i+".tmp");
+      LittleFS.remove(String("/sch")+i+".bak");
+    }
+    for (uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++) {
+      LittleFS.remove(carouselFileName(i,1));
+      LittleFS.remove(carouselFileName(i,3));
+      LittleFS.remove(carouselTempFileName(i));
+      LittleFS.remove(carouselBackupFileName(i));
+    }
+    LittleFS.remove(GIF_PLAY_FILE); LittleFS.remove(GIF_PLAY_BACKUP_FILE);
+    LittleFS.remove(GIF_RX_FILES[0]); LittleFS.remove(GIF_RX_FILES[1]);
+    LittleFS.remove(EVENT_GIF_PLAY_FILE);
+  }
+
+  Preferences bp;
+  if (bp.begin(BRIGHTNESS_NVS_NAMESPACE,false)) { bp.clear(); bp.end(); }
+  brightnessPercent=100; brightnessDirty=false;
+  energySaving=EnergySavingState();
+  flipped180=false;
+  diyMode=false;
+  // Deliberately preserve clockSynced/syncMillis here: 03/80 is a live
+  // device-state reset, not an electrical power cycle.
+  applyCurrentBrightness();
+#if DEBUG_SERIAL
+  Serial.println("DEVICE RESET: persistent emulator state cleared (volatile time preserved)");
+#endif
+}
+
+void applyBootDisplayPolicy() {
+  carouselUploadBlackout=false; carouselUploadOpen=false; carouselStartPending=false;
+  carouselActive=false; carouselActiveSlot=-1; carouselEnterRequested=false;
+#if RTC_ENABLED
+  if (rtcReady && rtcTimeValid) {
+    screenOn=true; setStatusLed(true);
+    displayMode=DISPLAY_CLOCK; clockCycleStartedAt=millis(); renderClock();
+#if DEBUG_SERIAL
+    Serial.println("BOOT POLICY: valid RTC -> CLOCK");
+#endif
+    return;
+  }
+#endif
+  int8_t slot=nextCarouselSlot(-1);
+  if (slot>=0) {
+    screenOn=true; setStatusLed(true); carouselEnterRequested=true;
+    if (startCarouselSlot((uint8_t)slot)) {
+#if DEBUG_SERIAL
+      Serial.print("BOOT POLICY: stored carousel -> slot "); Serial.println(slot);
+#endif
+      return;
+    }
+  }
+  screenOn=false; setStatusLed(false); displayMode=DISPLAY_NONE;
+  clearFramebuffer(); refreshMatrix();
+#if DEBUG_SERIAL
+  Serial.println("BOOT POLICY: no valid RTC/carousel -> SCREEN OFF");
+#endif
 }
 
 #if OLED_STATUS_ENABLED
@@ -4254,6 +4442,8 @@ void setup(){
     while(true) delay(1000);
   }
 
+  applyBootDisplayPolicy();
+
   BLEDevice::init(DEVICE_NAME); server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService *fas=server->createService(FA_SERVICE_UUID);
   fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
@@ -4264,7 +4454,7 @@ void setup(){
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
-  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
+  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
 
 #if OTA_ENABLED
@@ -4383,7 +4573,7 @@ void loop(){
 
   if(displayMode==DISPLAY_COUNTDOWN){
     static uint32_t last=0; uint32_t remain=countdownRemainingMs;
-    if(countdownRunning){ uint32_t e=now-countdownStartMillis; if(e>=countdownRemainingMs){remain=0;countdownRemainingMs=0;countdownRunning=false;if(!countdownFinishSent){countdownFinishSent=true;sendCommandStatus(0x08,0x80,0x03);}} else remain=countdownRemainingMs-e; }
+    if(countdownRunning){ uint32_t e=now-countdownStartMillis; if(e>=countdownRemainingMs){remain=0;countdownRemainingMs=0;countdownRunning=false;if(!countdownFinishSent){countdownFinishSent=true;sendCommandStatus(0x08,0x80,0x03);triggerCountdownFinishBuzzer();}} else remain=countdownRemainingMs-e; }
     if(now-last>=200){
       last=now;
       renderCountdown(remain);

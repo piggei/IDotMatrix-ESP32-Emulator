@@ -88,7 +88,20 @@ The universal semantics of `01/02/03` are not yet considered fully decoded.
 
 # General commands
 
-## Device info - CONFIRMED
+## Device info and advertised version - CONFIRMED / BUILD 108 EXPERIMENT
+
+
+### Advertising manufacturer data and MCU version
+
+Original panels advertise manufacturer data beginning with company ID `0x5254` (`TR`) followed by `00 70`. Hardware captures correlate the next three bytes with `screenType, versionMajor, versionMinor`; for example the tested 64x64 reports `04 05 0B`, which the app presents as MCU `5.11`.
+
+BUILD 108 extends the emulator advertising payload accordingly:
+
+```text
+54 52 00 70 <screenType> <FW_RELEASE_MAJOR> <FW_RELEASE_MINOR>
+```
+
+For release `0.4.0-dev` the app-facing version bytes are `00 04`, so the expected UI value is MCU `0.4`. `FW_BUILD` is intentionally not encoded here because the observed vendor format exposes only major/minor. This behavior is pending app-side validation on the emulator.
 
 ### Query
 
@@ -99,7 +112,7 @@ The universal semantics of `01/02/03` are not yet considered fully decoded.
 ### Observed/emulated response
 
 ```text
-09 00 01 80 04 0E 01 01 00
+09 00 01 80 <releaseMajor> <releaseMinor> 01 <screenType> 00
 ```
 
 This response is sufficient for the app to recognize the device as a 16x16 matrix.
@@ -188,19 +201,43 @@ The logic also supports time ranges crossing midnight. BUILD 85 validates `SH/SM
 
 The configured reduction is re-evaluated once per second. This is an emulator runtime guard so static content reacts when an ECO interval boundary is crossed; the one-second polling policy is not claimed as observed original-device behavior. If optional RTC support is compiled in, an RTC reporting `lostPower()` is not accepted as a valid time source until BLE time synchronization updates it.
 
-## Runtime soft reset - PARTIAL
+## Device reset - OBSERVED / EMULATOR POLICY
 
 ```text
 04 00 03 80
 ```
 
-The firmware replies with an ACK and resets runtime graphics state shortly afterward. BUILD 85 makes this internal reset deterministic: transient display/animation state, active Alarm/Schedule runtime markers and deferred GIF-open state are cleared, while persistent Alarm/Schedule definitions, synchronized time, brightness, ECO configuration and screen-power state are retained. A Schedule whose configured time window is still active may therefore become active again on a following scheduler pass.
+Direct testing on an original 64×64 shows that reset removes the stored Device Assets content; the password remembered by the original device/app workflow is also cleared. BUILD 99 therefore promotes the emulator command from the earlier runtime-only reset to a destructive device-state reset.
 
-This is emulator-defined behavior intended to avoid stale runtime state; exact correspondence with original hardware behavior cannot currently be verified.
+The emulator clears transient renderers plus persisted Carousel, Alarm and Schedule media/metadata, stored brightness, ECO configuration and rotation. Starting with BUILD 101, an app-issued `03/80` is not treated as an electrical power cycle: the active BLE connection remains valid, the already synchronized volatile software clock is preserved, and the matrix remains logically ON with a black framebuffer ready for the next command. A real boot still follows the RTC -> stored Carousel -> screen-off policy. Password support is not currently implemented in BUILD 104, so there is no emulator password state to clear.
+
+Clearing Alarm/Schedule and the additional emulator settings is an intentional, easy-to-explain reset policy; it is not yet claimed that the original hardware clears every one of those fields.
 
 ---
 
 # Graphic content
+
+## Password - PARTIALLY REVERSE-ENGINEERED / NOT IMPLEMENTED
+
+Observed SET command for a six-digit password:
+
+```text
+08 00 04 02 enable pair01 pair23 pair45
+```
+
+The six decimal digits are encoded as three decimal-pair values, not ASCII or packed BCD. Example: `123456` -> decimal `12,34,56` -> bytes `0C 22 38`; `111111` -> `0B 0B 0B`. These SET frames were captured directly from the official app.
+
+A VERIFY transaction is strongly indicated by original-hardware Android logcat and independent client-side reverse engineering:
+
+```text
+07 00 05 02 pair01 pair23 pair45
+```
+
+The Android capture showed two 7-byte GATT writes followed by 5-byte FA03 notifications during wrong/correct password submissions, and the app logged a cached `pwdByMac.<value>` entry. This strongly indicates per-device/MAC password caching in the app and a separate verification exchange. The captured logcat did not expose binary payload bytes, so the exact VERIFY response status semantics remain unconfirmed in this project.
+
+BUILD 101-103 experimentally implemented SET/VERIFY and several ACK timing strategies. On hardware, the official app remained on the Set Password screen after SET, and no additional app command was observed. BUILD 104 therefore removes password handling from the emulator runtime. The framing and observations remain documented for future reverse engineering, but password support must not be described as implemented or compatible.
+
+Direct testing on the original 64x64 unit also showed that device reset clears the stored password association/state. Whether command enforcement is performed fully by the original device, partly by the app, or by both remains open.
 
 ## Solid color - CONFIRMED
 
@@ -279,7 +316,7 @@ For bulk transfers, the safest current interpretation is:
 
 CRC32 is verified over the complete payload.
 
-### Transfer, filesystem and memory limits as of v0.4.0-dev / BUILD 97
+### Transfer, filesystem and memory limits as of v0.4.0-dev / BUILD 99
 
 Several different limits coexist and must not be conflated:
 
@@ -466,6 +503,8 @@ At natural completion the firmware spontaneously sends:
 05 00 08 80 03
 ```
 
+Starting with BUILD 98, natural completion also triggers a local one-shot active-buzzer notification: three short 90 ms pulses separated by 70 ms gaps. This does not add or alter any BLE packet and is documented as emulator-side behavior rather than an observed original-device protocol requirement. Countdown reset or a new Countdown start cancels a completion trill still in progress.
+
 The local countdown logic works, but app UI compatibility is not yet considered complete.
 
 ---
@@ -647,7 +686,7 @@ If the packet is shorter than the full header, the firmware treats it as a metad
 05 00 00 80 01
 ```
 
-The buzzer is supported by both protocol and firmware and is installed on the current development hardware as an active buzzer on GPIO18. The firmware drives it with a non-blocking trill pattern.
+The buzzer is supported by both protocol and firmware and is installed on the current development hardware as an active buzzer on GPIO18. Direct original-hardware testing shows Alarm uses repeating three-beep trills and Program/Schedule uses the same repeating pattern for roughly 30 seconds; original Countdown completion is silent. Emulator BUILD 99 intentionally keeps Alarm repeating but uses a single three-beep trill for Program/Schedule. BUILD 98 introduced a single three-beep Countdown-completion trill as an emulator convenience. These local buzzer policies add no BLE packet.
 
 ---
 
@@ -811,3 +850,34 @@ The Arduino firmware is a validated reverse-engineering reference, not a model f
 Some callback-heavy operations still remain, especially filesystem/Bulk processing performed from FA02 writes, together with a small main-loop delay and startup/OLED delays. These are tolerated in the standalone experimental firmware but should **not** be copied into latency-sensitive integrations such as WLED. A WLED port should enqueue BLE work and perform filesystem, parsing and rendering operations from the normal WLED execution context.
 
 The local LED brightness ceiling (`MAX_LED_BRIGHTNESS`, currently 50) is also a hardware/test configuration choice, not a protocol rule. An integration should map iDotMatrix brightness to the host application's configured brightness range.
+
+## Original 64×64 hardware observations — BUILD 99
+
+The following behaviors were directly observed on an original iDotMatrix 64×64 and are reference evidence, not requirements that the emulator must copy when a better local policy is intentional.
+
+| Area | Original hardware observation | Emulator policy |
+|---|---|---|
+| Boot | Stored Device Assets carousel resumes after power cycle | Same fallback when no valid optional RTC exists |
+| RTC/time | No persistent RTC observed; Alarm/Program need a new time sync after reboot | Optional RTC supported; valid RTC has boot priority |
+| Alarm buzzer | Repeating three-beep trill | Repeating three-beep trill |
+| Program buzzer | Same trill repeated for about 30 s | One three-beep trill only |
+| Countdown buzzer | Silent | One three-beep trill (intentional enhancement) |
+| Power Saving | Reduces brightness | Implemented |
+| Flip | 180-degree display rotation | Implemented |
+| Cloud GIF/Graffiti | Leaving the app section restores background content | Emulator intentionally keeps the selected content visible |
+| Reset `03/80` | Clears stored Device Assets; stored password association/state is also cleared by the observed workflow | Full emulator-managed state reset; password runtime is not implemented in BUILD 104 |
+| Device information | Tested 64×64 reports MCU `5.11` | Version-query response not yet implemented |
+
+### Time model
+
+After a valid app time synchronization the original unit continues Alarm execution after BLE disconnect while power remains applied. After a power cycle the previously configured Alarm/Program cannot execute until time is synchronized again. This is consistent with a volatile software clock and no persistent RTC.
+
+### Reset policy
+
+BUILD 99 introduced destructive clearing of emulator-managed persistent state. BUILD 101 refined the live behavior of `03/80`: Carousel, Alarm and Schedule media/metadata, stored brightness, ECO and rotation are cleared, but the already synchronized volatile software clock is preserved because the BLE session is still alive. The matrix remains logically ON and black, ready for the next app command. A real power cycle remains distinct and follows the normal boot policy. BUILD 104 removes the unverified emulator password runtime, so reset currently has no password state to clear.
+
+
+
+## Password response timing (BUILD 103)
+
+Password SET/VERIFY status notifications are queued from the FA02 parser and emitted by the main loop approximately 25 ms later. This intentionally ensures that the BLE write callback has completed before FA03 notifies the official app. The packet contents remain unchanged; this build tests response ordering, not a new protocol encoding.

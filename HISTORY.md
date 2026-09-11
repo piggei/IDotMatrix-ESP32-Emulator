@@ -1,3 +1,68 @@
+# BUILD 105 - v0.4.0-dev: clock separator alignment and blinking
+
+Aesthetic-only clock-rendering update. No protocol, storage, BLE, Carousel, Alarm, Schedule, Countdown, reset or other runtime behavior was intentionally changed.
+
+- Clock effects 0, 3, 5, 6 and 7 move the time colon one pixel to the right.
+- Clock effects 1 and 4 move the time colon one pixel to the left.
+- Clock effect 2 keeps its existing separator position.
+- The time colon now blinks once per second in all clock effects.
+- The date separator `/` remains continuously visible and keeps its previous position.
+
+# BUILD 104 - v0.4.0-dev: consolidation after password experiments
+
+- Removed the experimental password SET/VERIFY runtime implementation introduced in BUILD 101-103. The official app remained on the Set Password screen with immediate, early and nominally deferred `05 00 04 02 01` acknowledgements, so the full SET transaction is not considered understood.
+- Preserved the password protocol findings as documentation only: observed SET frame `04/02`, six-digit decimal-pair encoding, likely VERIFY frame `05/02`, app-side `pwdByMac` caching, and original-device reset clearing the stored password association.
+- Retained BUILD 101's verified live-reset UX correction: `03/80` clears emulator-managed persistent state, leaves BLE connected, preserves the volatile synchronized software clock, keeps the logical display ON, and presents a black framebuffer ready for the next command.
+- Disabled verbose Device Info tracing by default while keeping it available for future MCU-version reverse engineering.
+- No intended changes to the hardware-tested Carousel, GIF, Alarm, Schedule, Countdown, Stopwatch, ECO, rotation or renderer behavior.
+
+# BUILD 103
+
+Password handshake timing experiment. BUILD 102 proved that sending `05 00 04 02 01` earlier does not release the official app password-setting screen. BUILD 103 attempted a 25 ms delayed SET/VERIFY notification based on original-hardware Android logcat timing. Subsequent source review found that the experiment was still serviced from the FA02 write-processing path rather than from a truly independent main-loop dispatcher, and hardware testing again left the app on the Set Password screen. BUILD 104 removes this experimental runtime path rather than preserving an unverified implementation.
+
+
+## v0.4.0-dev — BUILD 102
+
+Password SET handshake hotfix. A syntactically valid `04/02` SET command is now acknowledged on FA03 immediately with `05 00 04 02 01`, before Preferences/NVS persistence is attempted. This matches the timing expected by the official app and decouples protocol acknowledgement from local durability. Invalid password-pair payloads still receive status `0x00`. No password value is printed in diagnostics. Runtime behaviour outside the password SET path is unchanged from BUILD 101.
+
+## BUILD 101 - Password handshake diagnostics and live reset
+
+- Added persistent six-digit iDotMatrix password SET support for `04/02`, using the observed decimal-pair encoding (`123456` -> `0C 22 38`).
+- Added VERIFY support for `05/02`, returning FA03 status `01` on match and `00` on mismatch.
+- Added `PASSWORD_FORCE_VERIFY_FAIL` for controlled app-handshake experiments; no global BLE command enforcement is enabled yet.
+- Password diagnostics report only enabled/valid/result state and never print the secret value.
+- `03/80` now clears stored password state in addition to the emulator-managed persistent settings already reset in BUILD 99.
+- Corrected live-reset UX: reset no longer simulates a power cycle while BLE remains connected. It preserves volatile synchronized time, leaves the matrix logically ON, clears it to black, and remains ready for the next app command.
+- Added Device Info diagnostics while the encoding of original MCU version `5.11` in the 9-byte response is investigated; the response bytes themselves are unchanged in this build.
+
+# BUILD 100 — v0.4.0-dev: compile hotfix
+
+- Added the missing forward declaration for `carouselEnterRequested`, which is referenced by `stopAlarm()` before the Carousel state definitions later in the monolithic Arduino sketch.
+- No runtime or protocol behavior changes relative to BUILD 99.
+
+# BUILD 99 — v0.4.0-dev
+
+Hardware-oracle consolidation and boot/reset policy.
+
+- Added automatic boot policy: valid optional RTC starts Clock; otherwise a valid persisted Device Assets bank resumes automatically; otherwise the matrix stays off.
+- Added persistent Carousel resume after power cycle, matching behavior observed on an original iDotMatrix 64×64.
+- Changed Program/Schedule buzzer from a continuous/repeating request to a single three-beep one-shot at activity start. Alarm remains repeating. Countdown remains a one-shot emulator enhancement.
+- Schedule and Alarm now restore a previously running Carousel after the event ends.
+- Changed command `03/80` from runtime-only reset to destructive emulator reset: Carousel, Alarm, Schedule, brightness persistence, ECO, rotation and volatile time sync are cleared.
+- Made Clock time reads RTC-aware so a valid optional RTC can drive Clock immediately at boot.
+- Documented original 64×64 observations: no RTC persistence, volatile software clock after app sync, persistent boot Carousel, Alarm/Program buzzer behavior, silent original Countdown, Power Saving, 180-degree Flip, transient Cloud/Graffiti behavior, reset clearing Device Assets/password, and MCU version 5.11.
+- Password BLE semantics and MCU-version query remain open protocol work.
+
+## BUILD 98 - v0.4.0-dev: Countdown completion buzzer
+
+- Added a local active-buzzer notification when Countdown reaches zero naturally.
+- Reuses the existing non-blocking buzzer timing: three short 90 ms pulses separated by 70 ms gaps.
+- Countdown completion is one-shot: after the third pulse the buzzer stops automatically instead of entering the repeating Alarm/Schedule trill cycle.
+- Existing Alarm and Schedule buzzer behavior is intentionally unchanged.
+- Countdown reset or a newly started Countdown cancels any completion trill still in progress.
+- Soft/runtime reset also clears the one-shot buzzer request.
+- The existing spontaneous Countdown completion status `05 00 08 80 03` is unchanged; the buzzer is emulator-side behavior and adds no BLE packet.
+
 ## BUILD 97 - v0.4.0-dev: Device Assets consolidation
 
 - Consolidation checkpoint after successful hardware validation of BUILD 96.

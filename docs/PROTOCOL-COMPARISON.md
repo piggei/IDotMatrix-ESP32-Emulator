@@ -86,3 +86,16 @@ Raw captures take precedence over interpretation. When an external implementatio
 - https://github.com/dallanwagz/idotmatrix-ha
 - https://github.com/markusressel/idotmatrix-api-client
 - https://github.com/nj-designs/go-idot
+
+## Direct original-hardware observations (64×64)
+
+A physical 64×64 iDotMatrix is now available as a protocol oracle. Direct observations take precedence over third-party inference for the tested behavior. Confirmed: persistent Device Assets boot resume; no persistent RTC; volatile timekeeping after app synchronization; Alarm works after BLE disconnect but not after reboot without re-sync; repeating Alarm trill; roughly 30-second repeating Program trill; silent Countdown completion; Power Saving brightness reduction; 180-degree Flip; reset removes Device Assets and the stored password association; Device Information shows MCU `5.11`; public hardware captures correlate this with 64x64 manufacturer signature `04 05 0B`, motivating BUILD 108 app-facing release advertising.
+
+The emulator intentionally differs in several UX choices: no boot/connect animations, persistent Cloud/Graffiti display, one-shot Program trill, and a one-shot Countdown completion trill.
+
+
+## Password capture notes
+
+Official-app Android logcat shows the app restoring a cached password (`pwdByMac`) for the connected device. Two user password submissions correspond to 7-byte GATT writes followed by 5-byte FA03 notifications, matching the strongly indicated `05/02` VERIFY transaction shape. Direct app captures also establish the `04/02` SET frame and decimal-pair encoding.
+
+BUILD 101-103 attempted emulator SET/VERIFY support and different ACK timing strategies, but the official app remained on the Set Password screen. BUILD 104 removes the unverified runtime implementation. Password protocol findings remain documented, while complete SET completion semantics and enforcement behavior remain open.

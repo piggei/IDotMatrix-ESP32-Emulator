@@ -12,6 +12,7 @@
 - [x] 8x16 and 16x32 text glyph parsing
 - [x] SimSun/SimHei app-side rasterization identified
 - [x] Active buzzer on GPIO18 with non-blocking trill (hardware-verified for Alarm/Schedule)
+- [ ] Hardware-validate BUILD 98+ one-shot three-pulse buzzer at natural Countdown completion
 - [x] Stopwatch/countdown colour behaviour
 - [x] Event-driven OLED diagnostics
 
@@ -70,3 +71,19 @@
 - [ ] Verify the experimentally unconfirmed TEXT compatibility aliases `0x03` and `0x06` against original hardware/app captures
 - [ ] Refine bulk ACK error semantics (`0x02`/`0x03`) using original-hardware captures
 - [x] Keep transport, filesystem, decoder and RAM media limits documented separately (BUILD 87 documentation pass)
+
+## Original 64×64 protocol-oracle follow-up
+
+Verified on original hardware and no longer open: persistent Carousel boot resume; no persistent RTC; Alarm continues after BLE disconnect once time is synchronized; Alarm repeating triple-beep; Program repeating triple-beep on the original; silent original Countdown; Power Saving brightness reduction; 180-degree Flip; Countdown/Stopwatch visible behavior; reset clears Device Assets.
+
+Still open:
+
+- [x] capture and decode the observed six-digit password SET framing (`04/02`) and decimal-pair encoding;
+- [x] observe app-side per-device password caching (`pwdByMac`) and 7-byte write / 5-byte notification timing during password attempts;
+- [ ] determine the complete SET-password completion transaction expected by the official app; BUILD 101-103 experiments were removed in BUILD 104 because the app remained on the SET screen;
+- [ ] determine whether original-device authentication enforcement is device-side, app-side, or shared before reintroducing password support;
+- validate BUILD 108 app-facing version advertising (`screenType, releaseMajor, releaseMinor`) against the official app; determine whether any separate path can expose internal `FW_BUILD`;
+- precisely characterize original Program buzzer duration if useful for documentation (the emulator intentionally uses one trill);
+- perform dedicated Text and Effect rendering/protocol comparisons on the original 64×64;
+- verify which additional original-device settings survive/reset across `03/80` if protocol fidelity becomes important.
+
