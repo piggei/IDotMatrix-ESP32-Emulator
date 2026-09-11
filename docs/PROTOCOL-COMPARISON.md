@@ -40,6 +40,18 @@ Legend: **Confirmed** = independently corroborated; **Local** = currently strong
 | Music LEVEL modes | Yes | No comparable implementation found during review | **Local** |
 | Music FFT modes | Yes | No comparable implementation found during review | **Local** |
 | Scheduled PNG/GIF/Text | Yes | No comparable public implementation found during review | **Local** |
+| Device Assets carousel | Hardware-tested in BUILD 95; upload blackout added and hardware-tested in BUILD 96; consolidated in BUILD 97 | Hardware-validated public RE documents one 12-slot device bank, `timeSign`, `imageIndex`, material wipe/setup and `0A/01`; local app captures corroborate 12-slot pushes and dwell/index fields | **Strong cross-corroboration; core emulator sequencing hardware-tested** |
+
+## Device Assets carousel cross-check
+
+Cross-source agreement is strong for a single 12-slot device bank, `imageIndex` 0..11, per-slot `timeSign`, material setup (`02/01`) and Assets view (`0A/01`). Public original-hardware reverse engineering reports autonomous GIF carousel playback and persistent slot storage.
+
+Local official-app captures add two sequencing/content observations that matter to the emulator implementation:
+
+- `0A/01` can be observed before a later page push and is not necessarily repeated after that push. BUILD 94 incorrectly treated it as a mandatory post-upload transaction terminator.
+- A full 12-position push contains a `DataType.TEXT` Bulk between GIF indices 4 and 6. BUILD 94 parsed it as live TEXT, which cleared the carousel upload context and caused subsequent GIF indices 6..11 to be handled as live GIFs. BUILD 95 stores carousel-range TEXT as a slot and preserves the replacement transaction; mixed GIF/TEXT playback was subsequently hardware-tested successfully.
+
+The public RE currently documents persistent carousel slots as GIF-only. Mixed TEXT slot persistence/playback is therefore a **project-observed and emulator-hardware-tested extension**. Equivalent TEXT persistence/playback on original iDotMatrix hardware remains unverified and is not generalized into a universal protocol claim. BUILD 95 uses a 3-second upload-idle settle only because no explicit post-push frame has been observed in the local short-page captures; that timer is emulator policy rather than protocol evidence. BUILD 96 additionally forces the physical matrix black during replacement as an emulator UX policy, without altering `screenOn`; this blackout was hardware-tested successfully and the same behavior is retained in BUILD 97.
 
 ## ACK semantics
 

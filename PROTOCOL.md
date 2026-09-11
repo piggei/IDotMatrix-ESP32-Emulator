@@ -244,7 +244,8 @@ Implemented common header, 16 bytes:
 | 4 | 1 | field not identified by the current parser |
 | 5 | 4 | total payload size LE |
 | 9 | 4 | payload CRC32 LE |
-| 13..15 | 3 | header fields not yet documented |
+| 13..14 | 2 | GIF `timeSign` / Device Assets dwell seconds LE; observed in project captures and independently hardware-validated |
+| 15 | 1 | GIF `imageIndex`; Device Assets slot `0..11` |
 | 16.. | - | payload chunk |
 
 Implemented types:
@@ -278,7 +279,7 @@ For bulk transfers, the safest current interpretation is:
 
 CRC32 is verified over the complete payload.
 
-### Transfer, filesystem and memory limits as of BUILD 89
+### Transfer, filesystem and memory limits as of v0.4.0-dev / BUILD 97
 
 Several different limits coexist and must not be conflated:
 
@@ -308,6 +309,51 @@ Linear RGB pixel order. The firmware then maps logical coordinates to the physic
 The payload is a standard GIF file (`GIF87a`/`GIF89a`). Since BUILD 87, normal BLE GIF uploads are **not kept entirely in RAM**: chunks are streamed to LittleFS using alternating RX files, a completed RX file is promoted to the PLAY file, and AnimatedGIF is opened from the normal `loop()` with a fresh decoder instance for each media change. This is the stable path validated with 16x16, 32x32 and 64x64 app profiles.
 
 BUILD 89 removes the previous Alarm/Schedule exception. Before an Alarm/Schedule GIF starts, the emulator copies the persistent source file to `/event_play.gif`, verifies the copied stream against the stored size/CRC, and opens that disposable file through the LittleFS AnimatedGIF callbacks. The decoder therefore never holds an Alarm/Schedule transactional source file open while later configuration updates may rename it. `/event_play.gif` is implementation-only transient state and is deleted when playback stops and at boot.
+
+### Device Assets carousel - OBSERVED / HARDWARE-TESTED, BUILD 97
+
+The official app exposes three UI pages/lists of twelve positions, while current captures and independent original-hardware reverse engineering support a **single 12-slot device bank**. A pushed app page replaces device slots `0..11`.
+
+Observed setup frame:
+
+```text
+11 00 02 01 0C 00 01 02 03 04 05 06 07 08 09 0A 0B
+```
+
+Best-supported interpretation:
+
+```text
+11 00        total frame length = 17
+02 01        Device Assets slot setup / material setup
+0C           number of slot IDs carried = 12
+00..0B       device slot IDs 0..11
+```
+
+A three-item page still sends all twelve slot IDs, so `0x0C` is not the number of occupied carousel entries.
+
+Bulk header fields observed in project captures:
+
+```text
+bytes 13..14 : timeSign, uint16 little-endian dwell seconds
+byte 15      : imageIndex / Device Assets slot
+```
+
+Captures directly confirm `timeSign=5` and `timeSign=30` with `imageIndex=0,1,2`. A later 12-position capture additionally shows a `DataType.TEXT` Bulk between GIF `imageIndex=4` and GIF `imageIndex=6`. In BUILD 94 that live TEXT parser called the normal display-mode transition and unintentionally closed the Device Assets upload context; subsequent GIFs 6..11 were then misclassified as live GIFs. BUILD 95 treats a TEXT Bulk carrying a carousel-range `imageIndex` during an open Device Assets push as a stored slot instead. Mixed GIF/TEXT playback has since been hardware-tested successfully; the exact captured TEXT index/dwell remains worth recording explicitly in a future trace.
+
+Current emulator behavior (BUILD 95 model, BUILD 96 blackout, consolidated in BUILD 97):
+
+1. `0A/01` sets Device Assets view intent. Captures show it may be sent before a later page push and is not required as a post-upload terminator.
+2. `02/01` validates the slot descriptor, stops current carousel playback, clears the declared slots, preserves any previously established Assets-view intent, opens replacement, and forces the physical LED output black (introduced and hardware-validated in BUILD 96) without modifying `screenOn` or the logical framebuffer.
+3. GIF (`type=1`) and observed TEXT (`type=3`) Bulk transfers with `imageIndex=0..11` are stored in the corresponding slot without changing the visible display during the push.
+4. Slot metadata persists content type, `timeSign`, size and CRC. GIF files and TEXT payload files are kept separately.
+5. Because no explicit end-of-push frame is present in the short-page captures, an already-requested Assets view resumes after **3000 ms** with no active Bulk and no newly committed carousel asset. The implementation always releases the temporary output blackout when the replacement settles. If Assets view is active, the first stored slot starts; otherwise the preserved framebuffer is restored. The settle timeout and blackout are emulator policies, not inferred original-device protocol behavior.
+6. GIF slots use AnimatedGIF; TEXT slots use the existing TEXT parser/renderer while preserving carousel state.
+7. Empty/unconfigured slots are skipped.
+8. Repeated `0A/01` while already active is idempotent; if replacement is open it only preserves view intent and does not expose the partial bank.
+9. Live/Cloud content outside an open Device Assets replacement retains the stable v0.3.1 path.
+10. Hardware testing confirms that BLE/app disconnect does not terminate an already-running carousel; playback continues autonomously on the emulator.
+
+Independent original-hardware reverse engineering corroborates the 12-slot bank, GIF slot storage, `timeSign`, `imageIndex` and autonomous playback. Its published notes currently state that persistence requires GIF data. Mixed GIF/TEXT carousel playback is **project-observed and hardware-tested on this ESP32 emulator**, but persistence/playback of TEXT assets on original iDotMatrix hardware remains unverified and is not promoted to a universal protocol rule.
 
 ### TEXT - CONFIRMED for the fields currently used
 
@@ -758,7 +804,7 @@ When the app enables date display, the emulator keeps the selected clock visual 
 
 The 16x16 stopwatch and countdown use a matching vertical layout with an animated timer icon above the numeric value. Stopwatch animation advances forward and remains white. Countdown remains white until the final five seconds, when it turns red.
 
-## Reference implementation caveats (BUILD 86)
+## Reference implementation caveats (v0.3.1 / BUILD 90)
 
 The Arduino firmware is a validated reverse-engineering reference, not a model for every future integration. BUILD 86 serializes the shared FA02/server-callback runtime state with the Arduino loop through a FreeRTOS task mutex and defers the historical 300 ms advertising restart out of the disconnect callback. This removes known cross-core data races on those shared fields without using an interrupt-disabled critical section.
 

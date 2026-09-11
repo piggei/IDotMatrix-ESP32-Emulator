@@ -4,14 +4,19 @@
 #include <freertos/semphr.h>
 
 // ======================================================
-// FIRMWARE BUILD ID
-// Incrementare ad ogni file consegnato: viene stampato
-// sulla seriale all'avvio per evitare dubbi sulla versione.
+// FIRMWARE RELEASE / BUILD ID
+// FW_RELEASE identifies the public project release.
+// FW_BUILD is the internal incremental development identifier.
 // ======================================================
-#define FW_BUILD 89
+#define FW_RELEASE "0.4.0-dev"
+#define FW_BUILD 97
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 1
 #define BULK_PROTOCOL_DEBUG 1
+#define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
+#define CAROUSEL_SLOT_COUNT 12
+#define CAROUSEL_DEFAULT_DWELL_SEC 5U
+#define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
 
 // Optional external RTC (DS3231 via RTClib).
 // Keep 0 when no RTC hardware is installed: alarms use BLE time sync.
@@ -59,19 +64,19 @@ uint8_t unknownCommandStored = 0;
 #include <LittleFS.h>
 #if OLED_STATUS_ENABLED
   #include <U8g2lib.h>
-  // Configurazione IDENTICA allo sketch DollaTek gia verificato dall'utente.
+  // Configuration identical to the DollaTek sketch already verified on hardware.
   U8G2_SSD1306_128X64_NONAME_F_SW_I2C statusOLED(OLED_ROTATION, OLED_SCL, OLED_SDA, OLED_RST);
   bool statusOLEDReady=false;
 #endif
 
-// PNG Schedule: usiamo l'inflater miniz gia presente nella ROM/SDK ESP32,
-// cosi non serve aggiungere una libreria PNG esterna.
+// Schedule PNG: use the miniz inflater already provided by the ESP32 ROM/SDK,
+// avoiding an additional external PNG library.
 #if __has_include(<rom/miniz.h>)
   #include <rom/miniz.h>
 #elif __has_include(<miniz.h>)
   #include <miniz.h>
 #else
-  #error "miniz header non trovato: richiesto per i PNG Schedule"
+  #error "miniz header not found: required for Schedule PNG decoding"
 #endif
 #if RTC_ENABLED
   #include <Wire.h>
@@ -463,6 +468,10 @@ extern CRGB *scheduleSavedFrame;
 uint32_t crc32Update(uint32_t crc, const uint8_t *data, size_t len);
 bool fileMatchesMedia(const String &path, uint32_t expectedSize, uint32_t expectedCRC);
 void clearFramebuffer(const CRGB &color = CRGB::Black);
+bool handleCarouselCommand(const uint8_t *data, size_t len);
+void loadCarousel();
+void updateCarousel(uint32_t now);
+void stopCarouselPlayback();
 
 
 // ======================================================
@@ -914,6 +923,46 @@ uint32_t gifNextFrameAt = 0;
 CRGB *gifFrame = nullptr;
 
 // ======================================================
+// DEVICE-ASSET CAROUSEL
+// BUILD 97 consolidates the hardware-tested 12-slot Device Assets model. The official
+// app may keep multiple 12-slot pages in its UI, but a pushed page addresses
+// device slots 0..11. Command 02/01 carries a slot-setup descriptor; current
+// official-app captures use count=12 followed by 0..11 even when only a subset
+// of those slots receives a GIF. Bulk bytes 13-14 are the per-slot dwell
+// (timeSign, LE seconds) and byte 15 is the device asset slot/imageIndex.
+// Command 0A/01 enters/starts the asset view, but current official-app captures
+// show it may arrive before a later page push and is not necessarily repeated
+// afterwards. BUILD 95 established Assets-view intent across 02/01,
+// stores GIF and observed TEXT slots without rendering them during the push,
+// then starts the completed bank after a short upload-idle settle interval.
+// Empty positions are skipped.
+// ======================================================
+struct __attribute__((packed)) CarouselSlotMeta {
+  uint8_t configured = 0;
+  uint8_t dataType = 0;       // 1=GIF, 3=TEXT (observed in Device Assets)
+  uint16_t dwellSeconds = 0;
+  uint32_t mediaSize = 0;
+  uint32_t mediaCRC = 0;
+};
+
+CarouselSlotMeta carouselSlots[CAROUSEL_SLOT_COUNT];
+Preferences carouselPrefs;
+bool carouselPrefsReady = false;
+uint8_t carouselOrder[CAROUSEL_SLOT_COUNT] = {};
+uint8_t carouselOrderCount = 0;
+bool carouselUploadOpen = false;
+// Emulator UX policy: while a Device Assets bank is being replaced, force the
+// physical matrix black without changing the protocol-controlled screenOn state.
+bool carouselUploadBlackout = false;
+bool carouselEnterRequested = false;
+bool carouselStartPending = false;
+bool carouselActive = false;
+int8_t carouselActiveSlot = -1;
+uint32_t carouselSlotStartedAt = 0;
+uint32_t carouselLastAssetCommitAt = 0;
+bool gifCarouselPlaybackFileActive = false;
+
+// ======================================================
 // PACKET / BULK
 // ======================================================
 uint8_t packetBuffer[MAX_PACKET_SIZE];
@@ -931,7 +980,11 @@ struct BulkTransferState {
   uint32_t runningCRC = 0xFFFFFFFF;
   uint32_t chunkCount = 0;
   bool gifToFS = false;
+  bool carouselToFS = false;
   int8_t gifRxSlot = -1;
+  int8_t carouselLocalSlot = -1;
+  uint16_t timeSign = 0;
+  uint8_t imageIndex = 0xFF;
   String format = "UNKNOWN";
 } bulk;
 
@@ -1087,7 +1140,7 @@ uint8_t brightnessToFastLED(uint8_t percent) {
 }
 
 void refreshMatrix() {
-  if (!screenOn) {
+  if (!screenOn || carouselUploadBlackout) {
     FastLED.clear();
     FastLED.show();
     lastAppliedOutputBrightness = 0xFF;
@@ -1165,6 +1218,15 @@ void sendDeviceInfo() {
 void stopGIFPlayback();
 void switchDisplayMode(DisplayMode m) {
   if (displayMode == DISPLAY_GIF && m != DISPLAY_GIF) stopGIFPlayback();
+  if (m != DISPLAY_GIF) {
+    carouselActive = false;
+    carouselActiveSlot = -1;
+    carouselStartPending = false;
+    carouselEnterRequested = false;
+    carouselUploadOpen = false;
+    carouselUploadBlackout = false;
+    gifCarouselPlaybackFileActive = false;
+  }
   if (m == DISPLAY_CLOCK && displayMode != DISPLAY_CLOCK) clockCycleStartedAt = millis();
   displayMode = m;
 }
@@ -1219,14 +1281,14 @@ void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool 
 
 // ======================================================
 // CLOCK STYLES - ricostruiti dal video dell'app.
-// 0 rainbow frame + cifre colore selezionato
+// 0 rainbow frame + digits in the selected color
 // 1 Christmas: rosso + albero verde
 // 2 racing/checker: cyan/magenta, cifre arancio
-// 3 fondo colore selezionato, cifre nere
-// 4 hourglass: cifre colore selezionato + clessidra arancio/bianca
+// 3 selected-color background, black digits
+// 4 hourglass: selected-color digits + orange/white hourglass
 // 5 frame cyan/blue + cifre arancio
-// 6 frame cyan/blue + cifre colore selezionato
-// 7 frame quadranti RGBY + cifre colore selezionato
+// 6 cyan/blue frame + digits in the selected color
+// 7 RGBY quadrant frame + digits in the selected color
 // ======================================================
 void drawRainbowBorder() {
   uint8_t hue = (millis()/20) & 0xFF;
@@ -1257,7 +1319,7 @@ void drawChristmasTree() {
 void drawCheckerRows() {
   // Stile 3 del video: TRE BANDE PIENE sopra e sotto.
   // Esterna = azzurro, centrale = viola, interna = fuxia.
-  // Non sono segmentate/scacchiera: ogni riga e' continua.
+  // The borders are not segmented/checkered: each row is continuous.
   const CRGB cyan(0,255,255);
   const CRGB violet(145,0,255);
   const CRGB fuchsia(255,0,170);
@@ -1279,14 +1341,14 @@ void drawFrameStyle5(bool cornerBlocks) {
   CRGB cyan(0,255,255), blue(0,70,255);
 
   if (cornerBlocks) {
-    // Stile precedente: cornice azzurra con blocchi blu agli angoli.
+    // Previous style: cyan frame with blue blocks at the corners.
     for (uint8_t x=2;x<=13;x++) { putPixel(x,1,cyan); putPixel(x,14,cyan); }
     for (uint8_t y=2;y<=13;y++) { putPixel(1,y,cyan); putPixel(14,y,cyan); }
     for (uint8_t y=0;y<3;y++) for (uint8_t x=0;x<3;x++) {
       putPixel(x,y,blue); putPixel(15-x,y,blue); putPixel(x,15-y,blue); putPixel(15-x,15-y,blue);
     }
   } else {
-    // DUE cornici continue, entrambe larghe esattamente 1 pixel.
+    // TWO continuous frames, each exactly one pixel wide.
     // Esterno blu puro, interno azzurro/ciano puro.
     const CRGB outerBlue(0,0,255);
     const CRGB innerCyan(0,255,255);
@@ -1384,9 +1446,9 @@ void renderClockValues(uint8_t h, uint8_t m) {
       drawTimeTwoRows(h,m,orange,orange,true,2);
       break;
     }
-    case 6: { // doppia cornice: blu esterna + azzurra interna
-      // Disegniamo prima le cifre e POI le cornici, cosi' i due bordi
-      // restano sempre completi e non possono essere sovrascritti.
+    case 6: { // double frame: blue outer + cyan inner
+      // Draw digits first and frames afterward so both borders remain
+      // complete and cannot be overwritten.
       drawTimeTwoRows(h,m,clockColor,clockColor,true,2);
       drawFrameStyle5(false);
       break;
@@ -1613,11 +1675,11 @@ void updateTextAnimation() {
 // marker 0x02: 8x16 bitmap,  4-byte meta + 16 bitmap bytes = 20 bytes/glyph
 // marker 0x05: 16x32 bitmap, 4-byte meta + 64 bitmap bytes = 68 bytes/glyph
 // SimSun/SimHei are rasterized by the app: no device-side font selection is required.
-void parseTextPayload(const uint8_t *data,size_t len) {
-  if(len<TEXT_GLOBAL_HEADER) return;
+bool parseTextPayloadInternal(const uint8_t *data,size_t len,bool carouselContext) {
+  if(len<TEXT_GLOBAL_HEADER) return false;
   uint8_t requested=data[0];
   uint8_t n=min(requested,(uint8_t)MAX_TEXT_GLYPHS);
-  if(!n) return;
+  if(!n) return false;
 
   // Determine glyph format from the first record. Mixed-size records have not been observed.
   const uint8_t marker=data[TEXT_GLOBAL_HEADER];
@@ -1628,11 +1690,11 @@ void parseTextPayload(const uint8_t *data,size_t len) {
 #if DEBUG_SERIAL
     Serial.print("TEXT unsupported glyph marker 0x"); Serial.println(marker,HEX);
 #endif
-    return;
+    return false;
   }
   const size_t recordBytes=TEXT_GLYPH_META+glyphBytes;
   const size_t need=TEXT_GLOBAL_HEADER+(size_t)requested*recordBytes;
-  if(len<need) return;
+  if(len<need) return false;
 
   textState.valid=true; textState.glyphCount=n;
   textState.glyphWidth=glyphWidth; textState.glyphHeight=glyphHeight;
@@ -1650,7 +1712,21 @@ void parseTextPayload(const uint8_t *data,size_t len) {
   Serial.print("TEXT glyphs=");Serial.print(n);Serial.print(" size=");Serial.print(glyphWidth);Serial.print('x');Serial.print(glyphHeight);
   Serial.print(" marker=0x");Serial.println(marker,HEX);
 #endif
-  resetTextPosition(); switchDisplayMode(DISPLAY_TEXT); renderTextFrame();
+  resetTextPosition();
+  if(carouselContext){
+    // Carousel TEXT is still a carousel slot. Do not call switchDisplayMode(),
+    // because that intentionally tears down carousel/upload state for ordinary
+    // live TEXT commands. The caller has already stopped any GIF decoder.
+    displayMode=DISPLAY_TEXT;
+  } else {
+    switchDisplayMode(DISPLAY_TEXT);
+  }
+  renderTextFrame();
+  return true;
+}
+
+void parseTextPayload(const uint8_t *data,size_t len) {
+  (void)parseTextPayloadInternal(data,len,false);
 }
 
 // ======================================================
@@ -1667,13 +1743,13 @@ CRGB effectPaletteGradient(uint8_t p){
   return blend(effectState.colors[idx%effectState.colorCount],effectState.colors[(idx+1)%effectState.colorCount],frac);
 }
 
-// Velocita' rallentata rispetto alla build precedente.
+// Slower speed mapping than the previous build.
 uint16_t effectFrameInterval(){
   uint8_t s=min((uint8_t)100,effectState.speed);
 
-  // L'effetto 6 e' un vero cross-fade per-pixel: per vederlo
-  // fluido serve un refresh frequente anche quando la velocita'
-  // impostata nell'app e' molto bassa (es. speed=5).
+  // Effect 6 is a true per-pixel cross-fade, so smooth motion requires
+  // frequent refreshes even when the app-selected speed is very low
+  // (for example speed=5).
   if(effectState.effect==6) return 40;
 
   // Gli altri effetti restano volutamente piu' lenti.
@@ -1690,7 +1766,7 @@ uint32_t effectHash(uint32_t v){ v^=v>>16; v*=0x7FEB352DUL; v^=v>>15; v*=0x846CA
 void renderEffect0(){
   uint32_t ph=effectPhase()/4;
   for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++) {
-    // Gradiente lungo: circa 10+ pixel per transizione colore.
+    // Long gradient: roughly 10+ pixels per color transition.
     uint8_t pos=(uint8_t)((y*5 + x + ph)/3);
     framebuffer[logicalIndex(x,y)]=effectPaletteGradient(pos);
   }
@@ -1708,13 +1784,13 @@ void renderEffect1(){
 
 void renderEffect2(){
   uint32_t ph=effectPhase()/3;
-  // Fondo: fading continuo fra i colori.
+  // Background: continuous fading between colors.
   for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
     uint8_t pos=(uint8_t)(ph+x*2+y*2);
     CRGB c=effectPaletteGradient(pos); c.nscale8_video(190);
     framebuffer[logicalIndex(x,y)]=c;
   }
-  // Spike esclusivamente bianchi.
+  // Spikes are always white.
   uint32_t frame=ph/4;
   for(uint8_t i=0;i<18;i++){
     uint32_t h=effectHash((uint32_t)i*223UL+frame*19UL);
@@ -1723,7 +1799,7 @@ void renderEffect2(){
 }
 
 void renderEffect3(){
-  // L'originale avanza le bande a scatti di 2 pixel.
+  // The observed style advances the bands in two-pixel steps.
   uint32_t raw=effectPhase()/10;
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
@@ -1733,7 +1809,7 @@ void renderEffect3(){
 }
 
 void renderEffect4(){
-  // Anche le diagonali avanzano a scatti di 2 pixel.
+  // Diagonals also advance in two-pixel steps.
   uint32_t raw=effectPhase()/10;
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
@@ -1755,9 +1831,8 @@ void renderEffect5(){
 }
 
 void renderEffect6(){
-  // Effetto 7 UI: ogni pixel mantiene la propria fase e FADE
-  // realmente da un colore al successivo. Non esiste alcuna
-  // sostituzione istantanea del colore.
+  // UI effect 7: each pixel keeps its own phase and genuinely fades
+  // from one color to the next instead of switching instantly.
   const uint8_t count=max((uint8_t)1,effectState.colorCount);
 
   if(count==1){
@@ -1765,10 +1840,9 @@ void renderEffect6(){
     return;
   }
 
-  // Nell'app speed=5 e' lento. A quella velocita' un singolo
-  // passaggio dura circa 5.7 secondi; speed=100 scende a 700 ms.
-  // Con update ogni 40 ms il fade ha molti step e deve risultare
-  // chiaramente continuo anche a velocita' minima.
+  // In the app speed=5 is slow: one transition lasts about 5.7 seconds,
+  // while speed=100 drops to about 700 ms. A 40 ms update interval gives
+  // the fade enough steps to remain visibly continuous at minimum speed.
   const uint8_t sp=constrain(effectState.speed,0,100);
   const uint32_t fadeMs=map(sp,0,100,6000,700);
   const uint32_t elapsed=millis()-effectState.startMillis;
@@ -1779,14 +1853,14 @@ void renderEffect6(){
       const uint16_t i=(uint16_t)y*MATRIX_WIDTH+x;
       const uint32_t seed=effectHash((uint32_t)i*977UL+0x51EDUL);
 
-      // Ogni pixel parte da un punto diverso dello stesso ciclo
-      // continuo della palette.
+      // Each pixel starts at a different point in the same continuous
+      // palette cycle.
       const uint32_t local=(elapsed+(seed%cycleMs))%cycleMs;
       const uint8_t a=(uint8_t)(local/fadeMs);
       const uint8_t b=(uint8_t)((a+1)%count);
       const uint32_t within=local%fadeMs;
 
-      // 0..255 con risoluzione temporale elevata.
+      // 0..255 with high temporal resolution.
       const uint8_t linear=(uint8_t)((within*255UL)/(fadeMs-1UL));
       const uint8_t frac=ease8InOutCubic(linear);
 
@@ -1855,6 +1929,7 @@ void stopGIFPlayback(){
   bool removeEventFile=gifEventPlaybackFileActive;
   destroyGIFDecoder();
   gifEventPlaybackFileActive=false;
+  gifCarouselPlaybackFileActive=false;
   if(removeEventFile && littleFsReady) LittleFS.remove(EVENT_GIF_PLAY_FILE);
 }
 void freeGIF(){
@@ -1921,7 +1996,7 @@ void GIFDraw(GIFDRAW *pDraw){
   }
 }
 
-bool startGIFFile(const char *path, bool eventPlayback){
+bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
   if(!littleFsReady || !path || !gifSize || !LittleFS.exists(path)) return false;
   if(gif) destroyGIFDecoder();
   fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
@@ -1960,14 +2035,27 @@ bool startGIFFile(const char *path, bool eventPlayback){
 #endif
   gifStoredOnFS=true;
   gifEventPlaybackFileActive=eventPlayback;
+  gifCarouselPlaybackFileActive=carouselPlayback;
   gifLoaded=gifPlaying=true; gifNextFrameAt=millis(); displayMode=DISPLAY_GIF; return true;
 }
 
 bool startGIF(){
-  return startGIFFile(GIF_PLAY_FILE,false);
+  carouselActive=false;
+  carouselActiveSlot=-1;
+  carouselStartPending=false;
+  carouselEnterRequested=false;
+  carouselUploadOpen=false;
+  carouselUploadBlackout=false;
+  return startGIFFile(GIF_PLAY_FILE,false,false);
 }
 
 bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uint32_t expectedCRC){
+  carouselActive=false;
+  carouselActiveSlot=-1;
+  carouselStartPending=false;
+  carouselEnterRequested=false;
+  carouselUploadOpen=false;
+  carouselUploadBlackout=false;
   if(!littleFsReady || !expectedSize) return false;
   File src=LittleFS.open(sourcePath,"r");
   if(!src || (uint32_t)src.size()!=expectedSize){ if(src) src.close(); return false; }
@@ -2021,7 +2109,7 @@ bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uin
   Serial.print("EVENT GIF PLAY copy bytes="); Serial.print(expectedSize);
   Serial.print(" source="); Serial.println(sourcePath);
 #endif
-  if(!startGIFFile(EVENT_GIF_PLAY_FILE,true)){
+  if(!startGIFFile(EVENT_GIF_PLAY_FILE,true,false)){
     gifStoredOnFS=false;
     gifSize=0;
     LittleFS.remove(EVENT_GIF_PLAY_FILE);
@@ -2041,15 +2129,364 @@ void updateGIF(){
 }
 
 // ======================================================
+// DEVICE-ASSET CAROUSEL
+// ======================================================
+String carouselFileName(uint8_t slot, uint8_t dataType) {
+  return String("/car") + slot + (dataType==3 ? ".txt" : ".gif");
+}
+String carouselTempFileName(uint8_t slot) { return String("/car") + slot + ".tmp"; }
+String carouselBackupFileName(uint8_t slot) { return String("/car") + slot + ".bak"; }
+
+bool saveCarouselSlotMeta(uint8_t slot) {
+  if(!carouselPrefsReady || slot>=CAROUSEL_SLOT_COUNT) return false;
+  char key[8]; snprintf(key,sizeof(key),"c%u",slot);
+  return carouselPrefs.putBytes(key,&carouselSlots[slot],sizeof(CarouselSlotMeta)) == sizeof(CarouselSlotMeta);
+}
+
+void removeCarouselSlotMeta(uint8_t slot) {
+  if(slot>=CAROUSEL_SLOT_COUNT) return;
+  if(carouselPrefsReady){
+    char key[8]; snprintf(key,sizeof(key),"c%u",slot);
+    if(carouselPrefs.isKey(key)) carouselPrefs.remove(key);
+  }
+  carouselSlots[slot]=CarouselSlotMeta();
+}
+
+void clearCarouselSlot(uint8_t slot) {
+  if(slot>=CAROUSEL_SLOT_COUNT) return;
+  if(littleFsReady){
+    LittleFS.remove(carouselTempFileName(slot));
+    LittleFS.remove(carouselBackupFileName(slot));
+    LittleFS.remove(carouselFileName(slot,1));
+    LittleFS.remove(carouselFileName(slot,3));
+  }
+  removeCarouselSlotMeta(slot);
+}
+
+void saveCarouselOrder() {
+  if(!carouselPrefsReady) return;
+  carouselPrefs.putUChar("count",carouselOrderCount);
+  carouselPrefs.putBytes("order",carouselOrder,CAROUSEL_SLOT_COUNT);
+}
+
+void recoverCarouselSlot(uint8_t slot) {
+  if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT) return;
+  String tmp=carouselTempFileName(slot), bak=carouselBackupFileName(slot);
+  LittleFS.remove(tmp);
+  const CarouselSlotMeta &m=carouselSlots[slot];
+  if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)){
+    LittleFS.remove(carouselFileName(slot,1));
+    LittleFS.remove(carouselFileName(slot,3));
+    LittleFS.remove(bak);
+    return;
+  }
+  String dst=carouselFileName(slot,m.dataType);
+  bool dstOK=fileMatchesMedia(dst,m.mediaSize,m.mediaCRC);
+  bool bakOK=fileMatchesMedia(bak,m.mediaSize,m.mediaCRC);
+  if(dstOK) LittleFS.remove(bak);
+  else if(bakOK){
+    LittleFS.remove(dst);
+    if(!LittleFS.rename(bak,dst)){
+#if DEBUG_SERIAL
+      Serial.print("CAROUSEL recovery rename failed slot="); Serial.println(slot);
+#endif
+    }
+  }
+  // Never leave a stale file of the other supported slot type around.
+  LittleFS.remove(carouselFileName(slot,m.dataType==1 ? 3 : 1));
+}
+
+void loadCarousel() {
+  carouselPrefsReady=carouselPrefs.begin("idot-car",false);
+  carouselOrderCount=0;
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++) carouselOrder[i]=0;
+  if(carouselPrefsReady){
+    uint8_t savedCount=carouselPrefs.getUChar("count",0);
+    if(savedCount<=CAROUSEL_SLOT_COUNT && carouselPrefs.getBytesLength("order")==CAROUSEL_SLOT_COUNT){
+      uint8_t savedOrder[CAROUSEL_SLOT_COUNT];
+      carouselPrefs.getBytes("order",savedOrder,CAROUSEL_SLOT_COUNT);
+      bool seen[CAROUSEL_SLOT_COUNT]={false};
+      bool valid=true;
+      for(uint8_t i=0;i<savedCount;i++){
+        if(savedOrder[i]>=CAROUSEL_SLOT_COUNT || seen[savedOrder[i]]){ valid=false; break; }
+        seen[savedOrder[i]]=true;
+      }
+      if(valid){
+        carouselOrderCount=savedCount;
+        memcpy(carouselOrder,savedOrder,CAROUSEL_SLOT_COUNT);
+      }
+    }
+  }
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++){
+    if(carouselPrefsReady){
+      char key[8]; snprintf(key,sizeof(key),"c%u",i);
+      if(carouselPrefs.getBytesLength(key)==sizeof(CarouselSlotMeta))
+        carouselPrefs.getBytes(key,&carouselSlots[i],sizeof(CarouselSlotMeta));
+      else if(carouselPrefs.isKey(key))
+        carouselPrefs.remove(key); // discard metadata written by superseded dev layouts
+    }
+    recoverCarouselSlot(i);
+#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
+    if(carouselSlots[i].configured){
+      Serial.print("CAROUSEL LOAD slot="); Serial.print(i);
+      Serial.print(" type="); Serial.print(carouselSlots[i].dataType==3 ? "TEXT" : "GIF");
+      Serial.print(" dwell="); Serial.print(carouselSlots[i].dwellSeconds);
+      Serial.print(" bytes="); Serial.print(carouselSlots[i].mediaSize);
+      String path=carouselFileName(i,carouselSlots[i].dataType);
+      Serial.print(" file="); Serial.println(littleFsReady && LittleFS.exists(path) ? "YES" : "NO");
+    }
+#endif
+  }
+
+  // BUILD 92 temporarily allowed slots 12..35. Remove leftovers from that
+  // superseded development build so they cannot waste LittleFS/NVS space.
+  if(littleFsReady){
+    for(uint8_t i=12;i<36;i++){
+      LittleFS.remove(String("/car")+i+".gif");
+      LittleFS.remove(String("/car")+i+".txt");
+      LittleFS.remove(String("/car")+i+".tmp");
+      LittleFS.remove(String("/car")+i+".bak");
+    }
+  }
+  if(carouselPrefsReady){
+    for(uint8_t i=12;i<36;i++){
+      char key[8]; snprintf(key,sizeof(key),"c%u",i);
+      if(carouselPrefs.isKey(key)) carouselPrefs.remove(key);
+    }
+  }
+}
+
+void stopCarouselPlayback() {
+  carouselStartPending=false;
+  carouselActive=false;
+  carouselActiveSlot=-1;
+  if(gifCarouselPlaybackFileActive){
+    stopGIFPlayback();
+    gifStoredOnFS=false;
+    gifSize=0;
+  }
+  // Preserve the last logical carousel frame while a replacement bank is uploaded.
+  // BUILD 96 added the physical-output blackout used during replacement.
+  // Direct assignment is intentional: switchDisplayMode() would clear the
+  // still-open Device Assets upload context.
+  if(displayMode==DISPLAY_GIF || displayMode==DISPLAY_TEXT) displayMode=DISPLAY_RAW;
+}
+
+int8_t nextCarouselSlot(int8_t current) {
+  if(!littleFsReady || !carouselOrderCount) return -1;
+  int start=-1;
+  for(uint8_t i=0;i<carouselOrderCount;i++) if((int8_t)carouselOrder[i]==current){ start=i; break; }
+  for(uint8_t step=1; step<=carouselOrderCount; step++){
+    uint8_t pos=(uint8_t)((start<0 ? step-1 : start+step)%carouselOrderCount);
+    uint8_t slot=carouselOrder[pos];
+    if(slot>=CAROUSEL_SLOT_COUNT) continue;
+    const CarouselSlotMeta &m=carouselSlots[slot];
+    if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) continue;
+    if(LittleFS.exists(carouselFileName(slot,m.dataType))) return (int8_t)slot;
+  }
+  return -1;
+}
+
+bool startCarouselSlot(uint8_t slot) {
+  if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT) return false;
+  carouselActive=false;
+  carouselActiveSlot=-1;
+  CarouselSlotMeta &m=carouselSlots[slot];
+  if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) return false;
+  String path=carouselFileName(slot,m.dataType);
+  if(!LittleFS.exists(path) || !fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return false;
+
+  bool started=false;
+  stopGIFPlayback();
+  if(m.dataType==1){
+    gifSize=m.mediaSize;
+    started=startGIFFile(path.c_str(),false,true);
+    if(!started){ gifSize=0; gifStoredOnFS=false; }
+  } else if(m.dataType==3){
+    if(m.mediaSize<=MAX_TEXT_PAYLOAD){
+      File f=LittleFS.open(path,"r");
+      if(f && (uint32_t)f.size()==m.mediaSize){
+        size_t got=f.read(textPayload,m.mediaSize);
+        f.close();
+        if(got==m.mediaSize) started=parseTextPayloadInternal(textPayload,got,true);
+      } else if(f) f.close();
+    }
+  }
+  if(!started) return false;
+
+  carouselActive=true;
+  carouselActiveSlot=(int8_t)slot;
+  carouselSlotStartedAt=millis();
+#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
+  Serial.print("CAROUSEL PLAY slot="); Serial.print(slot);
+  Serial.print(" type="); Serial.print(m.dataType==3 ? "TEXT" : "GIF");
+  Serial.print(" dwell="); Serial.print(m.dwellSeconds ? m.dwellSeconds : CAROUSEL_DEFAULT_DWELL_SEC);
+  Serial.print("s bytes="); Serial.println(m.mediaSize);
+#endif
+  return true;
+}
+
+void updateCarousel(uint32_t now) {
+  // Official-app captures show 0A/01 can establish the Assets view before a
+  // later page push, with no second 0A/01 after the Bulk transfers.  Therefore
+  // 02/01 preserves that view intent.  Because no explicit end-of-push frame
+  // has been observed, BUILD 96 uses a conservative idle-settle boundary only
+  // after at least one carousel asset has committed.  This is emulator policy,
+  // not a claimed original-device protocol timing.
+  if(carouselUploadOpen && carouselLastAssetCommitAt && !bulk.active &&
+     (uint32_t)(now-carouselLastAssetCommitAt)>=CAROUSEL_UPLOAD_SETTLE_MS){
+    carouselUploadOpen=false;
+    carouselUploadBlackout=false;
+    bool canStart=carouselEnterRequested && nextCarouselSlot(-1)>=0;
+    if(canStart) carouselStartPending=true;
+    else refreshMatrix(); // restore the preserved framebuffer if Assets view is not active
+#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
+    Serial.print("CAROUSEL UPLOAD SETTLED after "); Serial.print(CAROUSEL_UPLOAD_SETTLE_MS);
+    Serial.println(canStart ? "ms; blackout OFF; starting stored bank" : "ms; blackout OFF; view not active");
+#endif
+  }
+
+  if(carouselStartPending){
+    carouselStartPending=false;
+    int8_t first=nextCarouselSlot(-1);
+    if(first>=0) startCarouselSlot((uint8_t)first);
+    return;
+  }
+  if(!carouselActive || carouselActiveSlot<0) return;
+  uint16_t dwell=carouselSlots[(uint8_t)carouselActiveSlot].dwellSeconds;
+  if(!dwell) dwell=CAROUSEL_DEFAULT_DWELL_SEC;
+  if((uint32_t)(now-carouselSlotStartedAt) < (uint32_t)dwell*1000UL) return;
+  int8_t next=nextCarouselSlot(carouselActiveSlot);
+  if(next>=0) startCarouselSlot((uint8_t)next);
+}
+
+bool commitCarouselSlot(uint8_t slot, uint8_t dataType, uint16_t dwellSeconds, uint32_t size, uint32_t crc) {
+  if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT || !size || (dataType!=1 && dataType!=3)) return false;
+  String tmp=carouselTempFileName(slot), dst=carouselFileName(slot,dataType), bak=carouselBackupFileName(slot);
+  if(!fileMatchesMedia(tmp,size,crc)) return false;
+
+  CarouselSlotMeta oldMeta=carouselSlots[slot];
+  String oldDst=(oldMeta.configured && (oldMeta.dataType==1 || oldMeta.dataType==3)) ? carouselFileName(slot,oldMeta.dataType) : String();
+  bool hadOld=oldDst.length() && LittleFS.exists(oldDst);
+  LittleFS.remove(bak);
+  if(hadOld && !LittleFS.rename(oldDst,bak)) return false;
+  if(oldDst!=dst) LittleFS.remove(dst);
+  if(!LittleFS.rename(tmp,dst)){
+    if(hadOld) LittleFS.rename(bak,oldDst);
+    return false;
+  }
+
+  CarouselSlotMeta newMeta;
+  newMeta.configured=1; newMeta.dataType=dataType; newMeta.dwellSeconds=dwellSeconds; newMeta.mediaSize=size; newMeta.mediaCRC=crc;
+  carouselSlots[slot]=newMeta;
+  if(!saveCarouselSlotMeta(slot)){
+    LittleFS.remove(dst);
+    if(hadOld) LittleFS.rename(bak,oldDst);
+    carouselSlots[slot]=oldMeta;
+    if(oldMeta.configured) saveCarouselSlotMeta(slot); else removeCarouselSlotMeta(slot);
+    return false;
+  }
+  LittleFS.remove(bak);
+  LittleFS.remove(carouselFileName(slot,dataType==1 ? 3 : 1));
+  carouselLastAssetCommitAt=millis();
+#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
+  Serial.print("CAROUSEL STORE slot="); Serial.print(slot);
+  Serial.print(" type="); Serial.print(dataType==3 ? "TEXT" : "GIF");
+  Serial.print(" dwell="); Serial.print(dwellSeconds);
+  Serial.print("s bytes="); Serial.println(size);
+#endif
+  return true;
+}
+
+bool handleCarouselCommand(const uint8_t *data, size_t len) {
+  if(!data || len<4) return false;
+
+  // Slot setup / material wipe. Public hardware-validated RE shows byte 4 as
+  // a count followed by that many device-slot IDs. The current official app
+  // sends all twelve IDs (0..11) even when only a subset receives media.
+  if(data[2]==0x02 && data[3]==0x01){
+    if(len<5 || ((uint16_t)data[0] | ((uint16_t)data[1]<<8))!=len) return false;
+    uint8_t count=data[4];
+    if(count>CAROUSEL_SLOT_COUNT || len!=(size_t)(5U+count)) return false;
+    bool seen[CAROUSEL_SLOT_COUNT]={false};
+    for(uint8_t i=0;i<count;i++){
+      uint8_t slot=data[5+i];
+      if(slot>=CAROUSEL_SLOT_COUNT || seen[slot]) return false;
+      seen[slot]=true;
+    }
+
+    // A material wipe starts a replacement transaction. Captures from the
+    // official app show that 0A/01 may have established the Assets view before
+    // this push and that no second 0A/01 is necessarily sent afterwards. Keep
+    // that view intent, but stop playback so no partially replaced bank is
+    // rendered while slots are still arriving.
+    bool hadAssetView=carouselEnterRequested || carouselActive || gifCarouselPlaybackFileActive;
+    if(carouselActive || gifCarouselPlaybackFileActive || displayMode==DISPLAY_TEXT) stopCarouselPlayback();
+    // A page push supersedes any deferred live-GIF promotion that could
+    // otherwise start in the middle of the Device Assets replacement.
+    if(pendingGifStart){
+      if(littleFsReady && pendingGifSlot>=0 && pendingGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)pendingGifSlot]);
+      pendingGifStart=false; pendingGifSlot=-1; pendingGifSize=0; pendingGifStartAt=0;
+    }
+    carouselEnterRequested=hadAssetView;
+    carouselStartPending=false;
+    carouselUploadOpen=true;
+    carouselUploadBlackout=true;
+    carouselLastAssetCommitAt=0;
+    carouselOrderCount=count;
+    for(uint8_t i=0;i<count;i++) carouselOrder[i]=data[5+i];
+    for(uint8_t i=count;i<CAROUSEL_SLOT_COUNT;i++) carouselOrder[i]=0;
+
+    // Clear exactly the declared device slots. The app can then repopulate any
+    // subset; missing/empty positions are skipped during playback.
+    for(uint8_t i=0;i<count;i++) clearCarouselSlot(data[5+i]);
+    saveCarouselOrder();
+    // Blank the physical matrix immediately while preserving framebuffer and
+    // screenOn. Every refresh during the push remains black until playback is
+    // armed from updateCarousel().
+    refreshMatrix();
+#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
+    Serial.print("CAROUSEL SLOT SETUP count="); Serial.print(count); Serial.print(" slots=");
+    for(uint8_t i=0;i<count;i++){ if(i) Serial.print(','); Serial.print(data[5+i]); }
+    Serial.print(" playback=SUSPENDED matrix=BLACK viewIntent=");
+    Serial.println(carouselEnterRequested ? "YES" : "NO");
+#endif
+    sendCommandAck(0x02,0x01);
+    return true;
+  }
+
+  // Enter/start Device Assets view. Captures show this may arrive before a
+  // subsequent page push, not necessarily after it. Therefore it establishes
+  // persistent view intent; an open replacement upload is allowed to finish
+  // before playback starts. Repeated 0A/01 while already playing is idempotent.
+  if(len==4 && data[2]==0x0A && data[3]==0x01){
+    carouselEnterRequested=true;
+    if(!carouselUploadOpen && !carouselActive && nextCarouselSlot(-1)>=0) carouselStartPending=true;
+#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
+    Serial.print("CAROUSEL ASSET VIEW (0A/01) uploadOpen=");
+    Serial.print(carouselUploadOpen ? "YES" : "NO");
+    Serial.print(" active="); Serial.println(carouselActive ? "YES" : "NO");
+#endif
+    sendCommandAck(0x0A,0x01);
+    return true;
+  }
+  return false;
+}
+
+// ======================================================
 // BULK
 // ======================================================
 bool startsWithGIF(const uint8_t *data,size_t len){ return len>=6 && (!memcmp(data,"GIF87a",6)||!memcmp(data,"GIF89a",6)); }
 void resetBulkTransfer(bool removePartialGif=false){
   int8_t rxSlot=bulk.gifRxSlot;
   if(gifBulkFile) gifBulkFile.close();
-  if(littleFsReady && removePartialGif && rxSlot>=0 && rxSlot<=1){
-    // Never remove a completed file already queued for deferred playback.
-    if(!(pendingGifStart && pendingGifSlot==rxSlot)) LittleFS.remove(GIF_RX_FILES[(uint8_t)rxSlot]);
+  if(littleFsReady && removePartialGif){
+    if(bulk.carouselToFS && bulk.carouselLocalSlot>=0 && bulk.carouselLocalSlot<CAROUSEL_SLOT_COUNT){
+      LittleFS.remove(carouselTempFileName((uint8_t)bulk.carouselLocalSlot));
+    } else if(rxSlot>=0 && rxSlot<=1){
+      // Never remove a completed file already queued for deferred playback.
+      if(!(pendingGifStart && pendingGifSlot==rxSlot)) LittleFS.remove(GIF_RX_FILES[(uint8_t)rxSlot]);
+    }
   }
   bulk=BulkTransferState();
   bulkLastRxMs=0;
@@ -2081,6 +2518,8 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   uint8_t type=data[2];
   uint32_t total=(uint32_t)data[5]|((uint32_t)data[6]<<8)|((uint32_t)data[7]<<16)|((uint32_t)data[8]<<24);
   uint32_t crc=(uint32_t)data[9]|((uint32_t)data[10]<<8)|((uint32_t)data[11]<<16)|((uint32_t)data[12]<<24);
+  uint16_t timeSign=(uint16_t)data[13]|((uint16_t)data[14]<<8);
+  uint8_t imageIndex=data[15];
   if(!total || total>10UL*1024UL*1024UL) return false;
   if(type==3 && total>MAX_TEXT_PAYLOAD){
 #if DEBUG_SERIAL
@@ -2094,6 +2533,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   const uint8_t *payload=data+16; size_t payloadSize=len-16;
   if(!bulk.active){
     resetBulkTransfer(); bulk.active=true; bulk.dataType=type; bulk.expectedSize=total; bulk.expectedCRC=crc; bulk.runningCRC=0xFFFFFFFF;
+    bulk.timeSign=timeSign; bulk.imageIndex=imageIndex;
     if(startsWithGIF(payload,payloadSize)) bulk.format="GIF";
     else if(type==2&&total==(uint32_t)NUM_LEDS*3UL) bulk.format="RAW RGB";
     else if(type==3) bulk.format="TEXT";
@@ -2101,8 +2541,39 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     Serial.print("BULK BEGIN type="); Serial.print(type);
     Serial.print(" total="); Serial.print(total);
     Serial.print(" firstPayload="); Serial.print(payloadSize);
+    if(type==1 || type==3){ Serial.print(" timeSign="); Serial.print(timeSign); Serial.print(" imageIndex="); Serial.print(imageIndex); }
     Serial.print(" format="); Serial.println(bulk.format.length() ? bulk.format : "UNKNOWN");
 #endif
+    if(type==3 && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT){
+      if(!littleFsReady){
+#if DEBUG_SERIAL
+        Serial.println("BULK TEXT carousel rejected: LittleFS unavailable");
+#endif
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
+      size_t fsTotal=LittleFS.totalBytes();
+      size_t fsUsed=LittleFS.usedBytes();
+      size_t fsFree=fsTotal>fsUsed ? fsTotal-fsUsed : 0;
+      if((uint64_t)total > (uint64_t)fsFree){
+#if DEBUG_SERIAL
+        Serial.print("BULK TEXT carousel rejected: bytes="); Serial.print(total);
+        Serial.print(" LittleFS free="); Serial.println(fsFree);
+#endif
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
+      uint8_t localSlot=imageIndex;
+      bulk.carouselLocalSlot=(int8_t)localSlot;
+      String tmp=carouselTempFileName(localSlot);
+      LittleFS.remove(tmp);
+      gifBulkFile=LittleFS.open(tmp,"w");
+      if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
+      bulk.carouselToFS=true;
+      gifRxWriteOffset=0;
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+      Serial.print("BULK TEXT STORAGE: CAROUSEL slot="); Serial.print(localSlot);
+      Serial.print(" dwell="); Serial.println(timeSign);
+#endif
+    }
     if(type==1){
       if(!littleFsReady){
 #if DEBUG_SERIAL
@@ -2110,17 +2581,6 @@ bool processBulkPacket(const uint8_t *data,size_t len){
 #endif
         resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
       }
-      // B73: every incoming GIF is streamed to an RX file.  Crucially, do not
-      // call freeGIF()/gif.close() here: this function runs in the BLE callback
-      // while loop() may simultaneously be inside gif.playFrame() on Core 1.
-      // The currently playing GIF is left completely untouched until loop()
-      // performs the deferred RX -> PLAY hand-off after CRC validation.
-      int8_t slot=(int8_t)(nextGifRxSlot & 1U);
-      nextGifRxSlot ^= 1U;
-      if(pendingGifStart && slot==pendingGifSlot) slot ^= 1;
-      bulk.gifRxSlot=slot;
-      const char *rxPath=GIF_RX_FILES[(uint8_t)slot];
-      LittleFS.remove(rxPath);
       size_t fsTotal=LittleFS.totalBytes();
       size_t fsUsed=LittleFS.usedBytes();
       size_t fsFree=fsTotal>fsUsed ? fsTotal-fsUsed : 0;
@@ -2131,13 +2591,41 @@ bool processBulkPacket(const uint8_t *data,size_t len){
 #endif
         resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
       }
-      gifBulkFile=LittleFS.open(rxPath,"w");
-      if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
-      bulk.gifToFS=true;
-      gifRxWriteOffset=0;
+
+      if(carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT){
+        // Device Assets use imageIndex directly as persistent slot 0..11.
+        uint8_t localSlot=imageIndex;
+        // Never replace a file while AnimatedGIF is decoding that same slot.
+        // Preserve Assets-view intent so playback resumes after commit.
+        if(carouselActive && carouselActiveSlot==(int8_t)localSlot) stopCarouselPlayback();
+        bulk.carouselLocalSlot=(int8_t)localSlot;
+        String tmp=carouselTempFileName(localSlot);
+        LittleFS.remove(tmp);
+        gifBulkFile=LittleFS.open(tmp,"w");
+        if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
+        bulk.carouselToFS=true;
+        gifRxWriteOffset=0;
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
-      Serial.print("BULK GIF STORAGE: LittleFS RX slot="); Serial.println(slot);
+        Serial.print("BULK GIF STORAGE: CAROUSEL slot="); Serial.print(localSlot);
+        Serial.print(" dwell="); Serial.println(timeSign);
 #endif
+      } else {
+        // Live/preview GIF path: preserve the stable alternating RX -> PLAY flow.
+        int8_t slot=(int8_t)(nextGifRxSlot & 1U);
+        nextGifRxSlot ^= 1U;
+        if(pendingGifStart && slot==pendingGifSlot) slot ^= 1;
+        bulk.gifRxSlot=slot;
+        const char *rxPath=GIF_RX_FILES[(uint8_t)slot];
+        LittleFS.remove(rxPath);
+        gifBulkFile=LittleFS.open(rxPath,"w");
+        if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
+        bulk.gifToFS=true;
+        gifRxWriteOffset=0;
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+        Serial.print("BULK GIF STORAGE: LittleFS RX slot="); Serial.print(slot);
+        Serial.print(" imageIndex="); Serial.println(imageIndex);
+#endif
+      }
     }
     if(type==2 && bulk.format=="RAW RGB"){
       rawRgbData=(uint8_t*)malloc(total);
@@ -2146,26 +2634,30 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     }
   }
   bulkLastRxMs=millis();
-  if(type!=bulk.dataType){ resetBulkTransfer(true); return true; }
+  if(type!=bulk.dataType || total!=bulk.expectedSize || crc!=bulk.expectedCRC ||
+     ((type==1 || bulk.carouselToFS) && (timeSign!=bulk.timeSign || imageIndex!=bulk.imageIndex))){
+#if DEBUG_SERIAL
+    Serial.println("BULK header mismatch; aborting transaction");
+#endif
+    resetBulkTransfer(true); return true;
+  }
   uint32_t remain=bulk.expectedSize-bulk.receivedSize; size_t useful=min((size_t)remain,payloadSize);
   bulk.runningCRC=crc32Update(bulk.runningCRC,payload,useful);
-  if(type==1){
-    if(bulk.gifToFS){
-      size_t n=gifBulkFile ? gifBulkFile.write(payload,useful) : 0;
-      gifRxWriteOffset+=n;
-      if(n!=useful){
+  if(bulk.carouselToFS || (type==1 && bulk.gifToFS)){
+    size_t n=gifBulkFile ? gifBulkFile.write(payload,useful) : 0;
+    gifRxWriteOffset+=n;
+    if(n!=useful){
 #if DEBUG_SERIAL
-        Serial.println("BULK GIF LittleFS RX write error");
+      Serial.println("BULK asset LittleFS RX write error");
 #endif
-        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
-      }
+      resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
     }
   }
   if(type==2 && rawRgbData && rawRgbWriteOffset+useful<=bulk.expectedSize){
     ::memcpy(rawRgbData+rawRgbWriteOffset,payload,useful);
     rawRgbWriteOffset+=useful;
   }
-  if(type==3){
+  if(type==3 && !bulk.carouselToFS){
     size_t off=bulk.receivedSize;
     if(off<MAX_TEXT_PAYLOAD){ size_t cp=min(useful,(size_t)MAX_TEXT_PAYLOAD-off); ::memcpy(textPayload+off,payload,cp); textPayloadReceived=off+cp; }
   }
@@ -2174,28 +2666,36 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     bool ok=((bulk.runningCRC^0xFFFFFFFF)==bulk.expectedCRC);
 #if DEBUG_SERIAL && TEXT_PROTOCOL_DEBUG
     if(type==3){
-      Serial.print("TEXT RX COMPLETE len="); Serial.print(textPayloadReceived);
+      Serial.print("TEXT RX COMPLETE len="); Serial.print(bulk.carouselToFS ? bulk.receivedSize : textPayloadReceived);
+      Serial.print(" carousel="); Serial.print(bulk.carouselToFS ? "YES" : "NO");
       Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
     }
 #endif
-    if(type==3 && ok && textPayloadReceived) parseTextPayload(textPayload,textPayloadReceived);
-    if(type==1){
+    if(bulk.carouselToFS){
       if(gifBulkFile){ gifBulkFile.flush(); gifBulkFile.close(); }
-      if(ok && bulk.gifToFS && gifRxWriteOffset==bulk.expectedSize && bulk.gifRxSlot>=0){
-        // Publish only metadata here.  No AnimatedGIF calls, no closing the
-        // current decoder and no PLAY-file mutation are allowed from Core 0.
-        // If a previous completed RX has not yet been promoted, the newest
-        // valid transfer wins; its file uses the other RX slot when possible.
-        pendingGifSlot=bulk.gifRxSlot;
-        pendingGifSize=bulk.expectedSize;
-        pendingGifStartAt=millis();
-        pendingGifStart=true;
+      uint8_t localSlot=(bulk.carouselLocalSlot>=0) ? (uint8_t)bulk.carouselLocalSlot : 0xFF;
+      bool stored=ok && localSlot<CAROUSEL_SLOT_COUNT && gifRxWriteOffset==bulk.expectedSize &&
+                  commitCarouselSlot(localSlot,type,bulk.timeSign,bulk.expectedSize,bulk.expectedCRC);
+      if(!stored && localSlot<CAROUSEL_SLOT_COUNT) LittleFS.remove(carouselTempFileName(localSlot));
+      ok=ok && stored;
+    } else {
+      if(type==3 && ok && textPayloadReceived) parseTextPayload(textPayload,textPayloadReceived);
+      if(type==1){
+        if(gifBulkFile){ gifBulkFile.flush(); gifBulkFile.close(); }
+        if(ok && bulk.gifToFS && gifRxWriteOffset==bulk.expectedSize && bulk.gifRxSlot>=0){
+          // Publish only metadata here. No AnimatedGIF calls, no closing the
+          // current decoder and no PLAY-file mutation are allowed from Core 0.
+          pendingGifSlot=bulk.gifRxSlot;
+          pendingGifSize=bulk.expectedSize;
+          pendingGifStartAt=millis();
+          pendingGifStart=true;
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
-        Serial.print("GIF RX COMPLETE queued slot="); Serial.print((int)bulk.gifRxSlot);
-        Serial.print(" bytes="); Serial.println(bulk.expectedSize);
+          Serial.print("GIF RX COMPLETE queued slot="); Serial.print((int)bulk.gifRxSlot);
+          Serial.print(" bytes="); Serial.println(bulk.expectedSize);
 #endif
-      } else {
-        if(bulk.gifRxSlot>=0) LittleFS.remove(GIF_RX_FILES[(uint8_t)bulk.gifRxSlot]);
+        } else {
+          if(bulk.gifRxSlot>=0) LittleFS.remove(GIF_RX_FILES[(uint8_t)bulk.gifRxSlot]);
+        }
       }
     }
     if(type==2 && ok && rawRgbData && rawRgbWriteOffset==bulk.expectedSize){
@@ -2211,7 +2711,13 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     Serial.print("BULK END type="); Serial.print(type);
     Serial.print(" total="); Serial.print(bulk.receivedSize);
     Serial.print(" chunks="); Serial.print(bulk.chunkCount);
-    if(type==1){ Serial.print(" storage=LittleFS-RX"); Serial.print(" slot="); Serial.print((int)bulk.gifRxSlot); }
+    if(bulk.carouselToFS){
+      Serial.print(" storage=CAROUSEL slot="); Serial.print((int)bulk.carouselLocalSlot);
+      Serial.print(" type="); Serial.print(type==3 ? "TEXT" : "GIF");
+      Serial.print(" dwell="); Serial.print(bulk.timeSign);
+    } else if(type==1){
+      Serial.print(" storage=LittleFS-RX"); Serial.print(" slot="); Serial.print((int)bulk.gifRxSlot); Serial.print(" imageIndex="); Serial.print(bulk.imageIndex);
+    }
     Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
 #endif
     sendTransferAck(type,0x03); resetBulkTransfer();
@@ -2727,6 +3233,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
     refreshMatrix(); return;
   }
 
+  if (handleCarouselCommand(data, len)) return;
   if (handleScheduleCommand(data, len)) return;
 
   // Unknown command: always latch it for the OLED, even when Serial debug is off.
@@ -2737,7 +3244,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
   unknownCommandStored = (uint8_t)min(len, (size_t)OLED_UNKNOWN_BYTES);
   for (uint8_t i=0; i<unknownCommandStored; i++) unknownCommandData[i]=data[i];
 #if DEBUG_SERIAL
-  Serial.print("COMANDO NON GESTITO [");Serial.print(len);Serial.print("]: ");dumpHex(data,len);
+  Serial.print("UNHANDLED COMMAND [");Serial.print(len);Serial.print("]: ");dumpHex(data,len);
 #endif
   sendCommandAck(cmd,sub);
 }
@@ -2840,6 +3347,8 @@ void resetRuntimeState(){
   // Clear every transient state that could otherwise resurrect content after
   // the reset (notably deferred GIF open and active Alarm/Schedule markers).
   int8_t queuedGifSlot=pendingGifSlot;
+  carouselEnterRequested=false; carouselUploadOpen=false; carouselUploadBlackout=false; carouselStartPending=false;
+  carouselActive=false; carouselActiveSlot=-1;
   freeGIF();
   if(littleFsReady && queuedGifSlot>=0 && queuedGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)queuedGifSlot]);
 
@@ -2860,10 +3369,10 @@ void resetRuntimeState(){
 
 // -----------------------------------------------------------------------------
 // PROGRAM / SCHEDULE - BUILD 44
-// L'app conserva i programmi; il device conserva solamente la schedule attiva.
-// 07 80 -> stato globale (bit0 enabled, bit1 sound), ACK=01
-// 05 80 -> attivita completa, ACK=03
-// Una nuova lista viene ricevuta in staging e committata dopo un breve timeout.
+// The app stores the Programs; the device stores only the active Schedule.
+// 07 80 -> global state (bit0 enabled, bit1 sound), ACK=01
+// 05 80 -> complete activity, ACK=03
+// A new list is received in staging and committed after a short timeout.
 // -----------------------------------------------------------------------------
 struct ScheduleActivity {
   bool configured = false;
@@ -3232,7 +3741,7 @@ bool decodeSchedulePNG(File &f, uint32_t fileSize) {
   // IMPORTANT: non usare tinfl_decompress_mem_to_mem() qui. Quel wrapper
   // crea un tinfl_decompressor locale molto grande sullo stack del loopTask
   // e sull'ESP32 provoca lo stack-canary visto nei log. Manteniamo invece
-  // lo stato dell'inflater sull'heap e chiamiamo l'API low-level.
+  // keep the inflater state on the heap and call the low-level API.
   tinfl_decompressor *infl = (tinfl_decompressor*)malloc(sizeof(tinfl_decompressor));
   if (!infl) { free(idat); free(raw); PDBGLN("PF10A"); return false; }
   tinfl_init(infl);
@@ -3483,8 +3992,8 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
 const char* oledModeName(uint8_t m) {
   switch(m) {
     case DISPLAY_SOLID: return "SOLID"; case DISPLAY_RAW: return "IMAGE";
-    case DISPLAY_GRAFFITI: return "DIY"; case DISPLAY_GIF: return "GIF";
-    case DISPLAY_TEXT: return "TEXT"; case DISPLAY_EFFECT: return "EFFECT";
+    case DISPLAY_GRAFFITI: return "DIY"; case DISPLAY_GIF: return carouselActive ? "CAROUSEL" : "GIF";
+    case DISPLAY_TEXT: return carouselActive ? "CAROUSEL" : "TEXT"; case DISPLAY_EFFECT: return "EFFECT";
     case DISPLAY_AUDIO: return "AUDIO"; case DISPLAY_CLOCK: return "CLOCK";
     case DISPLAY_COUNTDOWN: return "COUNTDOWN"; case DISPLAY_STOPWATCH: return "STOPWATCH";
     case DISPLAY_SCOREBOARD: return "SCORE"; default: return "IDLE";
@@ -3557,11 +4066,11 @@ void updateStatusOLED() {
                       countdownRunning != lastCountdownRunning ||
                       countdownPaused != lastCountdownPaused;
 
-  // BUILD 62: nessun refresh periodico. Lo SW-I2C blocca il loop durante
-  // sendBuffer(); l'OLED viene quindi ridisegnato solo su un vero cambio di stato.
+  // BUILD 62: no periodic refresh. SW-I2C blocks the loop during
+  // sendBuffer(), so the OLED is redrawn only after a real state change.
   if (!stateChanged) return;
 
-  // Snapshot dello stato visualizzato: nessun sendBuffer() finche lo stato non cambia.
+  // Snapshot of displayed state: no sendBuffer() until the state changes.
   first = false;
   lastBle = deviceConnected;
   lastScreen = screenOn;
@@ -3579,7 +4088,7 @@ void updateStatusOLED() {
 
   statusOLED.clearBuffer();
 
-  // Comando non gestito: alert immediato per 8 secondi.
+  // Unhandled command: show an immediate alert for 8 seconds.
   if (unknownCommandActive) {
     char line[32];
     statusOLED.setFont(u8g2_font_7x14B_tf);
@@ -3725,6 +4234,7 @@ void setup(){
   // device can report/retain configuration; media recovery simply no-ops.
   loadAlarms();
   loadSchedule();
+  loadCarousel();
   FastLED.addLeds<LED_TYPE,MATRIX_PIN,COLOR_ORDER>(leds,PHYSICAL_NUM_LEDS);
   loadBrightnessFromNVS(); FastLED.clear(); FastLED.show(); clearFramebuffer(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 
@@ -3811,8 +4321,10 @@ void loop(){
       reportHeap("before GIF teardown");
 #endif
       bool restartPrevious=(littleFsReady && displayMode==DISPLAY_GIF && gifStoredOnFS &&
-                            !gifEventPlaybackFileActive && LittleFS.exists(GIF_PLAY_FILE));
+                            !gifEventPlaybackFileActive && !gifCarouselPlaybackFileActive &&
+                            LittleFS.exists(GIF_PLAY_FILE));
       uint32_t previousPlaySize=restartPrevious ? storedFileSize(GIF_PLAY_FILE) : 0;
+      carouselActive=false; carouselActiveSlot=-1; carouselEnterRequested=false; carouselUploadOpen=false; carouselUploadBlackout=false; carouselStartPending=false;
       stopGIFPlayback();
       gifStoredOnFS=false; gifSize=0;
 
@@ -3863,6 +4375,7 @@ void loop(){
 
   if(displayMode==DISPLAY_EFFECT) updateEffect();
   if(displayMode==DISPLAY_AUDIO){ static uint32_t lastAudioRender=0; if(now-lastAudioRender>=80){ lastAudioRender=now; renderAudio(); } }
+  updateCarousel(now);
   if(displayMode==DISPLAY_GIF) updateGIF();
   if(displayMode==DISPLAY_TEXT) updateTextAnimation();
 

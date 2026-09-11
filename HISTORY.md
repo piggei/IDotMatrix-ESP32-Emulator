@@ -1,8 +1,98 @@
+## BUILD 97 - v0.4.0-dev: Device Assets consolidation
+
+- Consolidation checkpoint after successful hardware validation of BUILD 96.
+- Confirmed the temporary matrix blackout works during Device Assets bank replacement and does not disturb subsequent carousel playback.
+- Retains the hardware-tested BUILD 95/96 behavior: one 12-slot device bank, mixed GIF/TEXT slots, per-slot dwell, autonomous rotation, and continued playback after the official app disconnects.
+- No carousel protocol, storage, renderer, BLE, timing, or blackout behavior is intentionally changed from BUILD 96.
+- Disabled verbose `CAROUSEL_PROTOCOL_DEBUG` tracing by default; it remains available as a compile-time diagnostic option for future reverse engineering.
+- Aligned README, PROTOCOL, HISTORY, TODO, and protocol-comparison wording with the verified status of the feature.
+- Mixed GIF/TEXT playback is considered hardware-tested on the emulator; equivalent TEXT persistence/playback on original iDotMatrix hardware remains unverified.
+
+## BUILD 96 - v0.4.0-dev: Device Assets upload blackout
+
+- BUILD 95 hardware validation succeeded with short three-item pages, a full 12-position mixed GIF/TEXT page, repeated carousel cycles, and continued autonomous playback after the official app disconnected.
+- During a Device Assets bank replacement, the physical matrix is now forced black from `02/01` until the stored bank is ready to start. This avoids displaying a frozen frame while the app uploads the replacement assets.
+- The blackout is an emulator UX policy only: it does not modify the protocol-controlled `screenOn` state, framebuffer contents, brightness, or stored carousel metadata.
+- `refreshMatrix()` honors the temporary upload blackout, so incidental renderer refreshes during the push cannot expose stale or partially updated content.
+- When the existing 3-second post-upload settle condition closes the replacement, the blackout is always released. If Assets view is active, playback starts; otherwise the preserved framebuffer is restored.
+- Normal display-mode changes, live GIF playback, event GIF playback, and runtime reset explicitly clear the temporary blackout.
+- Hardware validation subsequently succeeded; BUILD 97 consolidates the same blackout behavior without runtime changes.
+
+## BUILD 95 - v0.4.0-dev: Device Assets mixed-content/session fix
+
+- Supersedes BUILD 94 after hardware logs showed two incorrect assumptions in the carousel prototype.
+- Official-app captures show `0A/01` can establish Assets view **before** a later page push and is not necessarily repeated after the Bulk transfers. BUILD 95 preserves this view intent across `02/01` instead of waiting forever for a second `0A/01`.
+- A full 12-position capture exposed a `DataType.TEXT` Bulk between GIF `imageIndex=4` and GIF `imageIndex=6`. In BUILD 94 the normal TEXT renderer called `switchDisplayMode(DISPLAY_TEXT)`, which cleared `carouselUploadOpen`; GIF indices 6..11 were then handled as live GIFs.
+- Carousel slots now persist a content type. GIF (`type=1`) and project-observed TEXT (`type=3`) assets with `imageIndex=0..11` can be stored in the 12-slot bank.
+- TEXT carousel payloads are stored on LittleFS and rendered through the existing TEXT engine without invoking the normal display-mode teardown that would destroy carousel state.
+- Playback remains suspended while replacement is active. Because current short-page captures contain no explicit end-of-push command, an already-requested Assets view resumes after a 3-second no-Bulk/no-new-asset settle interval. This interval is emulator policy, not an original-device timing claim.
+- Added diagnostics for `timeSign` and `imageIndex` on TEXT Bulk transfers so the next hardware run can verify that the observed TEXT corresponds to slot 5.
+- BUILD 94 remains useful evidence for the command ordering but is superseded for carousel validation.
+
+## BUILD 94 - v0.4.0-dev: Device Assets upload/playback boundary fix
+
+- Supersedes BUILD 93 after hardware testing showed that a longer 12-item page could begin playing newly received assets while the page was still being uploaded.
+- Root cause: BUILD 93 preserved Assets-view intent across `02/01` and re-armed playback after each successful slot commit. This was useful for permissive ordering but exposed a partially replaced bank during long uploads.
+- `02/01` now stops/suspends carousel playback and opens a replacement-only upload phase. Newly committed slots remain stored but are never started from the Bulk completion path.
+- `0A/01` now closes the upload context and acts as the explicit Device Assets enter/start boundary.
+- Repeated `0A/01` while the carousel is already active is idempotent instead of restarting from slot 0.
+- No timing heuristic is used to decide when a page is complete.
+- This sequencing matches independent hardware-validated public reverse engineering that documents material wipe/setup before a page push and `0A/01` as the Assets-view start command.
+- Hardware validation pending: short pages, a full 12-slot page, dwell rotation, and BLE-disconnect autonomy.
+
 # History
+
+## BUILD 93 - v0.4.0-dev: 12-slot Device Assets protocol correction
+
+- Supersedes BUILD 92 after app-side clarification that the UI contains three separate pages of 12 positions; only one page is pushed at a time, so the device bank is 12 slots rather than 36.
+- Reinterpreted `02/01` as a slot-setup descriptor: byte 4 is the number of slot IDs and the following bytes identify device slots. The official app currently sends all `0..11` even when only a subset receives GIF media.
+- Uses Bulk `imageIndex` directly as Device Assets slot `0..11` instead of allocating local slots by arrival order.
+- Uses Bulk `timeSign` as per-slot dwell; project logs directly confirmed 5-second and 30-second values for slots 0, 1 and 2.
+- Removed BUILD 92's 2-second upload-idle finalization heuristic. This heuristic could terminate a longer upload mid-page and cause later GIFs to fall back to the live RX -> PLAY path.
+- `0A/01` is now treated as the explicit Device Assets view/start command and is tolerated before, during or after asset transfer. A page refresh while Assets view is already active can resume local playback once a valid slot has been stored.
+- Empty configured positions are skipped by playback, allowing the official app to set up all 12 slots while uploading only the occupied subset.
+- BUILD 92's temporary `/car12..35` files/NVS entries are cleaned up at boot.
+- External hardware-validated reverse engineering independently corroborates a 12-slot autonomous carousel, `timeSign`, `imageIndex`, and `0A/01`; disconnect persistence remains to be verified on the emulator hardware.
+- Hardware validation status: **pending**.
+
+## BUILD 92 - v0.4.0-dev: Variable-length Device Assets carousel correction
+
+- Supersedes BUILD 91 before hardware validation after a new official-app capture with **3 selected images** showed the exact same `11 00 02 01 0C 00 01 ... 0B` frame previously seen with 12 selected images.
+- Corrected the interpretation of `0x0C`: it is no longer treated as carousel length, and the following 12 values are no longer treated as the selected-image list. Their exact protocol role remains open.
+- Raised emulator carousel capacity to the app-observed maximum of **36 images**.
+- Playlist length/order is now derived from successfully received GIF transfers during the `02/01` upload session. Local storage slots are allocated in receive order rather than from the candidate protocol `imageIndex`.
+- A GIF is classified as a carousel asset only while a `02/01` carousel upload session is open. Normal live/Cloud GIFs therefore keep the stable v0.3.1 RX -> PLAY path regardless of their header index value.
+- Kept bytes 13..14 (`timeSign` candidate) and byte 15 (`imageIndex` candidate) in diagnostics, but no longer rely on `imageIndex` for local slot identity until captures above 12 items clarify its semantics.
+- Kept optional `0A/01` support, but removed it as a requirement because the supplied current-app captures show no such command after the upload.
+- Added a 2-second post-upload idle heuristic to finalize a variable-length batch when no explicit end/count is observed. This timeout is emulator behavior, not a protocol claim.
+- BUILD 91 is retained in history as the first prototype but should not be used for validation.
+- Hardware validation status: **pending**.
+
+## BUILD 91 - v0.4.0-dev: Device Assets carousel (superseded prototype)
+
+- First development build after the stable v0.3.1 / BUILD 90 baseline.
+- Added experimental handling of the official app Device Assets slot-setup command `02/01`; the observed 12-slot frame is `11 00 02 01 0C 00 01 02 03 04 05 06 07 08 09 0A 0B`.
+- Cross-validated the previously ignored GIF Bulk header fields against independent original-hardware reverse engineering: bytes 13-14 are `timeSign` (little-endian dwell seconds) and byte 15 is `imageIndex`.
+- GIF uploads with `imageIndex` 0-11 are now stored as persistent LittleFS carousel slots instead of being promoted to the live GIF PLAY file.
+- Added per-slot Preferences metadata for dwell, size and CRC plus temp/backup/rollback storage protection.
+- Added `0A/01` handling to enter/start the local carousel; slot GIFs loop for their dwell time and advance using a fresh AnimatedGIF decoder.
+- A slot-setup upload may be followed by a start request before all GIFs arrive; playback is deferred until the declared slot set is complete.
+- Normal live/preview GIF transfers remain on the v0.3.1 alternating RX -> PLAY path.
+- Added Bulk diagnostics for `timeSign` and `imageIndex`, specifically to verify the user's 30-second and 60-second captures.
+- Hardware validation status: **not performed; superseded by BUILD 92 before validation**.
+
+## BUILD 90 - v0.3.1 stable release
+
+- Final public release build for the v0.3.1 consolidation cycle.
+- Added the explicit source-level `FW_RELEASE "0.3.1"` identifier alongside the internal `FW_BUILD 90`.
+- No protocol, renderer, filesystem, BLE, media, Alarm/Schedule, buzzer, or runtime behavior was intentionally changed from BUILD 89.
+- Hardware validation of BUILD 89 confirmed normal GIF/cloud playback, multi-packet transfers, Programs/Schedule, Alarm, isolated `/event_play.gif` playback, and the active buzzer.
+- Completed the final code/documentation cross-check and promoted v0.3.1 from development status to the stable release.
 
 ## BUILD 89 - v0.3.1 consolidation: Alarm/Schedule GIF LittleFS playback
 
-- Hardware validation confirmed BUILD 88 fixed the false multi-packet Bulk timeout regression.
+- Hardware validation after completion confirmed GIF/cloud playback, Programs/Schedule, Alarm, isolated event-GIF playback, and the active buzzer operate correctly on the reference hardware.
+- Hardware validation also confirmed BUILD 88 fixed the false multi-packet Bulk timeout regression.
 - Alarm and Schedule GIF playback no longer allocates the compressed GIF as one contiguous DRAM buffer.
 - Added a dedicated disposable `/event_play.gif` path. Persistent Alarm/Schedule media is copied to this path and CRC-checked before AnimatedGIF opens it.
 - The persistent Alarm/Schedule source files are therefore never held open by the decoder and remain safe to rename during later staging/backup/rollback transactions.

@@ -1,0 +1,65 @@
+# Device Assets / carousel - BUILD 94 mixed-content evidence
+#
+# Source: official iDotMatrix app -> emulator serial log.
+# This is emulator diagnostic output, not a raw HCI capture.
+# The relevant observation is that a 12-position page contains a TEXT Bulk
+# between GIF imageIndex 4 and GIF imageIndex 6. BUILD 94 parsed that TEXT as
+# live content, which closed carouselUploadOpen; subsequent GIFs therefore fell
+# back to the normal live LittleFS RX path.
+#
+# The BUILD 94 logger did not print timeSign/imageIndex for TEXT, so the exact
+# slot number of the TEXT asset is intentionally NOT asserted in this capture.
+
+CAROUSEL SLOT SETUP count=12 slots=0,1,2,3,4,5,6,7,8,9,10,11 playback=SUSPENDED until 0A/01
+TX FA03 [5]: 05 00 02 01 01
+
+BULK BEGIN type=1 total=1285 firstPayload=1285 timeSign=5 imageIndex=0 format=GIF
+BULK GIF STORAGE: CAROUSEL slot=0 dwell=5
+CAROUSEL STORE slot=0 dwell=5s bytes=1285
+BULK END type=1 total=1285 chunks=1 storage=CAROUSEL slot=0 dwell=5 crc=OK
+TX FA03 [5]: 05 00 01 00 03
+
+BULK BEGIN type=1 total=2605 firstPayload=2605 timeSign=5 imageIndex=1 format=GIF
+BULK GIF STORAGE: CAROUSEL slot=1 dwell=5
+CAROUSEL STORE slot=1 dwell=5s bytes=2605
+BULK END type=1 total=2605 chunks=1 storage=CAROUSEL slot=1 dwell=5 crc=OK
+TX FA03 [5]: 05 00 01 00 03
+
+BULK BEGIN type=1 total=1748 firstPayload=1748 timeSign=5 imageIndex=2 format=GIF
+BULK GIF STORAGE: CAROUSEL slot=2 dwell=5
+CAROUSEL STORE slot=2 dwell=5s bytes=1748
+BULK END type=1 total=1748 chunks=1 storage=CAROUSEL slot=2 dwell=5 crc=OK
+TX FA03 [5]: 05 00 01 00 03
+
+BULK BEGIN type=1 total=3222 firstPayload=3222 timeSign=5 imageIndex=3 format=GIF
+BULK GIF STORAGE: CAROUSEL slot=3 dwell=5
+CAROUSEL STORE slot=3 dwell=5s bytes=3222
+BULK END type=1 total=3222 chunks=1 storage=CAROUSEL slot=3 dwell=5 crc=OK
+TX FA03 [5]: 05 00 01 00 03
+
+BULK BEGIN type=1 total=2071 firstPayload=2071 timeSign=5 imageIndex=4 format=GIF
+BULK GIF STORAGE: CAROUSEL slot=4 dwell=5
+CAROUSEL STORE slot=4 dwell=5s bytes=2071
+BULK END type=1 total=2071 chunks=1 storage=CAROUSEL slot=4 dwell=5 crc=OK
+TX FA03 [5]: 05 00 01 00 03
+
+BULK BEGIN type=3 total=54 firstPayload=54 format=TEXT
+TEXT RX COMPLETE len=54 crc=OK
+TEXT glyphs=2 size=8x16 marker=0x2
+BULK END type=3 total=54 chunks=1 crc=OK
+TX FA03 [5]: 05 00 03 00 03
+
+# From this point BUILD 94 has already lost carousel upload state.
+BULK BEGIN type=1 total=1398 firstPayload=1398 timeSign=5 imageIndex=6 format=GIF
+BULK GIF STORAGE: LittleFS RX slot=0 imageIndex=6
+GIF RX COMPLETE queued slot=0 bytes=1398
+BULK END type=1 total=1398 chunks=1 storage=LittleFS-RX slot=0 imageIndex=6 crc=OK
+TX FA03 [5]: 05 00 01 00 03
+
+BULK BEGIN type=1 total=1856 firstPayload=1856 timeSign=5 imageIndex=7 format=GIF
+BULK GIF STORAGE: LittleFS RX slot=1 imageIndex=7
+GIF RX COMPLETE queued slot=1 bytes=1856
+BULK END type=1 total=1856 chunks=1 storage=LittleFS-RX slot=1 imageIndex=7 crc=OK
+TX FA03 [5]: 05 00 01 00 03
+
+# Additional live-path GIF uploads continued through imageIndex 11.

@@ -11,7 +11,7 @@
 - [x] Safe GIF RX/PLAY isolation and decoder lifecycle
 - [x] 8x16 and 16x32 text glyph parsing
 - [x] SimSun/SimHei app-side rasterization identified
-- [x] Active buzzer on GPIO18 with non-blocking trill
+- [x] Active buzzer on GPIO18 with non-blocking trill (hardware-verified for Alarm/Schedule)
 - [x] Stopwatch/countdown colour behaviour
 - [x] Event-driven OLED diagnostics
 
@@ -32,6 +32,20 @@
 
 ## Protocol / UI
 
+- [x] Correct Device Assets capacity to one 12-slot bank; the app's three 12-position pages are app-side sets, not 36 device slots
+- [x] Confirm `imageIndex=0,1,2` for three-item pages in official-app captures
+- [x] Confirm `timeSign=5` and `timeSign=30` in official-app captures
+- [x] Observe that `0A/01` may precede a later page push and is not necessarily repeated after the Bulk uploads
+- [x] Identify BUILD 94 failure: a TEXT Bulk inside a 12-position push cleared carousel upload state, causing GIF indices 6..11 to fall back to live playback
+- [x] Hardware-validate BUILD 95 with the same 3-item and 12-position pages
+- [ ] Confirm from BUILD 95 diagnostics that the interleaved TEXT Bulk carries `imageIndex=5` and the expected `timeSign`
+- [x] Verify mixed GIF/TEXT carousel playback over multiple complete cycles
+- [ ] Confirm that a 5-minute selection produces `timeSign=300`
+- [x] Verify locally that a running carousel continues after phone Bluetooth/app disconnect
+- [x] Consolidate Device Assets implementation/documentation after successful BUILD 96 hardware validation (BUILD 97)
+- [x] Hardware-validate BUILD 96 matrix blackout during Device Assets upload
+- [ ] Test carousel behavior across ESP32 power cycle separately
+- [ ] Capture a page containing other non-GIF media types, if the app permits them, before adding support beyond observed TEXT
 - [ ] Continue documenting unknown commands found on larger profiles
 - [ ] Compare behaviour against original hardware captures
 - [x] Keep WLED integration as a separate project (`IDotMatrix-WLED-UserMod`) rather than coupling it to this standalone emulator
@@ -48,7 +62,7 @@
 - [x] Gate optional RTC consumers when `lostPower()` indicates invalid time (BUILD 85; physical RTC validation still pending)
 - [x] Add compile-time safeguards before OTA can be enabled with placeholder/default credentials (BUILD 87)
 - [x] Disable implicit LittleFS formatting and add an explicit opt-in recovery/first-use format path (BUILD 87)
-- [x] Move Alarm/Schedule GIF playback from the legacy full-RAM path to an isolated LittleFS PLAY architecture (BUILD 89)
+- [x] Move Alarm/Schedule GIF playback from the legacy full-RAM path to an isolated LittleFS PLAY architecture (BUILD 89; hardware-verified)
 - [x] Serialize shared BLE/runtime state across the BLE task and Arduino loop with a FreeRTOS task mutex (BUILD 86; timestamp ordering hotfix in BUILD 88)
 - [x] Remove the blocking disconnect delay from the BLE callback; advertising restart is deferred to `loop()` (BUILD 86)
 - [ ] Remove or defer any remaining callback-heavy operations from latency-sensitive BLE paths
