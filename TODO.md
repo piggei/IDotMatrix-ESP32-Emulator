@@ -15,13 +15,17 @@
 - [ ] Hardware-validate BUILD 98+ one-shot three-pulse buzzer at natural Countdown completion
 - [x] Stopwatch/countdown colour behaviour
 - [x] Event-driven OLED diagnostics
+- [x] App-facing Device Info version encoding validated: `00 04` is displayed as MCU `0.04` by the official app (BUILD 109)
+- [x] Long TEXT paging for PIN and all non-horizontal effects, including continuous UP/DOWN tape (BUILD 111-115)
+- [x] Decouple dynamic color/effect redraw from TEXT motion speed (BUILD 116)
+- [x] Low-priority single BLE connection beep as intentional replacement for the original connection animation (BUILD 113)
 
 ## Hardware validation
 
 - [ ] Test firmware on a physical 32x32 iDotMatrix-compatible panel
 - [ ] Test firmware on a physical 64x64 panel
 - [ ] Capture/sniff traffic from an original 32x32 device when available
-- [ ] Validate ESP32-C3 SuperMini as a compact target
+- [x] Evaluate ESP32-C3 as an alternate target: boots with adapted pin mapping, but current FastLED channel/driver timeouts make it unsupported for v0.4.0
 
 ## RTC / standalone operation
 
@@ -82,8 +86,25 @@ Still open:
 - [x] observe app-side per-device password caching (`pwdByMac`) and 7-byte write / 5-byte notification timing during password attempts;
 - [ ] determine the complete SET-password completion transaction expected by the official app; BUILD 101-103 experiments were removed in BUILD 104 because the app remained on the SET screen;
 - [ ] determine whether original-device authentication enforcement is device-side, app-side, or shared before reintroducing password support;
-- validate BUILD 108 app-facing version advertising (`screenType, releaseMajor, releaseMinor`) against the official app; determine whether any separate path can expose internal `FW_BUILD`;
-- precisely characterize original Program buzzer duration if useful for documentation (the emulator intentionally uses one trill);
-- perform dedicated Text and Effect rendering/protocol comparisons on the original 64×64;
-- verify which additional original-device settings survive/reset across `03/80` if protocol fidelity becomes important.
+- [x] validate the app-facing MCU version path: advertising changes alone do not control the displayed value; the 9-byte Device Info response does (BUILD 108-109). `FW_BUILD` remains intentionally internal;
+- [ ] precisely characterize original Program buzzer duration if useful for documentation (the emulator intentionally uses one trill);
+- [ ] complete dedicated Text/Effect protocol captures on the original 64×64, especially the third text size and any 64x64-specific glyph marker/geometry;
+- [ ] verify which additional original-device settings survive/reset across `03/80` if protocol fidelity becomes important.
 
+
+## Original hardware physical documentation
+
+- [ ] Photograph the original 64×64 enclosure, matrix, PCB front/back, connectors and wiring
+- [ ] Record all readable IC/PCB markings, test pads, regulators, crystals and memory devices
+- [ ] Add measured board/enclosure dimensions and power-path notes where practical
+- [ ] Update `docs/ORIGINAL-HARDWARE-64X64.md` with the physical inspection results
+
+## ESP32-S3 / HUB75 next phase
+
+
+- [ ] Add an ESP32-S3 hardware profile
+- [ ] Integrate native 64x64 HUB75 output
+- [ ] Validate PSRAM-backed buffers/media paths
+- [ ] Re-run official-app 64x64 protocol tests on native 64x64 hardware
+- [ ] Capture and decode the third 64x64 TEXT glyph size/marker
+- [ ] Revisit RTC integration on the new hardware platform

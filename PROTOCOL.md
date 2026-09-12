@@ -5,7 +5,7 @@
 
 This document describes the protocol observed between the iDotMatrix app and the ESP32 emulator.
 
-Because no original device was available, the information comes from app traffic captures and differential tests: one app setting is changed at a time and the resulting packets are compared.
+The project began without an original device, using official-app traffic captures and differential tests. A physical original 64×64 iDotMatrix is now also used as a protocol oracle. Direct hardware observations are explicitly distinguished from emulator policy and inference.
 
 ## Conventions
 
@@ -30,11 +30,7 @@ All hexadecimal values are written as separate bytes. Multi-byte fields observed
 | AE01 | `0000ae01-0000-1000-8000-00805f9b34fb` | App -> device |
 | AE02 | `0000ae02-0000-1000-8000-00805f9b34fb` | Device -> app |
 
-The emulator advertising exposes the FA service and the observed manufacturer data:
-
-```text
-54 52 00 70 01
-```
+The emulator advertising exposes the FA service and manufacturer data derived from observed devices. The resolution/profile byte depends on `IDOTMATRIX_SCREEN_TYPE`. Advertising fields are useful for discovery/profile behavior, but BUILD 108 testing showed that changing advertising version bytes alone does **not** change the MCU version shown by the official app.
 
 ### Packet length
 
@@ -88,20 +84,15 @@ The universal semantics of `01/02/03` are not yet considered fully decoded.
 
 # General commands
 
-## Device info and advertised version - CONFIRMED / BUILD 108 EXPERIMENT
+## Device info and app-facing MCU version - CONFIRMED
 
+### Advertising versus Device Info
 
-### Advertising manufacturer data and MCU version
+The original 64×64 unit reports MCU `5.11` in the official app. BUILD 108 tested version-like bytes in advertising/manufacturer data, but changing those bytes did not change the MCU value displayed by the app.
 
-Original panels advertise manufacturer data beginning with company ID `0x5254` (`TR`) followed by `00 70`. Hardware captures correlate the next three bytes with `screenType, versionMajor, versionMinor`; for example the tested 64x64 reports `04 05 0B`, which the app presents as MCU `5.11`.
+BUILD 109 identified the controlling path: the 9-byte FA03 Device Info response. The emulator now encodes the public release major/minor there and keeps the internal `FW_BUILD` separate.
 
-BUILD 108 extends the emulator advertising payload accordingly:
-
-```text
-54 52 00 70 <screenType> <FW_RELEASE_MAJOR> <FW_RELEASE_MINOR>
-```
-
-For release `0.4.0-dev` the app-facing version bytes are `00 04`, so the expected UI value is MCU `0.4`. `FW_BUILD` is intentionally not encoded here because the observed vendor format exposes only major/minor. This behavior is pending app-side validation on the emulator.
+For `v0.4.0-dev`, response version bytes `00 04` were hardware-tested with the official app and are displayed as MCU **`0.04`**.
 
 ### Query
 
@@ -115,7 +106,7 @@ For release `0.4.0-dev` the app-facing version bytes are `00 04`, so the expecte
 09 00 01 80 <releaseMajor> <releaseMinor> 01 <screenType> 00
 ```
 
-This response is sufficient for the app to recognize the device as a 16x16 matrix.
+The final profile byte identifies the configured matrix type. The release bytes are app-facing version information; the internal build number is intentionally not encoded in this two-byte field.
 
 ## Date/time synchronization - CONFIRMED
 
@@ -878,6 +869,8 @@ BUILD 99 introduced destructive clearing of emulator-managed persistent state. B
 
 
 
-## Password response timing (BUILD 103)
+## Historical password timing experiment
 
-Password SET/VERIFY status notifications are queued from the FA02 parser and emitted by the main loop approximately 25 ms later. This intentionally ensures that the BLE write callback has completed before FA03 notifies the official app. The packet contents remain unchanged; this build tests response ordering, not a new protocol encoding.
+BUILD 101-103 explored password SET/VERIFY acknowledgements and timing, but those runtime experiments were removed in BUILD 104 because the official app never completed the SET-password flow. Source review also showed that the nominal BUILD 103 “deferred main-loop” timing was not implemented as independently as originally described. Therefore those builds are historical experiments only and must not be treated as protocol evidence.
+
+Current firmware does **not** implement password SET/VERIFY runtime behavior. The observed packet framing, decimal-pair encoding, app-side `pwdByMac` caching, and 7-byte-write / 5-byte-notification evidence remain documented as partial reverse-engineering findings.

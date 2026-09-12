@@ -6,7 +6,7 @@ This document cross-checks the protocol independently derived by this project ag
 
 | Project | BLE role | Main purpose | Hardware evidence |
 |---|---|---|---|
-| This project | **Peripheral / server emulator** | Emulates an iDotMatrix device for the official app | 16x16 ESP32 emulator; official app used as protocol oracle |
+| This project | **Peripheral / server emulator** | Emulates an iDotMatrix device for the official app | 16x16 ESP32 emulator plus direct comparison with an original 64x64 device |
 | derkalle4/python3-idotmatrix-client | Client / central | Controls original displays | 16x16 and 32x32 community use |
 | 8none1/idotmatrix | Client / research | Controls and reverse-engineers original displays | Original display captures documented |
 | dallanwagz/idotmatrix-ha | Client / central | Home Assistant control of original display | 32x32 hardware validated |
@@ -89,9 +89,9 @@ Raw captures take precedence over interpretation. When an external implementatio
 
 ## Direct original-hardware observations (64×64)
 
-A physical 64×64 iDotMatrix is now available as a protocol oracle. Direct observations take precedence over third-party inference for the tested behavior. Confirmed: persistent Device Assets boot resume; no persistent RTC; volatile timekeeping after app synchronization; Alarm works after BLE disconnect but not after reboot without re-sync; repeating Alarm trill; roughly 30-second repeating Program trill; silent Countdown completion; Power Saving brightness reduction; 180-degree Flip; reset removes Device Assets and the stored password association; Device Information shows MCU `5.11`; public hardware captures correlate this with 64x64 manufacturer signature `04 05 0B`, motivating BUILD 108 app-facing release advertising.
+A physical 64×64 iDotMatrix is now available as a protocol oracle. Direct observations take precedence over third-party inference for the tested behavior. Confirmed: persistent Device Assets boot resume; no persistent RTC; volatile timekeeping after app synchronization; Alarm works after BLE disconnect but not after reboot without re-sync; repeating Alarm trill; roughly 30-second repeating Program trill; silent Countdown completion; Power Saving brightness reduction; 180-degree Flip; reset removes Device Assets and the stored password association; Device Information shows MCU `5.11`. BUILD 108 established that advertising/manufacturer-data changes alone do not control the app-displayed MCU value; BUILD 109 confirmed the 9-byte Device Info response as the controlling path, with emulator bytes `00 04` displayed as MCU `0.04`.
 
-The emulator intentionally differs in several UX choices: no boot/connect animations, persistent Cloud/Graffiti display, one-shot Program trill, and a one-shot Countdown completion trill.
+The emulator intentionally differs in several UX choices: no boot animation, a single connection beep instead of the original connection logo/animation, persistent Cloud/Graffiti display, one-shot Program trill, one-shot Countdown completion trill, and custom Snowflake/Laser text effects.
 
 
 ## Password capture notes

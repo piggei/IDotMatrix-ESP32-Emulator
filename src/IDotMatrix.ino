@@ -8,13 +8,13 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental development identifier.
 // ======================================================
-#define FW_RELEASE "0.4.0-dev"
+#define FW_RELEASE "0.4.0"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 4
-#define FW_BUILD 109
+#define FW_BUILD 118
 #define PNG_DIAG_SERIAL 0
-#define TEXT_PROTOCOL_DEBUG 1
-#define BULK_PROTOCOL_DEBUG 1
+#define TEXT_PROTOCOL_DEBUG 0
+#define BULK_PROTOCOL_DEBUG 0
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
 #define CAROUSEL_SLOT_COUNT 12
@@ -147,7 +147,7 @@ bool littleFsReady = false;
 // iDotMatrix logical screen profile.
 // 1 = 16x16 (original development target)
 // 3 = 32x32 (HXS-002 / NL-XSD-32, hardware-validated by community captures)
-// 4 = 64x64 (experimental emulation profile; community hardware evidence)
+// 4 = 64x64 (official-app profile verified; original 64x64 hardware available as oracle)
 // The protocol/logical resolution is deliberately separated from the physical
 // LED matrix so larger iDotMatrix profiles can be emulated while still using
 // the existing 16x16 panel as a downscaled preview.
@@ -279,6 +279,7 @@ void loadBrightnessFromNVS() {
 #define BUZZER_TRILL_PAUSE_MS   550UL
 #define BUZZER_TRILL_PULSES       3
 #define COUNTDOWN_BUZZER_ENABLED   1
+#define CONNECTION_BUZZER_ENABLED  1
 #define ALARM_MEDIA_BASE_ID    0x14
 #define ALARM_CONTENT_GIF      0x01
 #define ALARM_CONTENT_RAW      0x02
@@ -417,12 +418,13 @@ struct TextState {
   uint8_t glyphAdvance = 8;
   int16_t offsetX = 0, offsetY = 1;
   uint32_t animationStart = 0;
-  uint32_t lastFrame = 0;
+  uint32_t lastFrame = 0;        // motion/page timing
+  uint32_t lastRenderFrame = 0;  // visual refresh timing for dynamic colors/effects
 } textState;
 
 // ======================================================
 // EFFECT LIGHT: 03 02 EFFECT SPEED COUNT [R G B]...
-// RGB protocollo su scala 0..127.
+// RGB protocol values use the observed 0..127 scale.
 // ======================================================
 struct EffectState {
   bool valid = false;
@@ -651,6 +653,7 @@ static bool buzzerOutputOn = false;
 static bool buzzerPatternRunning = false;
 static bool countdownBuzzerOneShot = false;
 static bool scheduleBuzzerOneShot = false;
+static bool connectionBuzzerOneShot = false;
 static uint8_t buzzerPulseIndex = 0;
 static uint32_t buzzerNextChangeAt = 0;
 
@@ -690,10 +693,25 @@ void cancelScheduleStartBuzzer() {
   scheduleBuzzerOneShot = false;
 }
 
+void triggerConnectionBuzzer() {
+#if CONNECTION_BUZZER_ENABLED
+  // Connection feedback is intentionally low priority. Never interrupt an
+  // alarm or another one-shot notification already using the buzzer.
+  if (!continuousBuzzerRequested() && !buzzerPatternRunning &&
+      !countdownBuzzerOneShot && !scheduleBuzzerOneShot) {
+    connectionBuzzerOneShot = true;
+  }
+#endif
+}
+
+void cancelConnectionBuzzer() {
+  connectionBuzzerOneShot = false;
+}
+
 void updateBuzzer() {
   const bool continuousWanted = continuousBuzzerRequested();
-  const bool oneShotWanted = countdownBuzzerOneShot || scheduleBuzzerOneShot;
-  const bool wanted = continuousWanted || oneShotWanted;
+  const bool trillOneShotWanted = countdownBuzzerOneShot || scheduleBuzzerOneShot;
+  const bool wanted = continuousWanted || trillOneShotWanted || connectionBuzzerOneShot;
   const uint32_t now = millis();
 
   if (!wanted) {
@@ -715,6 +733,15 @@ void updateBuzzer() {
 
   if (buzzerOutputOn) {
     setBuzzerOutput(false);
+
+    // BLE connection feedback is exactly one short pulse, not a trill.
+    if (connectionBuzzerOneShot) {
+      connectionBuzzerOneShot = false;
+      buzzerPatternRunning = false;
+      buzzerPulseIndex = 0;
+      return;
+    }
+
     ++buzzerPulseIndex;
 
     if (buzzerPulseIndex >= BUZZER_TRILL_PULSES) {
@@ -742,6 +769,8 @@ void triggerCountdownFinishBuzzer() {}
 void cancelCountdownFinishBuzzer() {}
 void triggerScheduleStartBuzzer() {}
 void cancelScheduleStartBuzzer() {}
+void triggerConnectionBuzzer() {}
+void cancelConnectionBuzzer() {}
 void updateBuzzer() {}
 #endif
 
@@ -1050,6 +1079,12 @@ struct BulkTransferState {
 
 uint8_t textPayload[MAX_TEXT_PAYLOAD];
 size_t textPayloadReceived = 0;
+
+// Local TEXT viewport state. The app already sends the complete glyph stream;
+// PIN/UP/DOWN page through it when the full line does not fit the matrix.
+uint8_t textFirstVisibleGlyph = 0;
+uint32_t textPageChangedAt = 0;
+
 uint8_t *rawRgbData = nullptr;
 size_t rawRgbWriteOffset = 0;
 
@@ -1281,7 +1316,7 @@ void sendDeviceInfo() {
   Serial.print(" build="); Serial.print(FW_BUILD);
   Serial.print(" screenType="); Serial.print(IDOTMATRIX_SCREEN_TYPE);
   Serial.print(" raw="); dumpHex(r, sizeof(r));
-  Serial.println("DEVICE INFO NOTE: original 64x64 reports MCU 5.11; byte encoding still unknown");
+  Serial.println("DEVICE INFO NOTE: app MCU field is encoded by the 9-byte FA03 Device Info response");
 #endif
   sendFA03(r, sizeof(r));
 }
@@ -1356,13 +1391,13 @@ void drawTimeTwoRows(uint8_t h, uint8_t m, const CRGB &hc, const CRGB &mc, bool 
 }
 
 // ======================================================
-// CLOCK STYLES - ricostruiti dal video dell'app.
+// CLOCK STYLES - reconstructed from official-app visuals and hardware comparison.
 // 0 rainbow frame + digits in the selected color
-// 1 Christmas: rosso + albero verde
-// 2 racing/checker: cyan/magenta, cifre arancio
+// 1 Christmas: red digits + green tree
+// 2 racing/checker: cyan/magenta frame, orange digits
 // 3 selected-color background, black digits
 // 4 hourglass: selected-color digits + orange/white hourglass
-// 5 frame cyan/blue + cifre arancio
+// 5 cyan/blue frame + orange digits
 // 6 cyan/blue frame + digits in the selected color
 // 7 RGBY quadrant frame + digits in the selected color
 // ======================================================
@@ -1379,7 +1414,7 @@ void drawRainbowBorder() {
 }
 
 void drawChristmasTree() {
-  // Albero 6x7 nella zona sinistra inferiore, come nel video.
+  // 6x7 tree in the lower-left area, matching the observed layout.
   CRGB green(0,180,20), darkGreen(0,100,0), yellow(255,210,0), red(255,0,0), magenta(255,0,150);
   putPixel(2,7,yellow);
   putPixel(1,8,green); putPixel(2,8,green); putPixel(3,8,green);
@@ -1393,20 +1428,20 @@ void drawChristmasTree() {
 }
 
 void drawCheckerRows() {
-  // Stile 3 del video: TRE BANDE PIENE sopra e sotto.
-  // Esterna = azzurro, centrale = viola, interna = fuxia.
+  // Observed style: three solid horizontal bands at the top and bottom.
+  // Outer = cyan, middle = violet, inner = fuchsia.
   // The borders are not segmented/checkered: each row is continuous.
   const CRGB cyan(0,255,255);
   const CRGB violet(145,0,255);
   const CRGB fuchsia(255,0,170);
 
   for (uint8_t x=0; x<16; x++) {
-    // sopra
+    // top
     putPixel(x,0,cyan);
     putPixel(x,1,violet);
     putPixel(x,2,fuchsia);
 
-    // sotto, speculare
+    // mirrored bottom
     putPixel(x,13,fuchsia);
     putPixel(x,14,violet);
     putPixel(x,15,cyan);
@@ -1425,7 +1460,7 @@ void drawFrameStyle5(bool cornerBlocks) {
     }
   } else {
     // TWO continuous frames, each exactly one pixel wide.
-    // Esterno blu puro, interno azzurro/ciano puro.
+    // Pure-blue outer frame and pure-cyan inner frame.
     const CRGB outerBlue(0,0,255);
     const CRGB innerCyan(0,255,255);
 
@@ -1463,7 +1498,7 @@ void drawQuadrantBorder() {
 
 void drawHourglassIcon() {
   CRGB orange(255,155,0), sand(255,220,80), white(255,255,255);
-  // 5x7 a sinistra, posizione del video.
+  // 5x7 icon on the left, matching the observed position.
   for (uint8_t x=0;x<=4;x++) { putPixel(x,8,orange); putPixel(x,14,orange); }
   putPixel(0,9,orange); putPixel(4,9,orange);
   putPixel(1,10,orange); putPixel(3,10,orange);
@@ -1673,10 +1708,49 @@ bool isTextPixel(uint8_t glyph,uint8_t row,uint8_t col) {
   return textState.bitmap[glyph][off] & (1U << (col & 7)); // LSB = leftmost pixel in each byte
 }
 
-void drawTextGlyphs(uint8_t scale=255,int16_t laserRow=-1) {
-  for (uint8_t g=0;g<textState.glyphCount;g++) {
-    int16_t gx=textState.offsetX+(int16_t)g*textState.glyphAdvance;
-    int16_t gy=textState.offsetY;
+uint8_t textVisibleGlyphCapacity() {
+  if (textState.glyphAdvance == 0) return 1;
+  uint16_t capacity = MATRIX_WIDTH / textState.glyphAdvance;
+  if (capacity == 0) capacity = 1;
+  if (capacity > textState.glyphCount) capacity = textState.glyphCount;
+  return (uint8_t)capacity;
+}
+
+bool textUsesPagedViewport() {
+  // LEFT/RIGHT (1/2) already traverse the complete line continuously.
+  // Every other text effect uses a viewport when the full glyph stream does
+  // not fit the matrix.
+  return textState.motionEffect != 1 && textState.motionEffect != 2;
+}
+
+void advanceTextPage() {
+  const uint8_t capacity = textVisibleGlyphCapacity();
+  if (capacity == 0 || textState.glyphCount <= capacity) {
+    textFirstVisibleGlyph = 0;
+    return;
+  }
+  uint16_t next = (uint16_t)textFirstVisibleGlyph + capacity;
+  textFirstVisibleGlyph = (next >= textState.glyphCount) ? 0 : (uint8_t)next;
+  textPageChangedAt = millis();
+}
+
+uint8_t nextTextPageFirstGlyph(uint8_t firstGlyph) {
+  const uint8_t capacity = textVisibleGlyphCapacity();
+  if (capacity == 0 || textState.glyphCount <= capacity) return 0;
+  uint16_t next = (uint16_t)firstGlyph + capacity;
+  return (next >= textState.glyphCount) ? 0 : (uint8_t)next;
+}
+
+void drawTextPage(uint8_t firstGlyph, int16_t pageX, int16_t pageY,
+                  uint8_t scale=255, int16_t laserRow=-1) {
+  const uint8_t capacity = textVisibleGlyphCapacity();
+  const uint8_t glyphsToDraw =
+      min(capacity, (uint8_t)(textState.glyphCount - firstGlyph));
+
+  for (uint8_t local=0; local<glyphsToDraw; local++) {
+    const uint8_t g = firstGlyph + local;
+    int16_t gx=pageX+(int16_t)local*textState.glyphAdvance;
+    int16_t gy=pageY;
     for (uint8_t row=0;row<textState.glyphHeight;row++) for (uint8_t col=0;col<textState.glyphWidth;col++) {
       if (!isTextPixel(g,row,col)) continue;
       int16_t px=gx+col, py=gy+row;
@@ -1685,6 +1759,40 @@ void drawTextGlyphs(uint8_t scale=255,int16_t laserRow=-1) {
       if (laserRow>=0 && py==laserRow) c=CRGB::White;
       putPixel(px,py,c);
     }
+  }
+}
+
+void drawTextGlyphs(uint8_t scale=255,int16_t laserRow=-1) {
+  if (!textUsesPagedViewport()) {
+    // LEFT/RIGHT retain their historical full-line continuous renderer.
+    for (uint8_t g=0; g<textState.glyphCount; g++) {
+      int16_t gx=textState.offsetX+(int16_t)g*textState.glyphAdvance;
+      int16_t gy=textState.offsetY;
+      for (uint8_t row=0;row<textState.glyphHeight;row++) for (uint8_t col=0;col<textState.glyphWidth;col++) {
+        if (!isTextPixel(g,row,col)) continue;
+        int16_t px=gx+col, py=gy+row;
+        CRGB c=getTextPixelColor(px,py);
+        if (scale<255) c.nscale8_video(scale);
+        if (laserRow>=0 && py==laserRow) c=CRGB::White;
+        putPixel(px,py,c);
+      }
+    }
+    return;
+  }
+
+  drawTextPage(textFirstVisibleGlyph, textState.offsetX, textState.offsetY, scale, laserRow);
+
+  // UP/DOWN are a continuous vertical tape. Draw the next page immediately
+  // behind the current one with a one-pixel separator so the matrix never
+  // enters a fully blank interval between pages.
+  if ((textState.motionEffect == 3 || textState.motionEffect == 4) &&
+      textState.glyphCount > textVisibleGlyphCapacity()) {
+    const uint8_t nextFirst = nextTextPageFirstGlyph(textFirstVisibleGlyph);
+    const int16_t step = (int16_t)textState.glyphHeight + 1;
+    const int16_t nextY = (textState.motionEffect == 3)
+                        ? textState.offsetY + step
+                        : textState.offsetY - step;
+    drawTextPage(nextFirst, textState.offsetX, nextY, scale, laserRow);
   }
 }
 
@@ -1718,9 +1826,18 @@ uint16_t textFrameInterval() {
   return map(s,0,100,140,20);
 }
 
+uint16_t textPageInterval() {
+  // PIN uses the same app speed setting as the motion effects, but as a
+  // readable page dwell rather than as a per-pixel frame interval.
+  uint8_t s=min((uint8_t)100,textState.speed);
+  return map(s,0,100,1600,250);
+}
+
 void resetTextPosition() {
   int tw=textState.glyphCount*textState.glyphAdvance;
   int16_t centeredY=max((int16_t)0,(int16_t)(MATRIX_HEIGHT-textState.glyphHeight)/2);
+  textFirstVisibleGlyph=0;
+  textPageChangedAt=millis();
   switch(textState.motionEffect){
     case 1:textState.offsetX=MATRIX_WIDTH;textState.offsetY=centeredY;break;
     case 2:textState.offsetX=-tw;textState.offsetY=centeredY;break;
@@ -1728,24 +1845,87 @@ void resetTextPosition() {
     case 4:textState.offsetX=0;textState.offsetY=-textState.glyphHeight;break;
     default:textState.offsetX=0;textState.offsetY=centeredY;break;
   }
-  textState.animationStart=millis(); textState.lastFrame=0;
+  textState.animationStart=millis();
+  textState.lastFrame=0;
+  textState.lastRenderFrame=0;
 }
 
 void updateTextAnimation() {
   if(!textState.valid) return;
   uint32_t now=millis();
-  uint16_t interval=textFrameInterval();
-  if(textState.motionEffect>=5 || textState.colorMode>=2) interval=min((uint16_t)45,interval);
-  if(now-textState.lastFrame<interval) return;
-  textState.lastFrame=now;
-  int tw=textState.glyphCount*textState.glyphAdvance;
-  switch(textState.motionEffect){
-    case 1: if(--textState.offsetX < -tw) textState.offsetX=MATRIX_WIDTH; break;
-    case 2: if(++textState.offsetX > MATRIX_WIDTH) textState.offsetX=-tw; break;
-    case 3: if(--textState.offsetY < -(int16_t)textState.glyphHeight) textState.offsetY=MATRIX_HEIGHT; break;
-    case 4: if(++textState.offsetY > MATRIX_HEIGHT) textState.offsetY=-textState.glyphHeight; break;
+  const uint8_t capacity = textVisibleGlyphCapacity();
+  const bool hasMorePages = textState.glyphCount > capacity;
+
+  // Static/page-based effects change only the visible glyph window. Do not
+  // reset animationStart here: Blink/Breathe/Snow/Laser must keep a continuous
+  // phase while the displayed word fragment changes.
+  if (textState.motionEffect == 0) {
+    if (hasMorePages && (uint32_t)(now-textPageChangedAt) >= textPageInterval()) {
+      advanceTextPage();
+      renderTextFrame();
+      textState.lastRenderFrame=now;
+    } else if (textState.colorMode>=2 &&
+               (uint32_t)(now-textState.lastRenderFrame) >= 45U) {
+      // Dynamic color refresh must not advance text motion.
+      renderTextFrame();
+      textState.lastRenderFrame=now;
+    }
+    return;
   }
-  renderTextFrame();
+
+  if (textState.motionEffect >= 5 && hasMorePages &&
+      (uint32_t)(now-textPageChangedAt) >= textPageInterval()) {
+    advanceTextPage();
+  }
+
+  const uint16_t motionInterval=textFrameInterval();
+  bool motionAdvanced=false;
+
+  if ((uint32_t)(now-textState.lastFrame) >= motionInterval) {
+    textState.lastFrame=now;
+    int tw=textState.glyphCount*textState.glyphAdvance;
+    switch(textState.motionEffect){
+      case 1:
+        if(--textState.offsetX < -tw) textState.offsetX=MATRIX_WIDTH;
+        motionAdvanced=true;
+        break;
+      case 2:
+        if(++textState.offsetX > MATRIX_WIDTH) textState.offsetX=-tw;
+        motionAdvanced=true;
+        break;
+      case 3: {
+        --textState.offsetY;
+        const int16_t step=(int16_t)textState.glyphHeight+1;
+        if(textState.offsetY <= -step) {
+          textState.offsetY += step;
+          advanceTextPage();
+        }
+        motionAdvanced=true;
+        break;
+      }
+      case 4: {
+        ++textState.offsetY;
+        const int16_t step=(int16_t)textState.glyphHeight+1;
+        if(textState.offsetY >= step) {
+          textState.offsetY -= step;
+          advanceTextPage();
+        }
+        motionAdvanced=true;
+        break;
+      }
+    }
+  }
+
+  // Dynamic text visuals may need a faster redraw rate, but redraws alone
+  // never change X/Y offsets or page position.
+  const bool fastVisualRefresh=(textState.motionEffect>=5 || textState.colorMode>=2);
+  const bool visualDue=fastVisualRefresh &&
+                       (uint32_t)(now-textState.lastRenderFrame) >= 45U;
+
+  if (motionAdvanced || visualDue) {
+    renderTextFrame();
+    textState.lastRenderFrame=now;
+  }
 }
 
 // TEXT glyph records observed from the official app on the 32x32 profile:
@@ -2803,7 +2983,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
 }
 
 // ======================================================
-// AUDIO / RHYTHM - BUILD 36 RENDERER REFINEMENT
+// AUDIO / RHYTHM RENDERER
 // ======================================================
 static uint32_t audioLastLogMs = 0;
 static int audioLastUiEffect = -1;
@@ -3378,6 +3558,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     screenOn=true;
     setStatusLed(true);
     refreshMatrix();
+    triggerConnectionBuzzer();
     pendingAdvertisingRestart=false;
     pendingDeviceInfoPush=true;
     deviceInfoPushAt=millis()+1200;
@@ -3419,7 +3600,7 @@ void setupOTA(){
 // RESET RUNTIME
 // ======================================================
 void resetRuntimeState(){
-  // BUILD 101: an app-issued reset clears emulator-managed persistent device
+  // An app-issued reset clears emulator-managed persistent device
   // state but is not treated as an electrical power cycle. BLE remains up,
   // the already synchronized software clock is preserved, and the logical
   // screen remains ON with a black framebuffer ready for the next command.
@@ -3431,7 +3612,7 @@ void resetRuntimeState(){
   alarmActive=false; activeAlarmSlot=0xFF; alarmEndsAt=0;
   scheduleActiveIndex=-1; scheduleFailedIndex=-1;
   diyMode=false; effectState.valid=false; textState.valid=false; audioState.valid=false;
-  cancelCountdownFinishBuzzer(); cancelScheduleStartBuzzer(); countdownRunning=false; countdownPaused=false; countdownRemainingMs=0; countdownFinishSent=false;
+  cancelCountdownFinishBuzzer(); cancelScheduleStartBuzzer(); cancelConnectionBuzzer(); countdownRunning=false; countdownPaused=false; countdownRemainingMs=0; countdownFinishSent=false;
   stopwatchRunning=false; stopwatchElapsedMs=0; scoreA=scoreB=0;
   displayMode=DISPLAY_NONE;
   clearFramebuffer();
@@ -3451,7 +3632,7 @@ void resetRuntimeState(){
 
 
 // -----------------------------------------------------------------------------
-// PROGRAM / SCHEDULE - BUILD 44
+// PROGRAM / SCHEDULE
 // The app stores the Programs; the device stores only the active Schedule.
 // 07 80 -> global state (bit0 enabled, bit1 sound), ACK=01
 // 05 80 -> complete activity, ACK=03
@@ -4089,7 +4270,7 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
 }
 
 // ======================================================
-// PERSISTENT RESET + BOOT POLICY - BUILD 99
+// PERSISTENT RESET + BOOT POLICY
 // ======================================================
 void clearPersistentDeviceState() {
   alarmPrefs.clear();
@@ -4189,7 +4370,7 @@ const char* oledModeName(uint8_t m) {
 }
 
 void setupStatusOLED() {
-  // Stessa inizializzazione dello sketch DollaTek verificato, ma orientamento R0.
+  // Same initialization as the hardware-validated DollaTek sketch, using rotation R0.
   statusOLED.begin();
   statusOLED.enableUTF8Print();
   statusOLED.setPowerSave(0);
@@ -4199,7 +4380,8 @@ void setupStatusOLED() {
   statusOLED.clearBuffer();
   statusOLED.setFont(u8g2_font_7x14B_tf);
   statusOLED.setCursor(0,14);
-  statusOLED.print("iDotMatrix B63");
+  statusOLED.print("iDotMatrix B");
+  statusOLED.print(FW_BUILD);
   statusOLED.setCursor(0,31);
   statusOLED.print("OLED LIVE STATUS");
   statusOLED.setCursor(0,48);
@@ -4231,14 +4413,14 @@ void updateStatusOLED() {
 
   uint32_t now = millis();
 
-  // Scaduto l'avviso: forza un redraw immediato della dashboard normale.
+  // When the alert expires, force an immediate redraw of the normal dashboard.
   bool alertExpired = false;
   if (unknownCommandActive && (uint32_t)(now - unknownCommandAt) >= OLED_UNKNOWN_ALERT_MS) {
     unknownCommandActive = false;
     alertExpired = true;
   }
 
-  // Eventi che meritano aggiornamento immediato dell'OLED.
+  // Events that require an immediate OLED refresh.
   bool unknownChanged = unknownCommandActive && (unknownCommandAt != lastUnknownAtSeen);
   bool stateChanged = first || alertExpired || unknownChanged ||
                       deviceConnected != lastBle ||
@@ -4280,7 +4462,7 @@ void updateStatusOLED() {
   if (unknownCommandActive) {
     char line[32];
     statusOLED.setFont(u8g2_font_7x14B_tf);
-    statusOLED.drawStr(0,13,"CMD SCONOSCIUTO!");
+    statusOLED.drawStr(0,13,"UNKNOWN CMD!");
     statusOLED.setFont(u8g2_font_6x10_tf);
     snprintf(line,sizeof(line),"LEN:%u  N:%lu",unknownCommandLen,(unsigned long)unknownCommandCount);
     statusOLED.drawStr(0,25,line);

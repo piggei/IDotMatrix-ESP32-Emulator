@@ -1,3 +1,87 @@
+# BUILD 118 - v0.4.0 final release
+
+Final packaging release based on the hardware-tested BUILD 117 release candidate.
+
+- Changed the public release identifier from `0.4.0-dev` to `0.4.0`.
+- Kept BUILD 117 runtime behavior unchanged.
+- Declared classic ESP32 as the supported and validated v0.4.0 reference target.
+- Documented ESP32-C3 as experimental/unsupported after direct testing showed FastLED channel/driver timeouts despite successful boot and substantial runtime initialization.
+- Documented ESP32-S3 as a planned next-phase target for native HUB75 64x64 and PSRAM testing.
+- Preserved the explicit distinction between protocol compatibility and intentional emulator UX improvements.
+- Finalized release documentation and packaging.
+
+# BUILD 117 - v0.4.0-dev: release-candidate consolidation
+
+Documentation/source hygiene checkpoint before the planned v0.4.0 final release.
+
+- No intended protocol or feature behavior changes from BUILD 116.
+- Disabled verbose TEXT and Bulk protocol tracing by default while retaining the compile-time diagnostics.
+- Fixed the OLED startup banner so it reports the current `FW_BUILD` instead of the stale hard-coded `B63`.
+- Updated Device Info documentation to the hardware-validated BUILD 109 result: response bytes `00 04` are displayed by the official app as MCU `0.04`.
+- Removed/qualified obsolete password-timing claims from current protocol documentation.
+- Added `docs/ORIGINAL-HARDWARE-64X64.md` to separate direct original-device observations from intentional emulator UX differences and to prepare for physical teardown documentation.
+- Consolidated the long-text and connection-feedback work from BUILD 111-116.
+- Translated remaining active source comments to English and removed stale implementation-era labels where they no longer aid maintenance.
+
+# BUILD 116 - v0.4.0-dev: decoupled TEXT motion and visual refresh
+
+- Dynamic TEXT colors/effects can redraw at a faster visual cadence without advancing X/Y position.
+- Scroll speed is governed only by the app speed setting, eliminating the previous solid-color versus Rainbow speed mismatch.
+
+# BUILD 115 - v0.4.0-dev: continuous vertical TEXT promotion fix
+
+- Corrected UP/DOWN page promotion so the current page travels a full `glyphHeight + 1` step before the queued page becomes current.
+- Eliminated the premature blank/reset observed when text reached the center of the display.
+
+# BUILD 114 - v0.4.0-dev: connection-buzzer compile hotfix
+
+- Removed a stale duplicate `wanted` declaration in `updateBuzzer()`.
+- No intended runtime behavior change from BUILD 113.
+
+# BUILD 113 - v0.4.0-dev: continuous vertical TEXT and connection feedback
+
+- UP/DOWN render the next text page immediately behind the current page with a 1 px separator, avoiding a fully blank interval.
+- Added one low-priority non-blocking 90 ms buzzer pulse on BLE connection instead of reproducing the original hardware connection animation/logo.
+- Connection feedback is skipped when a higher-priority buzzer event is active.
+
+# BUILD 112 - v0.4.0-dev: paged viewport for all non-horizontal TEXT effects
+
+- Extended long-text paging to Blink, Breathe, Snowflake and Laser.
+- Page changes preserve effect phase; Snowflake/Laser do not restart when the visible glyph page changes.
+- LEFT/RIGHT remain continuous full-line scrolling.
+
+# BUILD 111 - v0.4.0-dev: long-text paging
+
+- Added a resolution-independent text viewport based on matrix width and glyph advance.
+- PIN advances through the complete phrase by pages.
+- UP/DOWN advance through all pages instead of permanently clipping to the first visible glyphs.
+
+# BUILD 110 - v0.4.0-dev: documentation consolidation
+
+- Consolidated the hardware-tested app-facing version findings and kept release/build identifiers explicitly separate.
+- No intended runtime change from BUILD 109 other than the internal build number.
+
+# BUILD 109 - v0.4.0-dev: Device Info version field verified
+
+- Changed the 9-byte Device Info FA03 response to encode `FW_RELEASE_MAJOR` and `FW_RELEASE_MINOR`.
+- Hardware testing confirmed bytes `00 04` are displayed by the official app as MCU `0.04`.
+- `FW_BUILD` remains an internal development identifier and is not sent in this two-byte field.
+
+# BUILD 108 - v0.4.0-dev: advertising version experiment
+
+- Tested release/profile bytes in BLE manufacturer/advertising data.
+- Official-app testing showed this did not change the MCU version displayed in Device Information, leading to the BUILD 109 Device Info correction.
+
+# BUILD 107 - v0.4.0-dev: clock layout fine tuning
+
+- Fine-tuned clock effects 2, 4 and 5 after physical display comparison.
+- Retained one-second time-colon blinking and unchanged date-slash behavior.
+
+# BUILD 106 - v0.4.0-dev: clock separator direction correction
+
+- Corrected separator movement directions after accounting for the flipped physical display orientation.
+- No protocol or non-clock behavior changes.
+
 # BUILD 105 - v0.4.0-dev: clock separator alignment and blinking
 
 Aesthetic-only clock-rendering update. No protocol, storage, BLE, Carousel, Alarm, Schedule, Countdown, reset or other runtime behavior was intentionally changed.
