@@ -1,3 +1,13 @@
+# BUILD 119 - v0.4.1-dev: iOS error 100019 handshake diagnostics
+
+Diagnostic-only development build based on v0.4.0 / BUILD 118.
+
+- Added `IOS_HANDSHAKE_DIAG` tracing for an external report that the official iDotMatrix iOS app returns connection error `100019` while Android works.
+- Logs BLE/GATT setup, advertising metadata, connect/disconnect events, FA02/AE01 writes, FA03 notifications, relative handshake timing, session counters and free heap.
+- Large payload dumps are capped so initial handshake evidence remains readable.
+- No iOS compatibility workaround is intentionally included yet; BUILD 119 is evidence-gathering only.
+- Added `docs/IOS-100019-DIAGNOSTICS.md` with reproducible instructions for the external tester.
+
 # BUILD 118 - v0.4.0 final release
 
 Final packaging release based on the hardware-tested BUILD 117 release candidate.

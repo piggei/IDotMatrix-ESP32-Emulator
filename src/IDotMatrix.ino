@@ -8,15 +8,16 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental development identifier.
 // ======================================================
-#define FW_RELEASE "0.4.0"
+#define FW_RELEASE "0.4.1-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 4
-#define FW_BUILD 118
+#define FW_BUILD 119
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
+#define IOS_HANDSHAKE_DIAG 1  // Temporary verbose BLE/GATT tracing for iOS connection issue 100019.
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
 #define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
@@ -307,6 +308,29 @@ void loadBrightnessFromNVS() {
 #define AE02_UUID       "0000ae02-0000-1000-8000-00805f9b34fb"
 
 BLEServer *server = nullptr;
+
+#if IOS_HANDSHAKE_DIAG
+static uint32_t iosDiagConnectAt = 0;
+static uint32_t iosDiagFa02Writes = 0;
+static uint32_t iosDiagAe01Writes = 0;
+static uint32_t iosDiagFa03Tx = 0;
+static uint32_t iosDiagAe02Tx = 0;
+
+static void iosDiagPrintHex(const char *prefix, const uint8_t *data, size_t len) {
+  Serial.print(prefix);
+  Serial.print(" len=");
+  Serial.print(len);
+  Serial.print(" data=");
+  const size_t cap = len > 96 ? 96 : len;
+  for (size_t i=0; i<cap; i++) {
+    if (data[i] < 0x10) Serial.print('0');
+    Serial.print(data[i], HEX);
+    if (i + 1 < cap) Serial.print(' ');
+  }
+  if (cap < len) Serial.print(" ...");
+  Serial.println();
+}
+#endif
 BLECharacteristic *fa02 = nullptr;
 BLECharacteristic *fa03 = nullptr;
 BLECharacteristic *ae01 = nullptr;
@@ -1295,9 +1319,16 @@ void updateEnergySavingOutput(uint32_t now) {
 // ======================================================
 void sendFA03(const uint8_t *data, size_t len) {
   if (!deviceConnected || !fa03) return;
+#if IOS_HANDSHAKE_DIAG
+  ++iosDiagFa03Tx;
+  Serial.print("[IOSDIAG +");
+  Serial.print(millis() - iosDiagConnectAt);
+  Serial.print("ms] ");
+  iosDiagPrintHex("FA03 TX", data, len);
+#endif
   fa03->setValue(data, len);
   fa03->notify();
-#if DEBUG_SERIAL
+#if DEBUG_SERIAL && !IOS_HANDSHAKE_DIAG
   Serial.print("TX FA03 ["); Serial.print(len); Serial.print("]: "); dumpHex(data, len);
 #endif
 }
@@ -3512,6 +3543,19 @@ void processFA02Packet(const uint8_t *data,size_t len){
 // Caller must hold runtimeStateMutex: this function mutates reassembly, Bulk and renderer state.
 void processFA02Write(const uint8_t *data, size_t len) {
   uint32_t now=millis();
+#if IOS_HANDSHAKE_DIAG
+  if (deviceConnected) {
+    static uint32_t iosDiagLastSummaryAt=0;
+    if ((uint32_t)(now-iosDiagLastSummaryAt) >= 2000UL) {
+      iosDiagLastSummaryAt=now;
+      Serial.print("[IOSDIAG +"); Serial.print(now-iosDiagConnectAt); Serial.print("ms] summary");
+      Serial.print(" FA02_RX="); Serial.print(iosDiagFa02Writes);
+      Serial.print(" AE01_RX="); Serial.print(iosDiagAe01Writes);
+      Serial.print(" FA03_TX="); Serial.print(iosDiagFa03Tx);
+      Serial.print(" heap="); Serial.println(ESP.getFreeHeap());
+    }
+  }
+#endif
   expireStalledTransfers(now);
   // Any fragment arriving while a Bulk transaction is active proves the BLE
   // link is making progress toward the next reconstructed logical packet.
@@ -3534,6 +3578,13 @@ void processFA02Write(const uint8_t *data, size_t len) {
 class FA02Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
     String value=c->getValue(); if(!value.length()) return;
+#if IOS_HANDSHAKE_DIAG
+    ++iosDiagFa02Writes;
+    Serial.print("[IOSDIAG +");
+    Serial.print(millis() - iosDiagConnectAt);
+    Serial.print("ms] ");
+    iosDiagPrintHex("FA02 RX", (const uint8_t*)value.c_str(), value.length());
+#endif
     if(!lockRuntimeState()) return;
     processFA02Write((const uint8_t*)value.c_str(),value.length());
     unlockRuntimeState();
@@ -3542,15 +3593,33 @@ class FA02Callbacks : public BLECharacteristicCallbacks {
 
 class AE01Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
-#if DEBUG_SERIAL
-    String v=c->getValue(); if(!v.length()) return; Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
+    String v=c->getValue(); if(!v.length()) return;
+#if IOS_HANDSHAKE_DIAG
+    ++iosDiagAe01Writes;
+    Serial.print("[IOSDIAG +");
+    Serial.print(millis() - iosDiagConnectAt);
+    Serial.print("ms] ");
+    iosDiagPrintHex("AE01 RX", (const uint8_t*)v.c_str(), v.length());
+#elif DEBUG_SERIAL
+    Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
 #endif
   }
 };
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer*) override {
-#if PNG_DIAG_SERIAL
+#if IOS_HANDSHAKE_DIAG
+    iosDiagConnectAt=millis();
+    iosDiagFa02Writes=0;
+    iosDiagAe01Writes=0;
+    iosDiagFa03Tx=0;
+    iosDiagAe02Tx=0;
+    Serial.println();
+    Serial.println("[IOSDIAG] ===== BLE CONNECT =====");
+    Serial.print("[IOSDIAG] release="); Serial.print(FW_RELEASE);
+    Serial.print(" build="); Serial.print(FW_BUILD);
+    Serial.print(" screenType=0x"); Serial.println(IDOTMATRIX_SCREEN_TYPE, HEX);
+#elif PNG_DIAG_SERIAL
     Serial.println("BLE C");
 #endif
     if(!lockRuntimeState()) return;
@@ -3565,7 +3634,14 @@ class ServerCallbacks : public BLEServerCallbacks {
     unlockRuntimeState();
   }
   void onDisconnect(BLEServer*) override {
-#if PNG_DIAG_SERIAL
+#if IOS_HANDSHAKE_DIAG
+    Serial.println("[IOSDIAG] ===== BLE DISCONNECT =====");
+    Serial.print("[IOSDIAG] session_ms="); Serial.print(millis() - iosDiagConnectAt);
+    Serial.print(" FA02_RX="); Serial.print(iosDiagFa02Writes);
+    Serial.print(" AE01_RX="); Serial.print(iosDiagAe01Writes);
+    Serial.print(" FA03_TX="); Serial.print(iosDiagFa03Tx);
+    Serial.print(" AE02_TX="); Serial.println(iosDiagAe02Tx);
+#elif PNG_DIAG_SERIAL
     Serial.println("BLE D");
 #endif
     if(!lockRuntimeState()) return;
@@ -4626,6 +4702,16 @@ void setup(){
 
   applyBootDisplayPolicy();
 
+#if IOS_HANDSHAKE_DIAG
+  Serial.println("[IOSDIAG] ===== BLE/GATT SETUP =====");
+  Serial.print("[IOSDIAG] deviceName="); Serial.println(DEVICE_NAME);
+  Serial.print("[IOSDIAG] FA service="); Serial.println(FA_SERVICE_UUID);
+  Serial.print("[IOSDIAG] AE service="); Serial.println(AE_SERVICE_UUID);
+  Serial.println("[IOSDIAG] FA02 properties=WRITE|WRITE_NR");
+  Serial.println("[IOSDIAG] FA03 properties=READ|NOTIFY + BLE2902");
+  Serial.println("[IOSDIAG] AE01 properties=WRITE|WRITE_NR");
+  Serial.println("[IOSDIAG] AE02 properties=READ|NOTIFY + BLE2902");
+#endif
   BLEDevice::init(DEVICE_NAME); server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService *fas=server->createService(FA_SERVICE_UUID);
   fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
@@ -4638,6 +4724,18 @@ void setup(){
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
   const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
+#if IOS_HANDSHAKE_DIAG
+  Serial.print("[IOSDIAG] advertising started; manufacturer=54 52 00 70 ");
+  if (IDOTMATRIX_SCREEN_TYPE < 0x10) Serial.print('0');
+  Serial.print(IDOTMATRIX_SCREEN_TYPE, HEX);
+  Serial.print(' ');
+  if (FW_RELEASE_MAJOR < 0x10) Serial.print('0');
+  Serial.print(FW_RELEASE_MAJOR, HEX);
+  Serial.print(' ');
+  if (FW_RELEASE_MINOR < 0x10) Serial.print('0');
+  Serial.println(FW_RELEASE_MINOR, HEX);
+  Serial.println("[IOSDIAG] primary ADV complete service=FA; scan response complete service=AE");
+#endif
 
 #if OTA_ENABLED
   setupOTA();
