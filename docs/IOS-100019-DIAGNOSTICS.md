@@ -3,87 +3,73 @@
 ## Current diagnostic build
 
 - Release: `0.4.1-dev`
-- Build: `120`
+- Build: `121`
 - Base stable runtime: `v0.4.0 / BUILD 118`
-- Purpose: GATT/CCCD evidence gathering
+- Purpose: captured 32x32 manufacturer/model identity A/B test
 - Workaround status: **none yet**
 
-BUILD 120 intentionally does not guess at an iOS workaround. It instruments the BLE/GATT layer so the next external trace can identify where the iOS session diverges from Android.
+BUILD 121 is intentionally a single-variable follow-up to BUILD 120. The GATT diagnostics and automatic Device Info push are preserved, while the emulator presents itself as a 32x32 model using a complete manufacturer record captured from real hardware.
 
-## What BUILD 119 established
+The tester can continue using the physical 16x16 WS2812B matrix because the firmware renders a logical 32x32 framebuffer and downscales it through the existing preview path.
 
-An external tester captured both iOS and Android sessions using the same ESP32 hardware.
-
-Android:
-
-1. establishes BLE;
-2. sends the normal time-sync packet on FA02;
-3. receives the FA03 acknowledgement;
-4. later sends normal Clock commands on FA02;
-5. receives the expected FA03 acknowledgements.
-
-iOS:
-
-1. establishes BLE;
-2. receives the emulator's delayed Device Info push;
-3. sends no FA02 application write;
-4. sends no AE01 application write;
-5. reports Clock configuration error `10011` and GIF send error `10019`.
-
-This moves the investigation below the iDotMatrix command parser: the failure appears to occur during or immediately after service/characteristic discovery, subscription setup, or app-side session initialization.
-
-The reporter also had an unreadable/unformatted LittleFS partition. That is independent of the missing iOS FA02 traffic, but BUILD 120 changes the repository default so a failed LittleFS mount is automatically formatted/retried.
-
-## What BUILD 120 adds
-
-Relevant lines begin with:
+### BUILD 121 experimental identity
 
 ```text
-[IOSDIAG]
+logical screen type: 0x03
+logical resolution:  32x32
+physical preview:    16x16
+manufacturer data:   54 52 00 70 03 04 0F 00 01 04
 ```
 
-In addition to BUILD 119 logging, BUILD 120 traces:
+The manufacturer bytes above are copied exactly from a real 32x32 iDotMatrix capture supplied by another reverse-engineering project. They are used only as an experiment and are **not** asserted to be valid for 16x16 or 64x64 hardware.
 
-- FA03 characteristic reads;
-- AE02 characteristic reads;
-- FA03 CCCD (`0x2902`) reads and writes;
-- AE02 CCCD (`0x2902`) reads and writes;
-- decoded notification/indication enable bits;
-- FA03/AE02 notification callback/status events;
-- expanded GATT counters in periodic and disconnect summaries.
+## Why this test exists
 
-A normal notification subscription should typically produce a CCCD value equivalent to:
+BUILD 120 showed that iOS:
 
-```text
-01 00
-```
+1. establishes the BLE connection;
+2. writes `01 00` to the FA03 CCCD;
+3. writes `01 00` to the AE02 CCCD;
+4. receives the emulator's Device Info notification without an obvious BLE error;
+5. then sends no FA02/AE01 application commands before reporting Clock error `10011` and GIF error `10019`.
 
-for notifications enabled. BUILD 120 records the actual value rather than assuming it.
+Android performs the same subscriptions and then immediately begins normal FA02 traffic.
+
+This makes device/model identification one of the strongest remaining candidates. Android may tolerate the emulator's shorter synthetic manufacturer record while the iOS app may require fields that are present on original hardware.
+
+BUILD 121 tests that hypothesis without simultaneously removing the unsolicited Device Info push or changing BLE libraries.
 
 ## Test requested from the iOS reporter
 
-1. Flash `v0.4.1-dev / BUILD 120`.
-2. Open Serial Monitor at the firmware baud rate.
-3. Reset or power-cycle the ESP32.
-4. Start capturing Serial output before opening the iDotMatrix app.
+1. Flash `v0.4.1-dev / BUILD 121`.
+2. Keep the physical LED matrix wired exactly as in the previous test.
+3. Open Serial Monitor before starting the app.
+4. Reset/power-cycle the ESP32.
 5. Open the official iDotMatrix iOS app.
-6. Connect to the emulator normally.
-7. Wait approximately 5 seconds after the app reports connected.
-8. Select Clock and wait for the `10011` error if it still occurs.
-9. Select one GIF/animation and wait for the `10019` error if it still occurs.
-10. Keep the log running for another 10 seconds.
-11. Attach the complete log from boot through the end of the test.
+6. Connect to the emulator.
+7. Wait a few seconds after it appears connected.
+8. Select Clock.
+9. If Clock works, report that immediately and try a normal adjustment such as brightness or clock style.
+10. Select one GIF/animation.
+11. Keep the log running for at least another 10 seconds.
+12. Disconnect Bluetooth/app normally and attach the complete log.
 
-Do not crop the trace to the final error. The GATT/CCCD events immediately after connection are the most important evidence.
+Please report whether the app now identifies the device differently or exposes different 32x32-specific UI/content.
 
-Please also confirm again:
+The most important result is whether normal lines such as:
 
-- iPhone model;
-- exact iOS version;
-- exact iDotMatrix app version shown by iOS/App Store (`1.0.9` was previously reported; please verify whether this is actually `1.9.0`);
-- ESP32 board model.
+```text
+FA02 RX ...
+```
 
-An additional Android BUILD 120 trace is useful but optional because BUILD 119 already provided a successful Android application-level reference. If convenient, capturing Android again will provide a direct CCCD/subscription comparison.
+begin appearing on iOS.
+
+### Interpretation
+
+- **If iOS starts sending FA02 commands:** the captured 32x32 advertising/model identity materially changes app initialization, strongly implicating manufacturer/model metadata.
+- **If iOS still sends no FA02 commands:** the identity hypothesis is weakened and the next controlled test should remove the emulator's unsolicited Device Info push while reverting/controlling the advertising identity.
+- **If behavior changes only partially:** preserve the complete log; this may reveal which application stage is unlocked.
+
 
 ## LittleFS note
 

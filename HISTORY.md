@@ -1,3 +1,17 @@
+# BUILD 121 - v0.4.1-dev: iOS captured 32x32 identity A/B test
+
+Controlled iOS compatibility experiment based on BUILD 120 diagnostics.
+
+- Keeps the BUILD 120 BLE/GATT/CCCD diagnostics unchanged.
+- Keeps the automatic Device Info push unchanged so only the model/advertising identity is intentionally varied.
+- Selects iDotMatrix logical profile `0x03` (32x32).
+- Enables logical-to-physical preview so the 32x32 framebuffer is downscaled onto the tester's physical 16x16 WS2812B matrix.
+- Uses the complete manufacturer record captured from a real 32x32 iDotMatrix unit exactly as provided:
+  `54 52 00 70 03 04 0F 00 01 04`.
+- Does not claim that these bytes apply to the original 16x16 or 64x64 models.
+- Purpose: determine whether the iOS app requires a more complete/recognized manufacturer identity before it begins sending normal FA02 application commands.
+- No NimBLE migration and no speculative protocol workaround are included.
+
 # BUILD 120 - v0.4.1-dev: iOS GATT/CCCD diagnostics and generic repository defaults
 
 Diagnostic development build following the first external iOS/Android comparison from BUILD 119.

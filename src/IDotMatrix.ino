@@ -11,13 +11,14 @@
 #define FW_RELEASE "0.4.1-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 4
-#define FW_BUILD 120
+#define FW_BUILD 121
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
 #define IOS_HANDSHAKE_DIAG 1  // Temporary verbose BLE/GATT tracing for iOS connection issue 100019.
+#define IOS_32X32_IDENTITY_TEST 1  // BUILD 121: advertise the captured original 32x32 identity for an iOS A/B test.
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
 #define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
@@ -159,11 +160,12 @@ bool littleFsReady = false;
 // 1 = 16x16 (original development target)
 // 3 = 32x32 (HXS-002 / NL-XSD-32, hardware-validated by community captures)
 // 4 = 64x64 (official-app profile verified; original 64x64 hardware available as oracle)
-// The protocol/logical resolution is deliberately separated from the physical
-// LED matrix so larger iDotMatrix profiles can be emulated while still using
-// the existing 16x16 panel as a downscaled preview.
+//
+// BUILD 121 intentionally selects profile 3 for a controlled iOS compatibility
+// experiment. Logical 32x32 output is downscaled to the physical 16x16 panel.
+// This is not a change to the stable project's preferred native profile.
 // -----------------------------------------------------------------------------
-#define IDOTMATRIX_SCREEN_TYPE  1
+#define IDOTMATRIX_SCREEN_TYPE  3
 
 #if IDOTMATRIX_SCREEN_TYPE == 1
   #define MATRIX_WIDTH   16
@@ -183,7 +185,7 @@ bool littleFsReady = false;
 
 // Optional development preview: rescale a larger logical canvas onto the physical panel.
 // Keep disabled for normal/native operation.
-#define ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW 0
+#define ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW 1
 
 // Physical LED panel connected to the ESP32.
 // Keep these at 16x16 to emulate a larger logical iDotMatrix with the existing
@@ -4872,18 +4874,21 @@ void setup(){
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
-  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
+#if IOS_32X32_IDENTITY_TEST
+  // Exact manufacturer record captured from a real 32x32 iDotMatrix device.
+  // It is intentionally used verbatim for this diagnostic A/B test only.
+  const char mb[]={0x54,0x52,0x00,0x70,0x03,0x04,0x0F,0x00,0x01,0x04};
+#else
+  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR};
+#endif
+  ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
 #if IOS_HANDSHAKE_DIAG
-  Serial.print("[IOSDIAG] advertising started; manufacturer=54 52 00 70 ");
-  if (IDOTMATRIX_SCREEN_TYPE < 0x10) Serial.print('0');
-  Serial.print(IDOTMATRIX_SCREEN_TYPE, HEX);
-  Serial.print(' ');
-  if (FW_RELEASE_MAJOR < 0x10) Serial.print('0');
-  Serial.print(FW_RELEASE_MAJOR, HEX);
-  Serial.print(' ');
-  if (FW_RELEASE_MINOR < 0x10) Serial.print('0');
-  Serial.println(FW_RELEASE_MINOR, HEX);
+  Serial.print("[IOSDIAG] advertising started; manufacturer=");
+  iosDiagPrintHex("", (const uint8_t*)mb, sizeof(mb));
+#if IOS_32X32_IDENTITY_TEST
+  Serial.println("[IOSDIAG] identity experiment=REAL_32X32_CAPTURE logical=32x32 physical=16x16 preview=ON");
+#endif
   Serial.println("[IOSDIAG] primary ADV complete service=FA; scan response complete service=AE");
 #endif
 

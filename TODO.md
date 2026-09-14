@@ -117,6 +117,7 @@ Still open:
 - [ ] Capture FA03/AE02 CCCD subscription behavior with BUILD 120
 - [ ] Capture FA03 notification status during the automatic Device Info push
 - [ ] Compare emulator advertising/GATT database against an original iDotMatrix unit with nRF Connect
+- [ ] Test BUILD 121 with the captured real 32x32 manufacturer identity and record whether iOS begins normal FA02 traffic
 - [ ] Verify the reporter's exact iDotMatrix iOS app version (`1.0.9` versus possible `1.9.0` typo)
 - [ ] Determine whether any emulator-side compatibility workaround is justified by evidence
 
