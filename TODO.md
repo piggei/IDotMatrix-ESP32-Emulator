@@ -108,3 +108,19 @@ Still open:
 - [ ] Re-run official-app 64x64 protocol tests on native 64x64 hardware
 - [ ] Capture and decode the third 64x64 TEXT glyph size/marker
 - [ ] Revisit RTC integration on the new hardware platform
+
+## iOS compatibility investigation
+
+
+- [x] Obtain failing iOS and successful Android BUILD 119 traces from the same ESP32 hardware
+- [x] Confirm that the failing iOS session establishes BLE but sends no FA02/AE01 application writes before app errors
+- [ ] Capture FA03/AE02 CCCD subscription behavior with BUILD 120
+- [ ] Capture FA03 notification status during the automatic Device Info push
+- [ ] Compare emulator advertising/GATT database against an original iDotMatrix unit with nRF Connect
+- [ ] Verify the reporter's exact iDotMatrix iOS app version (`1.0.9` versus possible `1.9.0` typo)
+- [ ] Determine whether any emulator-side compatibility workaround is justified by evidence
+
+## Buzzer hardware follow-up
+
+
+- [ ] Test the ordered passive buzzer and decide whether tone/frequency-capable output should be added alongside the existing active-buzzer implementation

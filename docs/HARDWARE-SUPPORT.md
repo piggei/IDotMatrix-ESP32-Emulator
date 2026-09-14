@@ -2,6 +2,10 @@
 
 This document defines the hardware-support status for release `v0.4.0 / BUILD 118`.
 
+## Repository defaults
+
+The public source defaults are intentionally generic: matrix data on GPIO4, optional OLED/status LED/buzzer disabled, and LittleFS automatic format-on-mount-failure enabled. These defaults are chosen to reduce board-specific assumptions; users should still review GPIO assignments for their exact board.
+
 ## Supported
 
 ### Classic ESP32

@@ -11,7 +11,7 @@
 #define FW_RELEASE "0.4.1-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 4
-#define FW_BUILD 119
+#define FW_BUILD 120
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
@@ -30,18 +30,27 @@ struct AlarmSlot;
 #define RTC_SYNC_FROM_BLE       1
 
 // ======================================================
-// DollaTek ESP32 OLED 0.96 / TTGO-style board
+// GENERIC REPOSITORY HARDWARE DEFAULTS
+// The original DollaTek development-board mapping remains documented, but
+// repository defaults avoid enabling board-specific peripherals implicitly.
 // ======================================================
 #define DEBUG_SERIAL        1
 #define OTA_ENABLED         0
-// Never format LittleFS implicitly on a normal mount failure. Set to 1 only
-// for an intentional recovery/first-use operation after reading the docs.
-#define LITTLEFS_FORMAT_ON_MOUNT_FAIL 0
-#define MATRIX_PIN          17
-#define STATUS_LED_PIN      25
 
-// On-board SSD1306 diagnostic display. Set to 0 to compile it out completely.
-#define OLED_STATUS_ENABLED 1
+// Repository default: recover an unformatted/corrupted LittleFS partition by
+// formatting it after a failed mount. Set to 0 when preserving an unreadable
+// filesystem is more important than automatic first-use/recovery.
+#define LITTLEFS_FORMAT_ON_MOUNT_FAIL 1
+
+// Generic WS2812B data-pin default used by the public repository.
+#define MATRIX_PIN           4
+
+// Optional external status LED. -1 disables it.
+#define STATUS_LED_PIN      -1
+
+// Optional SSD1306 diagnostic display. Disabled by default because the
+// original development board used a board-specific OLED pin mapping.
+#define OLED_STATUS_ENABLED 0
 #define OLED_SDA            4
 #define OLED_SCL            15
 #define OLED_RST            16
@@ -62,6 +71,7 @@ uint8_t unknownCommandStored = 0;
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <BLEDescriptor.h>
 #include <FastLED.h>
 #include <AnimatedGIF.h>
 #include <Preferences.h>
@@ -269,8 +279,8 @@ void loadBrightnessFromNVS() {
 // ALARMS
 // ======================================================
 #define ALARM_SLOT_COUNT       10
-#define ALARM_BUZZER_ENABLED   1
-#define ALARM_BUZZER_PIN       18
+#define ALARM_BUZZER_ENABLED   0
+#define ALARM_BUZZER_PIN       -1
 #define BUZZER_ACTIVE_HIGH     1
 
 // Active-buzzer trill pattern: 3 short beeps followed by a longer pause.
@@ -279,8 +289,8 @@ void loadBrightnessFromNVS() {
 #define BUZZER_PULSE_GAP_MS      70UL
 #define BUZZER_TRILL_PAUSE_MS   550UL
 #define BUZZER_TRILL_PULSES       3
-#define COUNTDOWN_BUZZER_ENABLED   1
-#define CONNECTION_BUZZER_ENABLED  1
+#define COUNTDOWN_BUZZER_ENABLED   0
+#define CONNECTION_BUZZER_ENABLED  0
 #define ALARM_MEDIA_BASE_ID    0x14
 #define ALARM_CONTENT_GIF      0x01
 #define ALARM_CONTENT_RAW      0x02
@@ -295,7 +305,7 @@ void loadBrightnessFromNVS() {
 #define SCHEDULE_CONTENT_IMAGE  0x02
 #define SCHEDULE_CONTENT_TEXT   0x03
 #define SCHEDULE_MEDIA_BASE_ID  0x1E
-#define SCHEDULE_BUZZER_ENABLED 1
+#define SCHEDULE_BUZZER_ENABLED 0
 #define SCHEDULE_BUZZER_PIN     ALARM_BUZZER_PIN
 
 
@@ -315,6 +325,14 @@ static uint32_t iosDiagFa02Writes = 0;
 static uint32_t iosDiagAe01Writes = 0;
 static uint32_t iosDiagFa03Tx = 0;
 static uint32_t iosDiagAe02Tx = 0;
+static uint32_t iosDiagFa03Reads = 0;
+static uint32_t iosDiagAe02Reads = 0;
+static uint32_t iosDiagFa03CccdReads = 0;
+static uint32_t iosDiagFa03CccdWrites = 0;
+static uint32_t iosDiagAe02CccdReads = 0;
+static uint32_t iosDiagAe02CccdWrites = 0;
+static uint32_t iosDiagFa03NotifyStatus = 0;
+static uint32_t iosDiagAe02NotifyStatus = 0;
 
 static void iosDiagPrintHex(const char *prefix, const uint8_t *data, size_t len) {
   Serial.print(prefix);
@@ -330,6 +348,92 @@ static void iosDiagPrintHex(const char *prefix, const uint8_t *data, size_t len)
   if (cap < len) Serial.print(" ...");
   Serial.println();
 }
+
+static void iosDiagPrefix() {
+  Serial.print("[IOSDIAG +");
+  Serial.print(millis() - iosDiagConnectAt);
+  Serial.print("ms] ");
+}
+
+class IOSDiagTxCharacteristicCallbacks : public BLECharacteristicCallbacks {
+ public:
+  IOSDiagTxCharacteristicCallbacks(const char *name,
+                                   uint32_t *readCounter,
+                                   uint32_t *statusCounter)
+      : _name(name), _readCounter(readCounter), _statusCounter(statusCounter) {}
+
+  void onRead(BLECharacteristic *c) override {
+    if (_readCounter) ++(*_readCounter);
+    iosDiagPrefix();
+    Serial.print(_name);
+    Serial.print(" READ current=");
+    const String value = c->getValue();
+    iosDiagPrintHex("", (const uint8_t*)value.c_str(), value.length());
+  }
+
+  void onNotify(BLECharacteristic*) override {
+    iosDiagPrefix();
+    Serial.print(_name);
+    Serial.println(" NOTIFY callback");
+  }
+
+  void onStatus(BLECharacteristic*,
+                BLECharacteristicCallbacks::Status status,
+                uint32_t code) override {
+    if (_statusCounter) ++(*_statusCounter);
+    iosDiagPrefix();
+    Serial.print(_name);
+    Serial.print(" STATUS=");
+    Serial.print((int)status);
+    Serial.print(" code=");
+    Serial.println(code);
+  }
+
+ private:
+  const char *_name;
+  uint32_t *_readCounter;
+  uint32_t *_statusCounter;
+};
+
+class IOSDiagCccdCallbacks : public BLEDescriptorCallbacks {
+ public:
+  IOSDiagCccdCallbacks(const char *name,
+                       uint32_t *readCounter,
+                       uint32_t *writeCounter)
+      : _name(name), _readCounter(readCounter), _writeCounter(writeCounter) {}
+
+  void onRead(BLEDescriptor *d) override {
+    if (_readCounter) ++(*_readCounter);
+    iosDiagPrefix();
+    Serial.print(_name);
+    Serial.print(" READ ");
+    iosDiagPrintHex("value", d->getValue(), d->getLength());
+  }
+
+  void onWrite(BLEDescriptor *d) override {
+    if (_writeCounter) ++(*_writeCounter);
+    iosDiagPrefix();
+    Serial.print(_name);
+    Serial.print(" WRITE ");
+    iosDiagPrintHex("value", d->getValue(), d->getLength());
+
+    if (d->getLength() >= 2) {
+      const uint8_t *v=d->getValue();
+      const uint16_t cccd=(uint16_t)v[0] | ((uint16_t)v[1] << 8);
+      iosDiagPrefix();
+      Serial.print(_name);
+      Serial.print(" decoded notifications=");
+      Serial.print((cccd & 0x0001U) ? "ON" : "OFF");
+      Serial.print(" indications=");
+      Serial.println((cccd & 0x0002U) ? "ON" : "OFF");
+    }
+  }
+
+ private:
+  const char *_name;
+  uint32_t *_readCounter;
+  uint32_t *_writeCounter;
+};
 #endif
 BLECharacteristic *fa02 = nullptr;
 BLECharacteristic *fa03 = nullptr;
@@ -1210,7 +1314,11 @@ void scaleLegacy16CanvasToLogical() {
 }
 
 void setStatusLed(bool on) {
+#if STATUS_LED_PIN >= 0
   digitalWrite(STATUS_LED_PIN, on ? HIGH : LOW);
+#else
+  (void)on;
+#endif
 }
 
 void getCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s) {
@@ -3552,6 +3660,9 @@ void processFA02Write(const uint8_t *data, size_t len) {
       Serial.print(" FA02_RX="); Serial.print(iosDiagFa02Writes);
       Serial.print(" AE01_RX="); Serial.print(iosDiagAe01Writes);
       Serial.print(" FA03_TX="); Serial.print(iosDiagFa03Tx);
+      Serial.print(" FA03_READ="); Serial.print(iosDiagFa03Reads);
+      Serial.print(" FA03_CCCD_W="); Serial.print(iosDiagFa03CccdWrites);
+      Serial.print(" AE02_CCCD_W="); Serial.print(iosDiagAe02CccdWrites);
       Serial.print(" heap="); Serial.println(ESP.getFreeHeap());
     }
   }
@@ -3614,6 +3725,14 @@ class ServerCallbacks : public BLEServerCallbacks {
     iosDiagAe01Writes=0;
     iosDiagFa03Tx=0;
     iosDiagAe02Tx=0;
+    iosDiagFa03Reads=0;
+    iosDiagAe02Reads=0;
+    iosDiagFa03CccdReads=0;
+    iosDiagFa03CccdWrites=0;
+    iosDiagAe02CccdReads=0;
+    iosDiagAe02CccdWrites=0;
+    iosDiagFa03NotifyStatus=0;
+    iosDiagAe02NotifyStatus=0;
     Serial.println();
     Serial.println("[IOSDIAG] ===== BLE CONNECT =====");
     Serial.print("[IOSDIAG] release="); Serial.print(FW_RELEASE);
@@ -3640,7 +3759,13 @@ class ServerCallbacks : public BLEServerCallbacks {
     Serial.print(" FA02_RX="); Serial.print(iosDiagFa02Writes);
     Serial.print(" AE01_RX="); Serial.print(iosDiagAe01Writes);
     Serial.print(" FA03_TX="); Serial.print(iosDiagFa03Tx);
-    Serial.print(" AE02_TX="); Serial.println(iosDiagAe02Tx);
+    Serial.print(" AE02_TX="); Serial.print(iosDiagAe02Tx);
+    Serial.print(" FA03_READ="); Serial.print(iosDiagFa03Reads);
+    Serial.print(" AE02_READ="); Serial.print(iosDiagAe02Reads);
+    Serial.print(" FA03_CCCD_W="); Serial.print(iosDiagFa03CccdWrites);
+    Serial.print(" AE02_CCCD_W="); Serial.print(iosDiagAe02CccdWrites);
+    Serial.print(" FA03_STATUS="); Serial.print(iosDiagFa03NotifyStatus);
+    Serial.print(" AE02_STATUS="); Serial.println(iosDiagAe02NotifyStatus);
 #elif PNG_DIAG_SERIAL
     Serial.println("BLE D");
 #endif
@@ -4603,7 +4728,10 @@ void setup(){
   Serial.print(" rr="); Serial.print((int)esp_reset_reason());
   Serial.print(" h="); Serial.println(ESP.getFreeHeap());
 #endif
-  pinMode(STATUS_LED_PIN,OUTPUT); setStatusLed(false);
+#if STATUS_LED_PIN >= 0
+  pinMode(STATUS_LED_PIN,OUTPUT);
+#endif
+  setStatusLed(false);
 #if OLED_STATUS_ENABLED
   setupStatusOLED();
 #endif
@@ -4651,17 +4779,16 @@ void setup(){
   if(rtcReady && !rtcTimeValid) Serial.println("RTC: lost power; time invalid until BLE synchronization");
 #endif
 #endif
-  // BUILD 87: mount without implicit formatting. A transient mount/partition
-  // problem must not silently erase persisted media. Formatting is available
-  // only through the explicit compile-time recovery switch above.
+  // Always try a non-destructive mount first. The repository default enables
+  // format-on-fail for first use and recovery from an unreadable filesystem;
+  // users who need strict preservation can set LITTLEFS_FORMAT_ON_MOUNT_FAIL=0.
   littleFsReady=LittleFS.begin(false);
 #if LITTLEFS_FORMAT_ON_MOUNT_FAIL
   if(!littleFsReady){
 #if DEBUG_SERIAL
     Serial.println("LittleFS: mount failed; explicit format-on-fail enabled");
 #endif
-    // Reuse the Arduino-ESP32 mount-and-format path that older builds used,
-    // but only after the explicit opt-in above.
+    // Retry through the Arduino-ESP32 mount-and-format path.
     littleFsReady=LittleFS.begin(true);
   }
 #endif
@@ -4711,14 +4838,37 @@ void setup(){
   Serial.println("[IOSDIAG] FA03 properties=READ|NOTIFY + BLE2902");
   Serial.println("[IOSDIAG] AE01 properties=WRITE|WRITE_NR");
   Serial.println("[IOSDIAG] AE02 properties=READ|NOTIFY + BLE2902");
+  Serial.print("[IOSDIAG] defaults matrixGPIO="); Serial.print(MATRIX_PIN);
+  Serial.print(" oled="); Serial.print(OLED_STATUS_ENABLED);
+  Serial.print(" buzzer="); Serial.print(ALARM_BUZZER_ENABLED);
+  Serial.print(" fsFormatOnFail="); Serial.println(LITTLEFS_FORMAT_ON_MOUNT_FAIL);
 #endif
   BLEDevice::init(DEVICE_NAME); server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService *fas=server->createService(FA_SERVICE_UUID);
   fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
-  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); fa03->addDescriptor(new BLE2902()); fas->start();
+  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
+#if IOS_HANDSHAKE_DIAG
+  fa03->setCallbacks(new IOSDiagTxCharacteristicCallbacks("FA03", &iosDiagFa03Reads, &iosDiagFa03NotifyStatus));
+  BLE2902 *fa03Cccd=new BLE2902();
+  fa03Cccd->setCallbacks(new IOSDiagCccdCallbacks("FA03 CCCD", &iosDiagFa03CccdReads, &iosDiagFa03CccdWrites));
+  fa03->addDescriptor(fa03Cccd);
+#else
+  fa03->addDescriptor(new BLE2902());
+#endif
+  fas->start();
+
   BLEService *aes=server->createService(AE_SERVICE_UUID);
   ae01=aes->createCharacteristic(AE01_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); ae01->setCallbacks(new AE01Callbacks());
-  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); ae02->addDescriptor(new BLE2902()); aes->start();
+  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
+#if IOS_HANDSHAKE_DIAG
+  ae02->setCallbacks(new IOSDiagTxCharacteristicCallbacks("AE02", &iosDiagAe02Reads, &iosDiagAe02NotifyStatus));
+  BLE2902 *ae02Cccd=new BLE2902();
+  ae02Cccd->setCallbacks(new IOSDiagCccdCallbacks("AE02 CCCD", &iosDiagAe02CccdReads, &iosDiagAe02CccdWrites));
+  ae02->addDescriptor(ae02Cccd);
+#else
+  ae02->addDescriptor(new BLE2902());
+#endif
+  aes->start();
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));

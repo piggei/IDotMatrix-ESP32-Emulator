@@ -1,3 +1,17 @@
+# BUILD 120 - v0.4.1-dev: iOS GATT/CCCD diagnostics and generic repository defaults
+
+Diagnostic development build following the first external iOS/Android comparison from BUILD 119.
+
+- BUILD 119 evidence showed that iOS establishes the BLE connection and receives the emulator's delayed Device Info push, but sends no FA02 or AE01 application writes before the app reports Clock error `10011` or GIF send error `10019`.
+- Added FA03/AE02 characteristic READ tracing.
+- Added FA03/AE02 CCCD (`0x2902`) READ/WRITE tracing and decoding of notification/indication enable bits.
+- Added characteristic notification-status callbacks so the next trace can distinguish a successful notification from disabled/no-subscriber/error states.
+- Expanded periodic/disconnect diagnostic counters for GATT reads, CCCD writes and notification status events.
+- No speculative iOS workaround has been introduced; BUILD 120 remains evidence-gathering only.
+- Changed public repository defaults to a generic configuration: WS2812B data GPIO4, OLED disabled, external status LED disabled and all buzzer outputs disabled.
+- Changed `LITTLEFS_FORMAT_ON_MOUNT_FAIL` default to `1`: the firmware still attempts a non-destructive mount first, then formats only after mount failure. Users requiring strict forensic preservation can set it back to `0`.
+- Active-buzzer support remains implemented but opt-in. Passive-buzzer hardware validation is planned separately.
+
 # BUILD 119 - v0.4.1-dev: iOS error 100019 handshake diagnostics
 
 Diagnostic-only development build based on v0.4.0 / BUILD 118.

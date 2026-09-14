@@ -1,82 +1,114 @@
-# iOS Connection Error 100019 — Diagnostic Build Instructions
+# iOS Connection Errors 10011 / 10019 — Diagnostic Investigation
 
-## Build
+## Current diagnostic build
 
 - Release: `0.4.1-dev`
-- Build: `119`
-- Purpose: diagnostic tracing only
-- Base runtime: `v0.4.0 / BUILD 118`
+- Build: `120`
+- Base stable runtime: `v0.4.0 / BUILD 118`
+- Purpose: GATT/CCCD evidence gathering
+- Workaround status: **none yet**
 
-This build is intended to investigate reports that the official iDotMatrix **iOS** application fails to connect to the emulator/Usermod-compatible BLE device with application error **100019**, while the Android application works.
+BUILD 120 intentionally does not guess at an iOS workaround. It instruments the BLE/GATT layer so the next external trace can identify where the iOS session diverges from Android.
 
-No protocol workaround is intentionally included in BUILD 119. The purpose is to capture the failing handshake before changing behavior.
+## What BUILD 119 established
 
-## What is logged
+An external tester captured both iOS and Android sessions using the same ESP32 hardware.
 
-Lines relevant to the investigation begin with:
+Android:
+
+1. establishes BLE;
+2. sends the normal time-sync packet on FA02;
+3. receives the FA03 acknowledgement;
+4. later sends normal Clock commands on FA02;
+5. receives the expected FA03 acknowledgements.
+
+iOS:
+
+1. establishes BLE;
+2. receives the emulator's delayed Device Info push;
+3. sends no FA02 application write;
+4. sends no AE01 application write;
+5. reports Clock configuration error `10011` and GIF send error `10019`.
+
+This moves the investigation below the iDotMatrix command parser: the failure appears to occur during or immediately after service/characteristic discovery, subscription setup, or app-side session initialization.
+
+The reporter also had an unreadable/unformatted LittleFS partition. That is independent of the missing iOS FA02 traffic, but BUILD 120 changes the repository default so a failed LittleFS mount is automatically formatted/retried.
+
+## What BUILD 120 adds
+
+Relevant lines begin with:
 
 ```text
 [IOSDIAG]
 ```
 
-The firmware logs:
+In addition to BUILD 119 logging, BUILD 120 traces:
 
-- BLE/GATT configuration at boot;
-- configured device name;
-- FA and AE service UUIDs;
-- characteristic property configuration;
-- advertising/manufacturer bytes;
-- BLE connection event;
-- every FA02 write received from the app;
-- every AE01 write received from the app;
-- every FA03 notification transmitted by the emulator;
-- relative time in milliseconds from the connection event;
-- periodic connection counters and free heap;
-- BLE disconnect event and session counters.
+- FA03 characteristic reads;
+- AE02 characteristic reads;
+- FA03 CCCD (`0x2902`) reads and writes;
+- AE02 CCCD (`0x2902`) reads and writes;
+- decoded notification/indication enable bits;
+- FA03/AE02 notification callback/status events;
+- expanded GATT counters in periodic and disconnect summaries.
 
-Payload dumps are capped at 96 bytes per individual line so large media transfers do not make the initial-handshake log unusable.
+A normal notification subscription should typically produce a CCCD value equivalent to:
+
+```text
+01 00
+```
+
+for notifications enabled. BUILD 120 records the actual value rather than assuming it.
 
 ## Test requested from the iOS reporter
 
-1. Flash BUILD 119 onto the ESP32 setup that is known to work with the Android iDotMatrix app.
-2. Open Serial Monitor at the same baud rate used by the firmware.
-3. Reset/power-cycle the ESP32.
-4. Start capturing the Serial output **before opening the iDotMatrix app**.
+1. Flash `v0.4.1-dev / BUILD 120`.
+2. Open Serial Monitor at the firmware baud rate.
+3. Reset or power-cycle the ESP32.
+4. Start capturing Serial output before opening the iDotMatrix app.
 5. Open the official iDotMatrix iOS app.
-6. Attempt to connect normally.
-7. Wait until error `100019` is displayed.
-8. Leave the log running for approximately 10 additional seconds.
-9. Copy the complete Serial output from boot through the failed connection/disconnection.
-10. Also report:
-   - iPhone model;
-   - iOS version;
-   - iDotMatrix app version;
-   - ESP32 board model;
-   - whether the same ESP32/firmware setup connects successfully from Android.
+6. Connect to the emulator normally.
+7. Wait approximately 5 seconds after the app reports connected.
+8. Select Clock and wait for the `10011` error if it still occurs.
+9. Select one GIF/animation and wait for the `10019` error if it still occurs.
+10. Keep the log running for another 10 seconds.
+11. Attach the complete log from boot through the end of the test.
 
-Please do not crop the log to only the final error. The messages immediately before the failure are the most important part.
+Do not crop the trace to the final error. The GATT/CCCD events immediately after connection are the most important evidence.
 
-## Optional Android reference log
+Please also confirm again:
 
-If possible, after the iOS test:
+- iPhone model;
+- exact iOS version;
+- exact iDotMatrix app version shown by iOS/App Store (`1.0.9` was previously reported; please verify whether this is actually `1.9.0`);
+- ESP32 board model.
 
-1. reboot the same ESP32;
-2. capture a second complete Serial log;
-3. connect using the Android iDotMatrix app;
-4. leave it connected until the main application screen is usable;
-5. send that complete log as well.
+An additional Android BUILD 120 trace is useful but optional because BUILD 119 already provided a successful Android application-level reference. If convenient, capturing Android again will provide a direct CCCD/subscription comparison.
 
-A failing iOS trace plus a successful Android trace from the same hardware/build provides the best comparison.
+## LittleFS note
 
-## Expected analysis
+The repository default is now:
 
-The first comparison will determine whether iOS fails:
+```cpp
+#define LITTLEFS_FORMAT_ON_MOUNT_FAIL 1
+```
 
-- before any GATT write;
-- before notification traffic;
-- during Device Info exchange;
-- during another initial FA02 command;
-- after a valid protocol response;
-- or after a timeout/disconnect without application data.
+The firmware still attempts a normal non-destructive mount first. Formatting occurs only after mount failure.
 
-This should substantially narrow whether error `100019` is caused by advertising/GATT expectations, handshake ordering, response contents, or app-specific timing.
+This should resolve first-use/incompatible-filesystem cases automatically. Anyone attempting forensic recovery of an unreadable filesystem should set the option back to `0` before booting.
+
+## Next comparison
+
+In parallel with the external iOS test, the emulator's advertising and complete GATT database should be compared against an original iDotMatrix device using nRF Connect or an equivalent BLE inspector.
+
+The most relevant comparison points are:
+
+- complete manufacturer data length/content;
+- advertised versus scan-response services;
+- FA02/FA03 properties;
+- AE01/AE02 properties;
+- CCCD presence and permissions;
+- any additional descriptors;
+- connection parameters if materially different.
+
+Only after these captures should an emulator-side compatibility workaround be considered.
