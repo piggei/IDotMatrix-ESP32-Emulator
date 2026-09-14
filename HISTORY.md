@@ -1,3 +1,15 @@
+# BUILD 122 - v0.4.1-dev: suppress unsolicited Device Info push on iOS test
+
+Controlled follow-up to BUILD 121.
+
+- Keeps the BUILD 121 captured real 32x32 manufacturer identity unchanged.
+- Keeps the 32x32 logical profile and 32x32 -> 16x16 preview path unchanged.
+- Keeps the BUILD 120 GATT/CCCD diagnostics unchanged.
+- Suppresses only the automatic Device Info notification that was previously sent about 1.2 seconds after BLE connection.
+- Explicit Device Info requests from the app, if any, are still handled normally by the existing protocol parser.
+- Purpose: determine whether the iOS app rejects or stalls when Device Info is delivered unsolicited/out of sequence.
+- No NimBLE migration, advertising rewrite, parser change, or other compatibility workaround is included.
+
 # BUILD 121 - v0.4.1-dev: iOS captured 32x32 identity A/B test
 
 Controlled iOS compatibility experiment based on BUILD 120 diagnostics.

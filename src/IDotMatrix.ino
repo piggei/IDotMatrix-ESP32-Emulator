@@ -11,7 +11,7 @@
 #define FW_RELEASE "0.4.1-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 4
-#define FW_BUILD 121
+#define FW_BUILD 122
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
@@ -19,6 +19,7 @@
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
 #define IOS_HANDSHAKE_DIAG 1  // Temporary verbose BLE/GATT tracing for iOS connection issue 100019.
 #define IOS_32X32_IDENTITY_TEST 1  // BUILD 121: advertise the captured original 32x32 identity for an iOS A/B test.
+#define IOS_SUPPRESS_UNSOLICITED_DEVICE_INFO 1  // BUILD 122: do not push Device Info after connect; wait for app-driven traffic.
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
 #define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
@@ -3750,8 +3751,18 @@ class ServerCallbacks : public BLEServerCallbacks {
     refreshMatrix();
     triggerConnectionBuzzer();
     pendingAdvertisingRestart=false;
+#if IOS_SUPPRESS_UNSOLICITED_DEVICE_INFO
+    // BUILD 122 controlled A/B test: do not send Device Info spontaneously.
+    // If the app explicitly requests Device Info through the normal protocol,
+    // that request is still handled normally.
+    pendingDeviceInfoPush=false;
+#if IOS_HANDSHAKE_DIAG
+    Serial.println("[IOSDIAG] unsolicited Device Info push=SUPPRESSED (BUILD 122 experiment)");
+#endif
+#else
     pendingDeviceInfoPush=true;
     deviceInfoPushAt=millis()+1200;
+#endif
     unlockRuntimeState();
   }
   void onDisconnect(BLEServer*) override {

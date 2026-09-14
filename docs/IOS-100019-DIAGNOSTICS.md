@@ -3,16 +3,14 @@
 ## Current diagnostic build
 
 - Release: `0.4.1-dev`
-- Build: `121`
+- Build: `122`
 - Base stable runtime: `v0.4.0 / BUILD 118`
-- Purpose: captured 32x32 manufacturer/model identity A/B test
+- Purpose: unsolicited Device Info sequencing A/B test
 - Workaround status: **none yet**
 
-BUILD 121 is intentionally a single-variable follow-up to BUILD 120. The GATT diagnostics and automatic Device Info push are preserved, while the emulator presents itself as a 32x32 model using a complete manufacturer record captured from real hardware.
+BUILD 122 keeps the complete BUILD 121 32x32 identity experiment in place and changes exactly one handshake behavior: the emulator no longer sends Device Info spontaneously after BLE connection.
 
-The tester can continue using the physical 16x16 WS2812B matrix because the firmware renders a logical 32x32 framebuffer and downscales it through the existing preview path.
-
-### BUILD 121 experimental identity
+### Preserved from BUILD 121
 
 ```text
 logical screen type: 0x03
@@ -21,54 +19,55 @@ physical preview:    16x16
 manufacturer data:   54 52 00 70 03 04 0F 00 01 04
 ```
 
-The manufacturer bytes above are copied exactly from a real 32x32 iDotMatrix capture supplied by another reverse-engineering project. They are used only as an experiment and are **not** asserted to be valid for 16x16 or 64x64 hardware.
+The full manufacturer record above was captured from a real 32x32 iDotMatrix unit. BUILD 121 confirmed that the iOS app recognizes this identity correctly as a 32x32 device, but still sends no normal FA02 application traffic during the active session.
 
-## Why this test exists
+## What BUILD 122 changes
 
-BUILD 120 showed that iOS:
+Previous diagnostic builds scheduled an automatic Device Info notification about 1.2 seconds after connection. BUILD 122 suppresses that unsolicited notification.
 
-1. establishes the BLE connection;
-2. writes `01 00` to the FA03 CCCD;
-3. writes `01 00` to the AE02 CCCD;
-4. receives the emulator's Device Info notification without an obvious BLE error;
-5. then sends no FA02/AE01 application commands before reporting Clock error `10011` and GIF error `10019`.
+Conceptually:
 
-Android performs the same subscriptions and then immediately begins normal FA02 traffic.
+```text
+CONNECT
+  -> FA03 CCCD subscription
+  -> AE02 CCCD subscription
+  -> no spontaneous Device Info notification
+  -> wait for iOS app-driven traffic
+```
 
-This makes device/model identification one of the strongest remaining candidates. Android may tolerate the emulator's shorter synthetic manufacturer record while the iOS app may require fields that are present on original hardware.
+If the app explicitly requests Device Info using the normal protocol, the emulator still responds normally. Only the unsolicited post-connect push is disabled.
 
-BUILD 121 tests that hypothesis without simultaneously removing the unsolicited Device Info push or changing BLE libraries.
+This tests whether the iOS app uses a stricter handshake/state machine than Android and may reject or stall when Device Info arrives before it expects it.
 
 ## Test requested from the iOS reporter
 
-1. Flash `v0.4.1-dev / BUILD 121`.
-2. Keep the physical LED matrix wired exactly as in the previous test.
-3. Open Serial Monitor before starting the app.
-4. Reset/power-cycle the ESP32.
-5. Open the official iDotMatrix iOS app.
-6. Connect to the emulator.
-7. Wait a few seconds after it appears connected.
-8. Select Clock.
-9. If Clock works, report that immediately and try a normal adjustment such as brightness or clock style.
-10. Select one GIF/animation.
-11. Keep the log running for at least another 10 seconds.
-12. Disconnect Bluetooth/app normally and attach the complete log.
+1. Flash `v0.4.1-dev / BUILD 122`.
+2. Keep the same physical 16x16 matrix and the same local GPIO adjustment used for BUILD 121.
+3. Do **not** change `IDOTMATRIX_SCREEN_TYPE`, `ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW`, or the captured manufacturer identity.
+4. Open Serial Monitor before opening the iDotMatrix app.
+5. Reset/power-cycle the ESP32.
+6. Open the official iDotMatrix iOS app and connect.
+7. Wait about 5 seconds after it appears connected.
+8. Open Clock and try one Clock setting.
+9. Try one GIF/animation.
+10. Leave the log running for another 10 seconds.
+11. Disconnect normally and attach the complete Serial output.
 
-Please report whether the app now identifies the device differently or exposes different 32x32-specific UI/content.
+Please also report whether **Device Information** in the iOS app still shows the 32x32 model and whether MCU information is present or missing before any command is sent.
 
-The most important result is whether normal lines such as:
+The most important result remains whether any normal line such as:
 
 ```text
 FA02 RX ...
 ```
 
-begin appearing on iOS.
+appears during the active connection.
 
 ### Interpretation
 
-- **If iOS starts sending FA02 commands:** the captured 32x32 advertising/model identity materially changes app initialization, strongly implicating manufacturer/model metadata.
-- **If iOS still sends no FA02 commands:** the identity hypothesis is weakened and the next controlled test should remove the emulator's unsolicited Device Info push while reverting/controlling the advertising identity.
-- **If behavior changes only partially:** preserve the complete log; this may reveal which application stage is unlocked.
+- **FA02 traffic begins:** the unsolicited Device Info notification was materially affecting iOS session initialization.
+- **Still no FA02 traffic:** the sequencing hypothesis is weakened; the next step should compare startup traffic from real hardware, especially any AE02 notification or other app-expected event, before changing BLE libraries.
+- **Partial change:** preserve the complete trace; even a different error timing or Device Information behavior is useful evidence.
 
 
 ## LittleFS note
