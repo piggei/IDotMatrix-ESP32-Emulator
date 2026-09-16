@@ -8,21 +8,30 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental development identifier.
 // ======================================================
-#define FW_RELEASE "0.4.1-dev"
+#define FW_RELEASE "0.5.0-dev"
 #define FW_RELEASE_MAJOR 0
-#define FW_RELEASE_MINOR 4
-#define FW_BUILD 122
+#define FW_RELEASE_MINOR 5
+#define FW_BUILD 141
+
+// Temporary hardware-test aid: when the official app changes screen power
+// from OFF to ON, briefly overlay the release/build identifier without
+// modifying the logical framebuffer or the active display mode.
+#define APP_POWER_VERSION_SPLASH 1
+#define VERSION_SPLASH_MS 1800UL
+#define IDOT_STRINGIFY_INNER(x) #x
+#define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
+#define PRESET_PROTOCOL_DEBUG 0  // Set to 1 only for Preset/Default protocol tracing (volatile slots 14..19).
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
-#define IOS_HANDSHAKE_DIAG 1  // Temporary verbose BLE/GATT tracing for iOS connection issue 100019.
-#define IOS_32X32_IDENTITY_TEST 1  // BUILD 121: advertise the captured original 32x32 identity for an iOS A/B test.
-#define IOS_SUPPRESS_UNSOLICITED_DEVICE_INFO 1  // BUILD 122: do not push Device Info after connect; wait for app-driven traffic.
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
 #define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
+#define PRESET_SLOT_BASE 14U
+#define PRESET_SLOT_COUNT 6U
+#define PRESET_DWELL_MS 3000UL
 
 // Optional external RTC (DS3231 via RTClib).
 // Keep 0 when no RTC hardware is installed: alarms use BLE time sync.
@@ -33,25 +42,24 @@ struct AlarmSlot;
 
 // ======================================================
 // GENERIC REPOSITORY HARDWARE DEFAULTS
-// The original DollaTek development-board mapping remains documented, but
-// repository defaults avoid enabling board-specific peripherals implicitly.
 // ======================================================
 #define DEBUG_SERIAL        1
-#define OTA_ENABLED         0
+#ifndef DEBUG_SERIAL_VERBOSE
+#define DEBUG_SERIAL_VERBOSE 0
+#endif
 
-// Repository default: recover an unformatted/corrupted LittleFS partition by
-// formatting it after a failed mount. Set to 0 when preserving an unreadable
-// filesystem is more important than automatic first-use/recovery.
+// Try a normal LittleFS mount first; format and retry only after mount failure.
 #define LITTLEFS_FORMAT_ON_MOUNT_FAIL 1
 
-// Generic WS2812B data-pin default used by the public repository.
+// WS2812/FastLED backend pin. Ignored by HUB75 builds.
+#ifndef MATRIX_PIN
 #define MATRIX_PIN           4
+#endif
 
 // Optional external status LED. -1 disables it.
 #define STATUS_LED_PIN      -1
 
-// Optional SSD1306 diagnostic display. Disabled by default because the
-// original development board used a board-specific OLED pin mapping.
+// Optional SSD1306 diagnostic display. Disabled by default.
 #define OLED_STATUS_ENABLED 0
 #define OLED_SDA            4
 #define OLED_SCL            15
@@ -73,11 +81,11 @@ uint8_t unknownCommandStored = 0;
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
-#include <BLEDescriptor.h>
 #include <FastLED.h>
 #include <AnimatedGIF.h>
 #include <Preferences.h>
 #include <LittleFS.h>
+#include <esp_partition.h>
 #if OLED_STATUS_ENABLED
   #include <U8g2lib.h>
   // Configuration identical to the DollaTek sketch already verified on hardware.
@@ -102,35 +110,6 @@ uint8_t unknownCommandStored = 0;
   bool rtcTimeValid = false;
 #endif
 
-#if OTA_ENABLED
-  #include <WiFi.h>
-  #include <ArduinoOTA.h>
-  #define WIFI_SSID       "TUO_WIFI"
-  #define WIFI_PASSWORD   "TUA_PASSWORD"
-  #define OTA_HOSTNAME    "idotmatrix-esp"
-  #define OTA_PASSWORD    "idotmatrix-ota"
-
-  // BUILD 87: OTA is intentionally impossible to compile with the repository
-  // placeholders/default password. This is an emulator safety guard, not a
-  // protocol requirement. Replace all credentials before setting OTA_ENABLED=1.
-  constexpr bool compileTimeStringEqual(const char *a, const char *b) {
-    return (*a == *b) && (*a == '\0' || compileTimeStringEqual(a + 1, b + 1));
-  }
-  static_assert(sizeof(WIFI_SSID) > 1, "OTA: WIFI_SSID must not be empty");
-  static_assert(sizeof(WIFI_PASSWORD) > 1, "OTA: WIFI_PASSWORD must not be empty");
-  static_assert(sizeof(OTA_PASSWORD) > 1, "OTA: OTA_PASSWORD must not be empty");
-  static_assert(!compileTimeStringEqual(WIFI_SSID, "TUO_WIFI"),
-                "OTA: replace the WIFI_SSID placeholder before enabling OTA");
-  static_assert(!compileTimeStringEqual(WIFI_PASSWORD, "TUA_PASSWORD"),
-                "OTA: replace the WIFI_PASSWORD placeholder before enabling OTA");
-  static_assert(!compileTimeStringEqual(OTA_PASSWORD, "idotmatrix-ota"),
-                "OTA: replace the default OTA password before enabling OTA");
-  static_assert(sizeof(OTA_PASSWORD) - 1 >= 8,
-                "OTA: use an OTA password of at least 8 characters");
-
-  bool otaReady = false;
-  bool otaRunning = false;
-#endif
 
 bool littleFsReady = false;
 
@@ -157,16 +136,26 @@ bool littleFsReady = false;
 #define DEVICE_NAME "IDM-858931"
 
 // -----------------------------------------------------------------------------
-// iDotMatrix logical screen profile.
-// 1 = 16x16 (original development target)
-// 3 = 32x32 (HXS-002 / NL-XSD-32, hardware-validated by community captures)
-// 4 = 64x64 (official-app profile verified; original 64x64 hardware available as oracle)
+// Display architecture
 //
-// BUILD 121 intentionally selects profile 3 for a controlled iOS compatibility
-// experiment. Logical 32x32 output is downscaled to the physical 16x16 panel.
-// This is not a change to the stable project's preferred native profile.
+// LOGICAL resolution is the iDotMatrix model exposed to the official app.
+// PHYSICAL resolution is the actually connected display. They are independent.
+// The final output stage automatically performs 1:1 copy, nearest-neighbour
+// upscaling or box-average downscaling for every 16/32/64 combination.
 // -----------------------------------------------------------------------------
-#define IDOTMATRIX_SCREEN_TYPE  3
+#define DISPLAY_BACKEND_WS2812  0
+#define DISPLAY_BACKEND_HUB75   1
+
+// BUILD 125: these defaults remain Arduino-IDE friendly, while PlatformIO
+// environments can override them with build_flags without editing this file.
+#ifndef DISPLAY_BACKEND
+#define DISPLAY_BACKEND DISPLAY_BACKEND_HUB75
+#endif
+
+// iDotMatrix logical profile: 1=16x16, 3=32x32, 4=64x64.
+#ifndef IDOTMATRIX_SCREEN_TYPE
+#define IDOTMATRIX_SCREEN_TYPE  4
+#endif
 
 #if IDOTMATRIX_SCREEN_TYPE == 1
   #define MATRIX_WIDTH   16
@@ -184,22 +173,39 @@ bool littleFsReady = false;
 #define NUM_LEDS       ((uint16_t)MATRIX_WIDTH * (uint16_t)MATRIX_HEIGHT)
 #define LOGICAL_FRAME_BYTES ((size_t)NUM_LEDS * sizeof(CRGB))
 
-// Optional development preview: rescale a larger logical canvas onto the physical panel.
-// Keep disabled for normal/native operation.
-#define ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW 1
-
-// Physical LED panel connected to the ESP32.
-// Keep these at 16x16 to emulate a larger logical iDotMatrix with the existing
-// panel. Set them to the real panel size when larger WS2812B hardware is used.
-#define PHYSICAL_MATRIX_WIDTH   16
-#define PHYSICAL_MATRIX_HEIGHT  16
+// Physical display dimensions. These do not change what the app sees.
+#ifndef PHYSICAL_MATRIX_WIDTH
+#define PHYSICAL_MATRIX_WIDTH   64
+#endif
+#ifndef PHYSICAL_MATRIX_HEIGHT
+#define PHYSICAL_MATRIX_HEIGHT  64
+#endif
 #define PHYSICAL_NUM_LEDS       ((uint16_t)PHYSICAL_MATRIX_WIDTH * (uint16_t)PHYSICAL_MATRIX_HEIGHT)
 
+// WS2812 backend options.
 #define LED_TYPE       WS2812B
 #define COLOR_ORDER    GRB
 #define MATRIX_MIRROR_X 1
 
-// Local hardware/test ceiling: 100% app = 50/255 FastLED.
+// MatrixPortal S3 / HUB75 backend. BUILD 130 deliberately mirrors the
+// native WLED MatrixPortal path: ESP32-HUB75-MatrixPanel-I2S-DMA, 8-bit
+// color depth, single buffering and the exact MatrixPortal S3 HUB75 pinout.
+// Keeping brightness in the HUB75 OE/PWM path preserves the full RGB values
+// instead of pre-scaling the framebuffer to the local brightness ceiling.
+#if DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
+  #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+  HUB75_I2S_CFG::i2s_pins hub75Pins = {
+    42, 41, 40, 38, 39, 37, // R1, G1, B1, R2, G2, B2
+    45, 36, 48, 35, 21,     // A, B, C, D, E
+    47, 14, 2                // LAT, OE, CLK
+  };
+  #define HUB75_COLOR_DEPTH 8
+  MatrixPanel_I2S_DMA *hub75Matrix = nullptr;
+#endif
+
+// Local hardware/test ceiling expressed on the common 0..255 brightness scale.
+// WS2812 applies it through FastLED global brightness. HUB75 applies it through
+// MatrixPanel_I2S_DMA output-enable timing so framebuffer RGB values stay 8-bit.
 #define MAX_LED_BRIGHTNESS 50
 
 // Persistenza luminosita
@@ -218,7 +224,9 @@ uint8_t brightnessPercentToHw(uint8_t percent) {
 
 void applyCurrentBrightness() {
   uint8_t hw = brightnessPercentToHw(brightnessPercent);
+#if DISPLAY_BACKEND == DISPLAY_BACKEND_WS2812
   FastLED.setBrightness(hw);
+#endif
 #if DEBUG_SERIAL
   Serial.print("BRIGHTNESS HW: ");
   Serial.print(brightnessPercent);
@@ -269,11 +277,11 @@ void loadBrightnessFromNVS() {
 }
 
 #define MAX_PACKET_SIZE     8192
-#define MAX_TEXT_PAYLOAD    4096
+#define MAX_TEXT_PAYLOAD   16654  // 14-byte header + up to 64 x (4 meta + 256 bitmap)
 #define MAX_TEXT_GLYPHS        64
 #define TEXT_GLOBAL_HEADER     14
 #define TEXT_GLYPH_META        4   // marker + RGB; glyph bitmap follows
-#define TEXT_MAX_BITMAP_BYTES  64  // 16x32 glyph = 64 bytes
+#define TEXT_MAX_BITMAP_BYTES 256  // 32x64 glyph = 256 bytes
 #define MAX_EFFECT_COLORS   16
 #define PACKET_REASSEMBLY_TIMEOUT_MS  5000UL
 #define BULK_TRANSFER_TIMEOUT_MS      30000UL
@@ -298,12 +306,14 @@ void loadBrightnessFromNVS() {
 #define ALARM_CONTENT_GIF      0x01
 #define ALARM_CONTENT_RAW      0x02
 #define ALARM_HEADER_SIZE      24
+#define ALARM_UPLOAD_TIMEOUT_MS 10000UL
 
 // ======================================================
 // PROGRAM / SCHEDULE
 // ======================================================
 #define SCHEDULE_MAX_ACTIVITIES 32
 #define SCHEDULE_COMMIT_DELAY_MS 900UL
+#define SCHEDULE_MEDIA_UPLOAD_TIMEOUT_MS 10000UL
 #define SCHEDULE_CONTENT_GIF    0x01
 #define SCHEDULE_CONTENT_IMAGE  0x02
 #define SCHEDULE_CONTENT_TEXT   0x03
@@ -321,123 +331,6 @@ void loadBrightnessFromNVS() {
 #define AE02_UUID       "0000ae02-0000-1000-8000-00805f9b34fb"
 
 BLEServer *server = nullptr;
-
-#if IOS_HANDSHAKE_DIAG
-static uint32_t iosDiagConnectAt = 0;
-static uint32_t iosDiagFa02Writes = 0;
-static uint32_t iosDiagAe01Writes = 0;
-static uint32_t iosDiagFa03Tx = 0;
-static uint32_t iosDiagAe02Tx = 0;
-static uint32_t iosDiagFa03Reads = 0;
-static uint32_t iosDiagAe02Reads = 0;
-static uint32_t iosDiagFa03CccdReads = 0;
-static uint32_t iosDiagFa03CccdWrites = 0;
-static uint32_t iosDiagAe02CccdReads = 0;
-static uint32_t iosDiagAe02CccdWrites = 0;
-static uint32_t iosDiagFa03NotifyStatus = 0;
-static uint32_t iosDiagAe02NotifyStatus = 0;
-
-static void iosDiagPrintHex(const char *prefix, const uint8_t *data, size_t len) {
-  Serial.print(prefix);
-  Serial.print(" len=");
-  Serial.print(len);
-  Serial.print(" data=");
-  const size_t cap = len > 96 ? 96 : len;
-  for (size_t i=0; i<cap; i++) {
-    if (data[i] < 0x10) Serial.print('0');
-    Serial.print(data[i], HEX);
-    if (i + 1 < cap) Serial.print(' ');
-  }
-  if (cap < len) Serial.print(" ...");
-  Serial.println();
-}
-
-static void iosDiagPrefix() {
-  Serial.print("[IOSDIAG +");
-  Serial.print(millis() - iosDiagConnectAt);
-  Serial.print("ms] ");
-}
-
-class IOSDiagTxCharacteristicCallbacks : public BLECharacteristicCallbacks {
- public:
-  IOSDiagTxCharacteristicCallbacks(const char *name,
-                                   uint32_t *readCounter,
-                                   uint32_t *statusCounter)
-      : _name(name), _readCounter(readCounter), _statusCounter(statusCounter) {}
-
-  void onRead(BLECharacteristic *c) override {
-    if (_readCounter) ++(*_readCounter);
-    iosDiagPrefix();
-    Serial.print(_name);
-    Serial.print(" READ current=");
-    const String value = c->getValue();
-    iosDiagPrintHex("", (const uint8_t*)value.c_str(), value.length());
-  }
-
-  void onNotify(BLECharacteristic*) override {
-    iosDiagPrefix();
-    Serial.print(_name);
-    Serial.println(" NOTIFY callback");
-  }
-
-  void onStatus(BLECharacteristic*,
-                BLECharacteristicCallbacks::Status status,
-                uint32_t code) override {
-    if (_statusCounter) ++(*_statusCounter);
-    iosDiagPrefix();
-    Serial.print(_name);
-    Serial.print(" STATUS=");
-    Serial.print((int)status);
-    Serial.print(" code=");
-    Serial.println(code);
-  }
-
- private:
-  const char *_name;
-  uint32_t *_readCounter;
-  uint32_t *_statusCounter;
-};
-
-class IOSDiagCccdCallbacks : public BLEDescriptorCallbacks {
- public:
-  IOSDiagCccdCallbacks(const char *name,
-                       uint32_t *readCounter,
-                       uint32_t *writeCounter)
-      : _name(name), _readCounter(readCounter), _writeCounter(writeCounter) {}
-
-  void onRead(BLEDescriptor *d) override {
-    if (_readCounter) ++(*_readCounter);
-    iosDiagPrefix();
-    Serial.print(_name);
-    Serial.print(" READ ");
-    iosDiagPrintHex("value", d->getValue(), d->getLength());
-  }
-
-  void onWrite(BLEDescriptor *d) override {
-    if (_writeCounter) ++(*_writeCounter);
-    iosDiagPrefix();
-    Serial.print(_name);
-    Serial.print(" WRITE ");
-    iosDiagPrintHex("value", d->getValue(), d->getLength());
-
-    if (d->getLength() >= 2) {
-      const uint8_t *v=d->getValue();
-      const uint16_t cccd=(uint16_t)v[0] | ((uint16_t)v[1] << 8);
-      iosDiagPrefix();
-      Serial.print(_name);
-      Serial.print(" decoded notifications=");
-      Serial.print((cccd & 0x0001U) ? "ON" : "OFF");
-      Serial.print(" indications=");
-      Serial.println((cccd & 0x0002U) ? "ON" : "OFF");
-    }
-  }
-
- private:
-  const char *_name;
-  uint32_t *_readCounter;
-  uint32_t *_writeCounter;
-};
-#endif
 BLECharacteristic *fa02 = nullptr;
 BLECharacteristic *fa03 = nullptr;
 BLECharacteristic *ae01 = nullptr;
@@ -459,7 +352,9 @@ void unlockRuntimeState() {
   if (runtimeStateMutex) xSemaphoreGive(runtimeStateMutex);
 }
 
+#if DISPLAY_BACKEND == DISPLAY_BACKEND_WS2812
 CRGB leds[PHYSICAL_NUM_LEDS];
+#endif
 // Logical buffers are allocated from the heap at runtime. Keeping 64x64
 // framebuffers in .bss overflows ESP32 DRAM before the sketch can link.
 CRGB *framebuffer = nullptr;
@@ -481,6 +376,8 @@ enum DisplayMode {
 
 DisplayMode displayMode = DISPLAY_NONE;
 bool screenOn = false;
+bool versionSplashActive = false;
+uint32_t versionSplashUntil = 0;
 bool diyMode = false;
 bool flipped180 = false;
 uint8_t brightnessPercent = 100;
@@ -545,7 +442,7 @@ struct TextState {
   uint8_t bitmap[MAX_TEXT_GLYPHS][TEXT_MAX_BITMAP_BYTES];
   uint8_t glyphWidth = 8;
   uint8_t glyphHeight = 16;
-  uint8_t glyphBytes = 16;
+  uint16_t glyphBytes = 16;
   uint8_t glyphAdvance = 8;
   int16_t offsetX = 0, offsetY = 1;
   uint32_t animationStart = 0;
@@ -609,11 +506,15 @@ bool handleCarouselCommand(const uint8_t *data, size_t len);
 void loadCarousel();
 void updateCarousel(uint32_t now);
 void stopCarouselPlayback();
+void updatePreset(uint32_t now);
+void stopPresetPlayback();
+void clearPresetBank(bool removeFiles);
 void clearPersistentDeviceState();
 void applyBootDisplayPolicy();
 int8_t nextCarouselSlot(int8_t current);
 bool startCarouselSlot(uint8_t slot);
 extern bool carouselActive;
+extern bool presetActive;
 extern int8_t carouselActiveSlot;
 extern bool gifCarouselPlaybackFileActive;
 extern bool carouselEnterRequested;
@@ -651,6 +552,78 @@ int8_t alarmPreviousCarouselSlot = -1;
 String alarmFileName(uint8_t slot) { return String("/alarm") + slot + ".bin"; }
 String alarmTempFileName(uint8_t slot) { return String("/alarm") + slot + ".tmp"; }
 String alarmBackupFileName(uint8_t slot) { return String("/alarm") + slot + ".bak"; }
+
+// BUILD 132: 64x64 Alarm media can span multiple complete FA02 logical
+// packets. Each packet repeats the same 24-byte Alarm header; mediaSize and
+// mediaCRC describe the complete media object, not the payload bytes carried
+// by the current packet. Stage chunks in LittleFS and publish atomically only
+// after the declared total size and CRC have been verified.
+struct AlarmUploadState {
+  bool active = false;
+  uint8_t slot = 0xFF;
+  AlarmSlot candidate;
+  AlarmSlot previous;
+  uint32_t received = 0;
+  uint32_t runningCRC = 0xFFFFFFFFUL;
+  uint32_t lastChunkAt = 0;
+};
+
+AlarmUploadState alarmUpload;
+
+bool alarmUploadMetadataMatches(const AlarmSlot &a, const AlarmSlot &b) {
+  return a.flags == b.flags &&
+         a.hour == b.hour &&
+         a.minute == b.minute &&
+         a.durationSec == b.durationSec &&
+         a.reserved1 == b.reserved1 &&
+         a.contentType == b.contentType &&
+         a.buzzer == b.buzzer &&
+         a.mediaSize == b.mediaSize &&
+         a.mediaCRC == b.mediaCRC &&
+         a.reserved3 == b.reserved3 &&
+         a.mediaId == b.mediaId;
+}
+
+void abortAlarmUpload(const char *reason) {
+  if (!alarmUpload.active) return;
+#if DEBUG_SERIAL
+  if (reason) {
+    Serial.print("ALARM UPLOAD ABORT slot="); Serial.print(alarmUpload.slot);
+    Serial.print(" received="); Serial.print(alarmUpload.received);
+    Serial.print("/"); Serial.print(alarmUpload.candidate.mediaSize);
+    Serial.print(" reason="); Serial.println(reason);
+  }
+#endif
+  if (littleFsReady && alarmUpload.slot < ALARM_SLOT_COUNT)
+    LittleFS.remove(alarmTempFileName(alarmUpload.slot));
+  alarmUpload = AlarmUploadState();
+}
+
+bool beginAlarmUpload(uint8_t slot, const AlarmSlot &candidate) {
+  abortAlarmUpload(nullptr);
+  if (!littleFsReady || slot >= ALARM_SLOT_COUNT) return false;
+
+  String tmp = alarmTempFileName(slot);
+  LittleFS.remove(tmp);
+  File f = LittleFS.open(tmp, "w");
+  if (!f) return false;
+  f.close();
+
+  alarmUpload.active = true;
+  alarmUpload.slot = slot;
+  alarmUpload.candidate = candidate;
+  alarmUpload.previous = alarms[slot];
+  alarmUpload.received = 0;
+  alarmUpload.runningCRC = 0xFFFFFFFFUL;
+  alarmUpload.lastChunkAt = millis();
+  return true;
+}
+
+void updateAlarmUploadTimeout() {
+  if (alarmUpload.active &&
+      (uint32_t)(millis() - alarmUpload.lastChunkAt) > ALARM_UPLOAD_TIMEOUT_MS)
+    abortAlarmUpload("timeout");
+}
 
 bool saveAlarmMetaValue(uint8_t slot, const AlarmSlot &value) {
   if (slot >= ALARM_SLOT_COUNT) return false;
@@ -912,6 +885,7 @@ void startAlarm(uint8_t slot){
   // Alarm has priority over Schedule. Stop the Schedule first so its restore
   // path cannot tear down media that the Alarm has just started.
   if(scheduleActiveIndex>=0) stopScheduleActivity();
+  if(presetActive) stopPresetPlayback();
 
   alarmPreviousMode=displayMode;
   alarmPreviousCarousel=carouselActive || gifCarouselPlaybackFileActive;
@@ -953,6 +927,7 @@ void stopAlarm(){
 }
 
 void updateAlarms(){
+  updateAlarmUploadTimeout();
   if(alarmActive){ if((int32_t)(millis()-alarmEndsAt)>=0) stopAlarm(); return; }
 #if RTC_ENABLED
   if(!clockSynced && !(rtcReady && rtcTimeValid)) return;
@@ -988,9 +963,10 @@ bool processAlarmCommand(const uint8_t *data,size_t len){
     sendCommandAck(0x00,0x80); return true;
   }
 
-  // Short packet: stage metadata first and publish it to RAM only after NVS
-  // accepted the complete record. Existing media metadata/file are preserved.
+  // Short packet: metadata-only update. If the same slot currently has an
+  // incomplete media transaction, discard that staging file first.
   if(len<ALARM_HEADER_SIZE){
+    if(alarmUpload.active && alarmUpload.slot==slot) abortAlarmUpload("metadata update");
     if(len>9)candidate.reserved1=data[9]; if(len>10)candidate.contentType=data[10]; if(len>11)candidate.buzzer=data[11];
     bool stored=saveAlarmMetaValue(slot,candidate);
     if(stored) alarms[slot]=candidate;
@@ -1011,46 +987,144 @@ bool processAlarmCommand(const uint8_t *data,size_t len){
   candidate.mediaSize=(uint32_t)data[13]|((uint32_t)data[14]<<8)|((uint32_t)data[15]<<16)|((uint32_t)data[16]<<24);
   candidate.mediaCRC=(uint32_t)data[17]|((uint32_t)data[18]<<8)|((uint32_t)data[19]<<16)|((uint32_t)data[20]<<24);
   candidate.reserved3=(uint16_t)data[21]|((uint16_t)data[22]<<8); candidate.mediaId=data[23];
-  if(candidate.mediaSize > len-ALARM_HEADER_SIZE){
-#if DEBUG_SERIAL
-    Serial.println("ALARM ERROR: media size > packet");
-#endif
-    sendCommandAck(0x00,0x80); return true;
-  }
+
   const uint8_t *media=data+ALARM_HEADER_SIZE;
-  uint32_t calc=crc32Update(0xFFFFFFFF,media,candidate.mediaSize)^0xFFFFFFFF;
-  if(calc!=candidate.mediaCRC){
+  const size_t chunkSize=len-ALARM_HEADER_SIZE;
+
+  // The observed 64x64 app uses reserved2=0x00 on the first logical packet
+  // and 0x02 on the following packet. Treat reserved2 as diagnostic only:
+  // completeness is determined from accumulated bytes, declared mediaSize and
+  // the CRC of the complete media object.
+  bool needBegin=!alarmUpload.active;
+  if(alarmUpload.active){
+    const bool sameTransaction = alarmUpload.slot==slot &&
+      alarmUploadMetadataMatches(alarmUpload.candidate,candidate);
+
+    // A repeated first chunk is most safely interpreted as a restarted app
+    // transfer rather than appended as duplicate media.
+    if(candidate.reserved2==0x00 && alarmUpload.received>0){
+      abortAlarmUpload("transfer restarted");
+      needBegin=true;
+    } else if(!sameTransaction){
+      if(candidate.reserved2==0x00){
+        abortAlarmUpload("new transaction");
+        needBegin=true;
+      } else {
 #if DEBUG_SERIAL
-    Serial.print("ALARM CRC ERROR calc=0x");Serial.print(calc,HEX);Serial.print(" expected=0x");Serial.println(candidate.mediaCRC,HEX);
+        Serial.print("ALARM ERROR: unexpected continuation slot="); Serial.print(slot);
+        Serial.print(" part=0x"); Serial.print(candidate.reserved2,HEX);
+        Serial.print(" chunk="); Serial.print(chunkSize);
+        Serial.print(" media="); Serial.println(candidate.mediaSize);
 #endif
+        sendCommandAck(0x00,0x80); return true;
+      }
+    }
+  }
+
+  if(needBegin){
+    // A partial packet marked as a continuation cannot be reconstructed if its
+    // first chunk was not received. A one-packet media update is accepted
+    // regardless of the reserved2 value because no continuation is required.
+    if(candidate.reserved2!=0x00 && chunkSize<candidate.mediaSize){
+#if DEBUG_SERIAL
+      Serial.print("ALARM ERROR: continuation without start slot="); Serial.print(slot);
+      Serial.print(" part=0x"); Serial.print(candidate.reserved2,HEX);
+      Serial.print(" chunk="); Serial.print(chunkSize);
+      Serial.print(" media="); Serial.println(candidate.mediaSize);
+#endif
+      sendCommandAck(0x00,0x80); return true;
+    }
+    if(!beginAlarmUpload(slot,candidate)){
+#if DEBUG_SERIAL
+      Serial.print("ALARM ERROR: could not create staging file slot="); Serial.println(slot);
+#endif
+      sendCommandAck(0x00,0x80); return true;
+    }
+  }
+
+  if((uint64_t)alarmUpload.received+(uint64_t)chunkSize > (uint64_t)alarmUpload.candidate.mediaSize){
+#if DEBUG_SERIAL
+    Serial.print("ALARM ERROR: media overflow slot="); Serial.print(slot);
+    Serial.print(" received="); Serial.print(alarmUpload.received);
+    Serial.print(" chunk="); Serial.print(chunkSize);
+    Serial.print(" expected="); Serial.println(alarmUpload.candidate.mediaSize);
+#endif
+    abortAlarmUpload("media overflow");
     sendCommandAck(0x00,0x80); return true;
   }
 
-  String dst=alarmFileName(slot), tmp=alarmTempFileName(slot), bak=alarmBackupFileName(slot);
-  LittleFS.remove(tmp); LittleFS.remove(bak);
-  File f=LittleFS.open(tmp,"w");
-  bool stored=f && (!candidate.mediaSize || f.write(media,candidate.mediaSize)==candidate.mediaSize); if(f)f.close();
+  String tmp=alarmTempFileName(slot);
+  File f=LittleFS.open(tmp,"a");
+  bool writeOK=(bool)f;
+  if(writeOK && (uint32_t)f.size()!=alarmUpload.received) writeOK=false;
+  if(writeOK && chunkSize && f.write(media,chunkSize)!=chunkSize) writeOK=false;
+  if(f)f.close();
+  if(!writeOK){
+#if DEBUG_SERIAL
+    Serial.print("ALARM ERROR: staging write failed slot="); Serial.println(slot);
+#endif
+    abortAlarmUpload("staging write");
+    sendCommandAck(0x00,0x80); return true;
+  }
+
+  alarmUpload.runningCRC=crc32Update(alarmUpload.runningCRC,media,chunkSize);
+  alarmUpload.received+=(uint32_t)chunkSize;
+  alarmUpload.lastChunkAt=millis();
+  alarmUpload.candidate.reserved2=candidate.reserved2;
+
+#if DEBUG_SERIAL
+  Serial.print("ALARM RX slot="); Serial.print(slot);
+  Serial.print(" part=0x"); Serial.print(candidate.reserved2,HEX);
+  Serial.print(" chunk="); Serial.print(chunkSize);
+  Serial.print(" total="); Serial.print(alarmUpload.received);
+  Serial.print("/"); Serial.println(alarmUpload.candidate.mediaSize);
+#endif
+
+  if(alarmUpload.received<alarmUpload.candidate.mediaSize){
+    sendCommandAck(0x00,0x80); return true;
+  }
+
+  const uint32_t calc=alarmUpload.runningCRC^0xFFFFFFFFUL;
+  if(calc!=alarmUpload.candidate.mediaCRC){
+#if DEBUG_SERIAL
+    Serial.print("ALARM CRC ERROR calc=0x");Serial.print(calc,HEX);Serial.print(" expected=0x");Serial.println(alarmUpload.candidate.mediaCRC,HEX);
+#endif
+    abortAlarmUpload("CRC mismatch");
+    sendCommandAck(0x00,0x80); return true;
+  }
+
+  AlarmSlot committed=alarmUpload.candidate;
+  AlarmSlot rollback=alarmUpload.previous;
+  String dst=alarmFileName(slot), bak=alarmBackupFileName(slot);
+  LittleFS.remove(bak);
   bool hadOld=LittleFS.exists(dst);
-  if(stored && hadOld) stored=LittleFS.rename(dst,bak);
+  bool stored=true;
+  if(hadOld) stored=LittleFS.rename(dst,bak);
   if(stored) stored=LittleFS.rename(tmp,dst);
   if(!stored){
     LittleFS.remove(tmp);
     if(hadOld && LittleFS.exists(bak) && !LittleFS.exists(dst)) LittleFS.rename(bak,dst);
-  } else if(!saveAlarmMetaValue(slot,candidate)){
-    // Metadata did not commit: roll the filesystem and NVS back to the previous slot.
+  } else if(!saveAlarmMetaValue(slot,committed)){
+    // Metadata did not commit: roll the filesystem and NVS back to the
+    // previous slot so a failed update cannot destroy a working Alarm.
     LittleFS.remove(dst);
     if(hadOld && LittleFS.exists(bak)) LittleFS.rename(bak,dst);
-    saveAlarmMetaValue(slot,previous);
+    saveAlarmMetaValue(slot,rollback);
     stored=false;
   } else {
-    alarms[slot]=candidate;
+    alarms[slot]=committed;
     LittleFS.remove(bak);
   }
+
+  // The staging path was either renamed or rolled back. Reset the in-memory
+  // transaction without deleting the committed file.
+  alarmUpload=AlarmUploadState();
+
 #if DEBUG_SERIAL
-  Serial.print("ALARM SAVE slot=");Serial.print(slot);Serial.print(" flags=0x");Serial.print(candidate.flags,HEX);
-  Serial.print(" time=");Serial.print(candidate.hour);Serial.print(":");Serial.print(candidate.minute);Serial.print(" dur=");Serial.print(candidate.durationSec);
-  Serial.print(" type=");Serial.print(candidate.contentType);Serial.print(" buzzer=");Serial.print(candidate.buzzer);Serial.print(" bytes=");Serial.print(candidate.mediaSize);
-  Serial.print(" mediaId=0x");Serial.print(candidate.mediaId,HEX);Serial.print(" stored=");Serial.println(stored?"YES":"NO");
+  Serial.print("ALARM SAVE slot=");Serial.print(slot);Serial.print(" flags=0x");Serial.print(committed.flags,HEX);
+  Serial.print(" time=");Serial.print(committed.hour);Serial.print(":");Serial.print(committed.minute);Serial.print(" dur=");Serial.print(committed.durationSec);
+  Serial.print(" type=");Serial.print(committed.contentType);Serial.print(" buzzer=");Serial.print(committed.buzzer);Serial.print(" bytes=");Serial.print(committed.mediaSize);
+  Serial.print(" mediaId=0x");Serial.print(committed.mediaId,HEX);Serial.print(" stored=");Serial.println(stored?"YES":"NO");
 #endif
   // Preserve the compatibility ACK while the original device's error status
   // for Alarm storage failures remains unknown.
@@ -1174,6 +1248,18 @@ bool carouselUploadOpen = false;
 // Emulator UX policy: while a Device Assets bank is being replaced, force the
 // physical matrix black without changing the protocol-controlled screenOn state.
 bool carouselUploadBlackout = false;
+
+// Procedural Carousel transfer indicator. The app does not announce the byte
+// sizes of future assets, so whole-Carousel progress is asset-weighted while
+// the active asset uses its real byte fraction.
+bool carouselTransferIndicatorActive = false;
+bool carouselTransferIndicatorVisible = false;
+uint32_t carouselTransferIndicatorStartedAt = 0;
+uint32_t carouselTransferIndicatorLastFrameAt = 0;
+uint32_t carouselTransferExpectedBytes = 0;
+uint32_t carouselTransferReceivedBytes = 0;
+uint16_t carouselUploadCompletedMask = 0;
+constexpr uint32_t CAROUSEL_TRANSFER_INDICATOR_DELAY_MS = 250UL;
 bool carouselEnterRequested = false;
 bool carouselStartPending = false;
 bool carouselActive = false;
@@ -1181,6 +1267,31 @@ int8_t carouselActiveSlot = -1;
 uint32_t carouselSlotStartedAt = 0;
 uint32_t carouselLastAssetCommitAt = 0;
 bool gifCarouselPlaybackFileActive = false;
+
+// ======================================================
+// PRESET / DEFAULT (volatile mini-playlist)
+// Hardware captures from the official app use device slots 14..19 and command
+// 06/02 <count> <slot...>. The app re-sends all media when a preset is invoked.
+// Captured assets use timeSign=5 while the original display visibly advances
+// at about 3 seconds per item, so timeSign is retained as opaque metadata and
+// is NOT interpreted as seconds here. Preset media is intentionally volatile.
+// ======================================================
+struct PresetSlotMeta {
+  uint8_t configured = 0;
+  uint8_t dataType = 0;       // 1=GIF/image, 3=TEXT
+  uint16_t timeSign = 0;      // observed 5; semantics not established
+  uint32_t mediaSize = 0;
+  uint32_t mediaCRC = 0;
+};
+
+PresetSlotMeta presetSlots[PRESET_SLOT_COUNT];
+uint8_t presetOrder[PRESET_SLOT_COUNT] = {}; // local slots 0..5
+uint8_t presetOrderCount = 0;
+bool presetActive = false;
+int8_t presetActiveSlot = -1;
+uint32_t presetSlotStartedAt = 0;
+uint32_t presetSlotHoldMs = PRESET_DWELL_MS;
+bool gifPresetPlaybackFileActive = false;
 
 // ======================================================
 // PACKET / BULK
@@ -1201,8 +1312,10 @@ struct BulkTransferState {
   uint32_t chunkCount = 0;
   bool gifToFS = false;
   bool carouselToFS = false;
+  bool presetToFS = false;
   int8_t gifRxSlot = -1;
   int8_t carouselLocalSlot = -1;
+  int8_t presetLocalSlot = -1;
   uint16_t timeSign = 0;
   uint8_t imageIndex = 0xFF;
   String format = "UNKNOWN";
@@ -1285,6 +1398,109 @@ uint16_t logicalIndex(uint8_t x, uint8_t y) {
 uint16_t physicalXY(uint8_t x, uint8_t y) {
   if ((y & 1) == 0) return (uint16_t)y * PHYSICAL_MATRIX_WIDTH + x;
   return (uint16_t)y * PHYSICAL_MATRIX_WIDTH + PHYSICAL_MATRIX_WIDTH - 1 - x;
+}
+
+// Small 3x5 diagnostic font used only by the temporary release/build overlay.
+// Bits are stored row-major, three bits per row, LSB = leftmost pixel.
+static uint16_t versionGlyphBits(char c) {
+#define VG(r0,r1,r2,r3,r4) ((uint16_t)(r0) | ((uint16_t)(r1)<<3) | ((uint16_t)(r2)<<6) | ((uint16_t)(r3)<<9) | ((uint16_t)(r4)<<12))
+  switch (c) {
+    case '0': return VG(0x7,0x5,0x5,0x5,0x7);
+    case '1': return VG(0x2,0x6,0x2,0x2,0x7);
+    case '2': return VG(0x7,0x1,0x7,0x4,0x7);
+    case '3': return VG(0x7,0x1,0x7,0x1,0x7);
+    case '4': return VG(0x5,0x5,0x7,0x1,0x1);
+    case '5': return VG(0x7,0x4,0x7,0x1,0x7);
+    case '6': return VG(0x7,0x4,0x7,0x5,0x7);
+    case '7': return VG(0x7,0x1,0x2,0x2,0x2);
+    case '8': return VG(0x7,0x5,0x7,0x5,0x7);
+    case '9': return VG(0x7,0x5,0x7,0x1,0x7);
+    case 'B': return VG(0x6,0x5,0x6,0x5,0x6);
+    case 'R': return VG(0x6,0x5,0x6,0x5,0x5);
+    case '.': return VG(0x0,0x0,0x0,0x0,0x2);
+    default:  return 0;
+  }
+#undef VG
+}
+
+static bool versionLinePixel(const char *text, uint16_t x, uint16_t y,
+                             uint16_t originX, uint16_t originY, uint8_t scale) {
+  if (!text || !scale || x < originX || y < originY) return false;
+  const uint16_t ux=(x-originX)/scale;
+  const uint16_t uy=(y-originY)/scale;
+  if (uy>=5) return false;
+  const size_t len=strlen(text);
+  const uint16_t textUnits=len ? (uint16_t)(len*4U-1U) : 0U;
+  if (ux>=textUnits) return false;
+  const uint16_t ci=ux/4U;
+  const uint8_t col=(uint8_t)(ux%4U);
+  if (ci>=len || col>=3) return false;
+  const uint16_t bits=versionGlyphBits(text[ci]);
+  return (bits & ((uint16_t)1U << (uy*3U+col))) != 0;
+}
+
+static CRGB versionSplashPhysicalPixel(uint16_t px, uint16_t py) {
+  static const char line1[] = "R" IDOT_STRINGIFY(FW_RELEASE_MAJOR) "." IDOT_STRINGIFY(FW_RELEASE_MINOR);
+  static const char line2[] = "B" IDOT_STRINGIFY(FW_BUILD);
+  const uint16_t width1=(uint16_t)(strlen(line1)*4U-1U);
+  const uint16_t width2=(uint16_t)(strlen(line2)*4U-1U);
+  const uint16_t widthUnits=max(width1,width2);
+  const uint16_t heightUnits=12U; // 5 rows + 2-row gap + 5 rows.
+  uint8_t scale=(uint8_t)min((uint16_t)(PHYSICAL_MATRIX_WIDTH/widthUnits),
+                             (uint16_t)(PHYSICAL_MATRIX_HEIGHT/heightUnits));
+  if (scale<1) scale=1;
+  if (scale>4) scale=4;
+  const uint16_t totalHeight=heightUnits*scale;
+  const uint16_t y0=(PHYSICAL_MATRIX_HEIGHT>totalHeight) ? (PHYSICAL_MATRIX_HEIGHT-totalHeight)/2U : 0U;
+  const uint16_t w1=width1*scale, w2=width2*scale;
+  const uint16_t x1=(PHYSICAL_MATRIX_WIDTH>w1) ? (PHYSICAL_MATRIX_WIDTH-w1)/2U : 0U;
+  const uint16_t x2=(PHYSICAL_MATRIX_WIDTH>w2) ? (PHYSICAL_MATRIX_WIDTH-w2)/2U : 0U;
+  if (versionLinePixel(line1,px,py,x1,y0,scale)) return CRGB(80,180,255);
+  if (versionLinePixel(line2,px,py,x2,(uint16_t)(y0+7U*scale),scale)) return CRGB(255,190,40);
+  return CRGB::Black;
+}
+
+// Scale the final logical framebuffer to one physical pixel. Upscaling uses
+// nearest-neighbour replication; downscaling uses a box average, matching the
+// independently hardware-tested WLED Usermod policy.
+CRGB logicalToPhysicalPixel(uint16_t px, uint16_t py) {
+#if APP_POWER_VERSION_SPLASH
+  if (versionSplashActive) return versionSplashPhysicalPixel(px,py);
+#endif
+  const uint16_t sourceWidth = MATRIX_WIDTH;
+  const uint16_t sourceHeight = MATRIX_HEIGHT;
+  const uint16_t targetWidth = PHYSICAL_MATRIX_WIDTH;
+  const uint16_t targetHeight = PHYSICAL_MATRIX_HEIGHT;
+
+  if (sourceWidth == targetWidth && sourceHeight == targetHeight)
+    return framebuffer[logicalIndex((uint8_t)px, (uint8_t)py)];
+
+  const bool downscale = targetWidth < sourceWidth || targetHeight < sourceHeight;
+  if (!downscale) {
+    const uint16_t sx = (uint32_t)px * sourceWidth / targetWidth;
+    const uint16_t sy = (uint32_t)py * sourceHeight / targetHeight;
+    return framebuffer[logicalIndex((uint8_t)sx, (uint8_t)sy)];
+  }
+
+  const uint16_t sy0 = (uint32_t)py * sourceHeight / targetHeight;
+  uint16_t sy1 = (uint32_t)(py + 1u) * sourceHeight / targetHeight;
+  if (sy1 <= sy0) sy1 = sy0 + 1u;
+  if (sy1 > sourceHeight) sy1 = sourceHeight;
+
+  const uint16_t sx0 = (uint32_t)px * sourceWidth / targetWidth;
+  uint16_t sx1 = (uint32_t)(px + 1u) * sourceWidth / targetWidth;
+  if (sx1 <= sx0) sx1 = sx0 + 1u;
+  if (sx1 > sourceWidth) sx1 = sourceWidth;
+
+  uint32_t r=0, g=0, b=0, samples=0;
+  for (uint16_t sy=sy0; sy<sy1; ++sy) {
+    for (uint16_t sx=sx0; sx<sx1; ++sx) {
+      const CRGB &c=framebuffer[logicalIndex((uint8_t)sx,(uint8_t)sy)];
+      r += c.r; g += c.g; b += c.b; ++samples;
+    }
+  }
+  if (!samples) samples=1;
+  return CRGB((uint8_t)(r/samples),(uint8_t)(g/samples),(uint8_t)(b/samples));
 }
 
 void clearFramebuffer(const CRGB &color) {
@@ -1371,48 +1587,77 @@ uint8_t effectiveBrightnessPercent() {
   return v;
 }
 
-uint8_t brightnessToFastLED(uint8_t percent) {
+uint8_t brightnessToOutput(uint8_t percent) {
   percent = min((uint8_t)100, percent);
   return ((uint16_t)percent * MAX_LED_BRIGHTNESS) / 100;
 }
 
+CRGB scaleOutputBrightness(const CRGB &input, uint8_t level) {
+  return CRGB(
+    (uint8_t)(((uint16_t)input.r * level) / 255U),
+    (uint8_t)(((uint16_t)input.g * level) / 255U),
+    (uint8_t)(((uint16_t)input.b * level) / 255U)
+  );
+}
+
+void clearPhysicalDisplay() {
+#if DISPLAY_BACKEND == DISPLAY_BACKEND_WS2812
+  FastLED.clear();
+  FastLED.show();
+#elif DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
+  if (hub75Matrix) hub75Matrix->clearScreen();
+#endif
+}
+
 void refreshMatrix() {
-  if (!screenOn || carouselUploadBlackout) {
-    FastLED.clear();
-    FastLED.show();
+  if (!screenOn || (carouselUploadBlackout && !carouselTransferIndicatorVisible)) {
+    clearPhysicalDisplay();
     lastAppliedOutputBrightness = 0xFF;
     return;
   }
+
+  const uint8_t outputBrightness=brightnessToOutput(effectiveBrightnessPercent());
+
+#if DISPLAY_BACKEND == DISPLAY_BACKEND_WS2812
   FastLED.clear();
-  // Render the logical iDotMatrix framebuffer onto the actually connected
-  // matrix. If the sizes differ (e.g. logical 32x32 on physical 16x16), use
-  // nearest-neighbour down/up-sampling. This is intentionally only a preview:
-  // the BLE protocol still exposes the full logical resolution to the app.
-  for (uint8_t py = 0; py < PHYSICAL_MATRIX_HEIGHT; py++) {
-    for (uint8_t px = 0; px < PHYSICAL_MATRIX_WIDTH; px++) {
-      uint8_t outX = px, outY = py;
+  for (uint16_t py=0; py<PHYSICAL_MATRIX_HEIGHT; ++py) {
+    for (uint16_t px=0; px<PHYSICAL_MATRIX_WIDTH; ++px) {
+      uint16_t outX=px, outY=py;
 #if MATRIX_MIRROR_X
-      outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
+      outX=PHYSICAL_MATRIX_WIDTH-1-outX;
 #endif
       if (flipped180) {
-        outX = PHYSICAL_MATRIX_WIDTH - 1 - outX;
-        outY = PHYSICAL_MATRIX_HEIGHT - 1 - outY;
+        outX=PHYSICAL_MATRIX_WIDTH-1-outX;
+        outY=PHYSICAL_MATRIX_HEIGHT-1-outY;
       }
-#if ENABLE_LOGICAL_TO_PHYSICAL_PREVIEW
-      const uint8_t sx = (uint16_t)px * MATRIX_WIDTH / PHYSICAL_MATRIX_WIDTH;
-      const uint8_t sy = (uint16_t)py * MATRIX_HEIGHT / PHYSICAL_MATRIX_HEIGHT;
-      leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(sx, sy)];
-#else
-      // Native mode: no rescaling. Logical and physical dimensions are expected to match.
-      if (px < MATRIX_WIDTH && py < MATRIX_HEIGHT)
-        leds[physicalXY(outX, outY)] = framebuffer[logicalIndex(px, py)];
-#endif
+      leds[physicalXY((uint8_t)outX,(uint8_t)outY)] = logicalToPhysicalPixel(px,py);
     }
   }
-  uint8_t outputBrightness=brightnessToFastLED(effectiveBrightnessPercent());
   FastLED.setBrightness(outputBrightness);
-  lastAppliedOutputBrightness=outputBrightness;
   FastLED.show();
+#elif DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
+  if (!hub75Matrix) return;
+  // MatrixPanel_I2S_DMA controls panel brightness through the output-enable
+  // timing. Do not scale RGB channels here: doing so destroys gradient
+  // resolution before the driver's 8-bit bitplanes are generated.
+  if (outputBrightness != lastAppliedOutputBrightness)
+    hub75Matrix->setBrightness8(outputBrightness);
+  for (uint16_t py=0; py<PHYSICAL_MATRIX_HEIGHT; ++py) {
+    for (uint16_t px=0; px<PHYSICAL_MATRIX_WIDTH; ++px) {
+      uint16_t outX=px, outY=py;
+      if (flipped180) {
+        outX=PHYSICAL_MATRIX_WIDTH-1-outX;
+        outY=PHYSICAL_MATRIX_HEIGHT-1-outY;
+      }
+      const CRGB c=logicalToPhysicalPixel(px,py);
+      hub75Matrix->drawPixelRGB888(outX,outY,c.r,c.g,c.b);
+    }
+  }
+#else
+  #error "Unsupported DISPLAY_BACKEND"
+#endif
+
+  lastAppliedOutputBrightness=outputBrightness;
 }
 
 void updateEnergySavingOutput(uint32_t now) {
@@ -1421,8 +1666,120 @@ void updateEnergySavingOutput(uint32_t now) {
   if ((uint32_t)(now-lastEnergySavingCheckMs) < 1000UL) return;
   lastEnergySavingCheckMs=now;
   if (!screenOn) return;
-  uint8_t wanted=brightnessToFastLED(effectiveBrightnessPercent());
+  uint8_t wanted=brightnessToOutput(effectiveBrightnessPercent());
   if (wanted != lastAppliedOutputBrightness) refreshMatrix();
+}
+
+// ======================================================
+// CAROUSEL TRANSFER INDICATOR
+// ======================================================
+uint8_t carouselCompletedUploadCountExcluding(uint8_t activeSlot) {
+  uint16_t mask=carouselUploadCompletedMask;
+  if(activeSlot<CAROUSEL_SLOT_COUNT) mask &= (uint16_t)~(uint16_t(1U)<<activeSlot);
+  uint8_t count=0;
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++) if(mask&(uint16_t(1U)<<i)) count++;
+  return count;
+}
+
+void beginCarouselTransferIndicator(uint32_t totalBytes, uint8_t activeSlot) {
+  const bool first=!carouselTransferIndicatorActive;
+  carouselTransferIndicatorActive=true;
+  if(first){
+    carouselTransferIndicatorStartedAt=millis();
+    carouselTransferIndicatorLastFrameAt=0;
+    carouselTransferIndicatorVisible=false;
+    clearFramebuffer();
+    clearPhysicalDisplay();
+  }
+  carouselTransferExpectedBytes=totalBytes;
+  carouselTransferReceivedBytes=0;
+  (void)activeSlot;
+}
+
+void updateCarouselTransferIndicatorProgress(uint32_t receivedBytes, uint32_t totalBytes) {
+  if(!carouselTransferIndicatorActive) return;
+  carouselTransferReceivedBytes=receivedBytes;
+  if(totalBytes) carouselTransferExpectedBytes=totalBytes;
+}
+
+void endCarouselTransferIndicator() {
+  carouselTransferIndicatorActive=false;
+  carouselTransferIndicatorVisible=false;
+  carouselTransferExpectedBytes=0;
+  carouselTransferReceivedBytes=0;
+  carouselTransferIndicatorLastFrameAt=0;
+}
+
+void renderCarouselTransferIndicator(uint32_t now) {
+  if(!carouselTransferIndicatorActive) return;
+  if((uint32_t)(now-carouselTransferIndicatorStartedAt)<CAROUSEL_TRANSFER_INDICATOR_DELAY_MS){
+    carouselTransferIndicatorVisible=false;
+    return;
+  }
+  if(carouselTransferIndicatorLastFrameAt &&
+     (uint32_t)(now-carouselTransferIndicatorLastFrameAt)<50UL) return;
+  carouselTransferIndicatorLastFrameAt=now;
+  carouselTransferIndicatorVisible=true;
+  clearFramebuffer();
+
+  const uint8_t w=MATRIX_WIDTH, h=MATRIX_HEIGHT;
+  const uint8_t unit=w>=64 ? 3U : (w>=32 ? 2U : 1U);
+  const int16_t cx=(int16_t)(w/2U);
+  const int16_t iconW=(int16_t)(10U*unit);
+  const int16_t iconH=(int16_t)(6U*unit);
+  const int16_t iconX=cx-iconW/2;
+  const int16_t iconY=(int16_t)h-iconH-(int16_t)(3U*unit);
+
+  auto px=[&](int16_t x,int16_t y,const CRGB &c){
+    if(x>=0&&y>=0&&x<w&&y<h) putPixel((uint8_t)x,(uint8_t)y,c);
+  };
+  auto block=[&](int16_t x,int16_t y,uint8_t bw,uint8_t bh,const CRGB &c){
+    for(uint8_t yy=0;yy<bh;yy++) for(uint8_t xx=0;xx<bw;xx++) px(x+xx,y+yy,c);
+  };
+
+  const CRGB outline(55,160,235), cells(80,215,255);
+  for(int16_t x=0;x<iconW;x++){
+    block(iconX+x,iconY,1,unit,outline);
+    block(iconX+x,iconY+iconH-unit,1,unit,outline);
+  }
+  for(int16_t y=0;y<iconH;y++){
+    block(iconX,iconY+y,unit,1,outline);
+    block(iconX+iconW-unit,iconY+y,unit,1,outline);
+  }
+  for(uint8_t iy=0;iy<2;iy++) for(uint8_t ix=0;ix<4;ix++)
+    block(iconX+(int16_t)((2+ix*2)*unit),iconY+(int16_t)((2+iy*2)*unit),unit,unit,cells);
+
+  const uint8_t phase=(uint8_t)((now/120U)%4U);
+  const int16_t packetSize=(int16_t)(2U*unit);
+  const int16_t packetTop=iconY-(int16_t)((6U-phase)*unit);
+  const int16_t packetX=cx-packetSize/2;
+  block(packetX,packetTop,(uint8_t)packetSize,(uint8_t)packetSize,CRGB(245,245,255));
+  if(packetSize>=3) block(packetX+unit/2U,packetTop+unit/2U,unit,unit,cells);
+  px(cx,packetTop-(int16_t)(2U*unit),CRGB(60,120,155));
+  px(cx,packetTop-(int16_t)(4U*unit),CRGB(30,65,85));
+
+  const int16_t barX=(int16_t)(2U*unit);
+  const int16_t barY=(int16_t)h-(int16_t)unit;
+  const int16_t barW=(int16_t)w-(int16_t)(4U*unit);
+  if(barW>0){
+    for(int16_t x=0;x<barW;x++) px(barX+x,barY,CRGB(18,42,55));
+    int16_t filled=0;
+    const uint8_t totalUnits=carouselOrderCount;
+    const uint8_t activeSlot=(bulk.carouselLocalSlot>=0)?(uint8_t)bulk.carouselLocalSlot:0xFF;
+    const uint8_t done=carouselCompletedUploadCountExcluding(activeSlot);
+    if(totalUnits&&carouselTransferExpectedBytes){
+      const uint32_t current=carouselTransferReceivedBytes>carouselTransferExpectedBytes ? carouselTransferExpectedBytes : carouselTransferReceivedBytes;
+      const uint64_t numerator=(uint64_t(done)*carouselTransferExpectedBytes+current)*(uint64_t)barW;
+      const uint64_t denominator=(uint64_t)totalUnits*carouselTransferExpectedBytes;
+      filled=denominator?(int16_t)(numerator/denominator):0;
+    }else if(carouselTransferExpectedBytes){
+      const uint32_t current=carouselTransferReceivedBytes>carouselTransferExpectedBytes ? carouselTransferExpectedBytes : carouselTransferReceivedBytes;
+      filled=(int16_t)(((uint64_t)current*(uint64_t)barW)/carouselTransferExpectedBytes);
+    }
+    if(filled>barW) filled=barW;
+    for(int16_t x=0;x<filled;x++) px(barX+x,barY,CRGB(90,230,170));
+  }
+  refreshMatrix();
 }
 
 // ======================================================
@@ -1430,16 +1787,9 @@ void updateEnergySavingOutput(uint32_t now) {
 // ======================================================
 void sendFA03(const uint8_t *data, size_t len) {
   if (!deviceConnected || !fa03) return;
-#if IOS_HANDSHAKE_DIAG
-  ++iosDiagFa03Tx;
-  Serial.print("[IOSDIAG +");
-  Serial.print(millis() - iosDiagConnectAt);
-  Serial.print("ms] ");
-  iosDiagPrintHex("FA03 TX", data, len);
-#endif
   fa03->setValue(data, len);
   fa03->notify();
-#if DEBUG_SERIAL && !IOS_HANDSHAKE_DIAG
+#if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
   Serial.print("TX FA03 ["); Serial.print(len); Serial.print("]: "); dumpHex(data, len);
 #endif
 }
@@ -1468,6 +1818,7 @@ void sendDeviceInfo() {
 // ======================================================
 void stopGIFPlayback();
 void switchDisplayMode(DisplayMode m) {
+  if (presetActive) stopPresetPlayback();
   if (displayMode == DISPLAY_GIF && m != DISPLAY_GIF) stopGIFPlayback();
   if (m != DISPLAY_GIF) {
     carouselActive = false;
@@ -1476,6 +1827,7 @@ void switchDisplayMode(DisplayMode m) {
     carouselEnterRequested = false;
     carouselUploadOpen = false;
     carouselUploadBlackout = false;
+    endCarouselTransferIndicator();
     gifCarouselPlaybackFileActive = false;
   }
   if (m == DISPLAY_CLOCK && displayMode != DISPLAY_CLOCK) clockCycleStartedAt = millis();
@@ -1949,8 +2301,20 @@ void renderTextFrame() {
     case 6: drawTextGlyphs(40+scale8(sin8(e/8),215)); break;
     case 7: {
       drawTextGlyphs();
-      uint16_t ph=e/100;
-      for(uint8_t i=0;i<8;i++) putPixel((i*5+i*i*3)%MATRIX_WIDTH,(ph+i*3)%MATRIX_HEIGHT,CRGB::White);
+      const uint16_t ph=e/100U;
+      // A regular index*3 Y phase creates visible travelling snow bands,
+      // especially on a 16x16 logical canvas upscaled to a larger panel.
+      // Use deterministic irregular phases and two fall rates instead, with
+      // particle density proportional to the logical display width.
+      const uint8_t flakeCount=MATRIX_WIDTH>=64 ? 48U : (MATRIX_WIDTH>=32 ? 24U : 16U);
+      for(uint8_t i=0;i<flakeCount;i++){
+        const uint32_t seed=effectHash((uint32_t)i*0x9E3779B9UL+0x51ED270BUL);
+        const uint8_t x=(uint8_t)(seed%MATRIX_WIDTH);
+        const uint16_t startY=(uint16_t)((seed>>8)%MATRIX_HEIGHT);
+        const uint8_t rate=(uint8_t)(1U+((seed>>20)&0x01U));
+        const uint8_t y=(uint8_t)((startY+(uint32_t)ph*rate)%MATRIX_HEIGHT);
+        putPixel(x,y,CRGB::White);
+      }
       break;
     }
     case 8: {
@@ -1977,7 +2341,10 @@ uint16_t textPageInterval() {
 
 void resetTextPosition() {
   int tw=textState.glyphCount*textState.glyphAdvance;
-  int16_t centeredY=max((int16_t)0,(int16_t)(MATRIX_HEIGHT-textState.glyphHeight)/2);
+  const int16_t centeredY =
+      (MATRIX_HEIGHT > textState.glyphHeight)
+          ? (int16_t)((MATRIX_HEIGHT - textState.glyphHeight) / 2)
+          : (int16_t)0;
   textFirstVisibleGlyph=0;
   textPageChangedAt=millis();
   switch(textState.motionEffect){
@@ -2070,28 +2437,48 @@ void updateTextAnimation() {
   }
 }
 
-// TEXT glyph records observed from the official app on the 32x32 profile:
-// marker 0x02: 8x16 bitmap,  4-byte meta + 16 bitmap bytes = 20 bytes/glyph
-// marker 0x05: 16x32 bitmap, 4-byte meta + 64 bitmap bytes = 68 bytes/glyph
+// TEXT glyph records observed from the official app:
+// marker 0x02/0x03:  8x16 bitmap,  4-byte meta +  16 bitmap bytes =  20 bytes/glyph
+// marker 0x05/0x06: 16x32 bitmap,  4-byte meta +  64 bitmap bytes =  68 bytes/glyph
+// marker 0x08/0x09: 32x64 bitmap,  4-byte meta + 256 bitmap bytes = 260 bytes/glyph
 // SimSun/SimHei are rasterized by the app: no device-side font selection is required.
+// The exact-record-size fallback mirrors the hardware-validated WLED Usermod path
+// and tolerates equivalent app/firmware marker variants (for example 0x0A).
 bool parseTextPayloadInternal(const uint8_t *data,size_t len,bool carouselContext) {
   if(len<TEXT_GLOBAL_HEADER) return false;
   uint8_t requested=data[0];
   uint8_t n=min(requested,(uint8_t)MAX_TEXT_GLYPHS);
   if(!n) return false;
 
-  // Determine glyph format from the first record. Mixed-size records have not been observed.
   const uint8_t marker=data[TEXT_GLOBAL_HEADER];
-  uint8_t glyphWidth=0,glyphHeight=0,glyphBytes=0;
+  uint8_t glyphWidth=0,glyphHeight=0;
+  uint16_t glyphBytes=0;
   if(marker==0x02 || marker==0x03){ glyphWidth=8; glyphHeight=16; glyphBytes=16; }
   else if(marker==0x05 || marker==0x06){ glyphWidth=16; glyphHeight=32; glyphBytes=64; }
+  else if(marker==0x08 || marker==0x09){ glyphWidth=32; glyphHeight=64; glyphBytes=256; }
   else {
+    const size_t payloadBytes=len-TEXT_GLOBAL_HEADER;
+    if(payloadBytes % requested != 0) {
 #if DEBUG_SERIAL
-    Serial.print("TEXT unsupported glyph marker 0x"); Serial.println(marker,HEX);
+      Serial.print("TEXT unsupported glyph marker 0x"); Serial.println(marker,HEX);
 #endif
-    return false;
+      return false;
+    }
+    const size_t inferredRecordBytes=payloadBytes/requested;
+    if(inferredRecordBytes<TEXT_GLYPH_META) return false;
+    const size_t inferredGlyphBytes=inferredRecordBytes-TEXT_GLYPH_META;
+    if(inferredGlyphBytes==16){ glyphWidth=8; glyphHeight=16; glyphBytes=16; }
+    else if(inferredGlyphBytes==64){ glyphWidth=16; glyphHeight=32; glyphBytes=64; }
+    else if(inferredGlyphBytes==256){ glyphWidth=32; glyphHeight=64; glyphBytes=256; }
+    else {
+#if DEBUG_SERIAL
+      Serial.print("TEXT unsupported glyph marker 0x"); Serial.print(marker,HEX);
+      Serial.print(" recordBytes="); Serial.println(inferredRecordBytes);
+#endif
+      return false;
+    }
   }
-  const size_t recordBytes=TEXT_GLYPH_META+glyphBytes;
+  const size_t recordBytes=TEXT_GLYPH_META+(size_t)glyphBytes;
   const size_t need=TEXT_GLOBAL_HEADER+(size_t)requested*recordBytes;
   if(len<need) return false;
 
@@ -2131,6 +2518,13 @@ void parseTextPayload(const uint8_t *data,size_t len) {
 // ======================================================
 // LIGHT EFFECTS
 // ======================================================
+// Band-based effects were originally tuned on the 16x16 profile. Preserve
+// their apparent geometry on larger logical displays by scaling band widths
+// with the logical iDotMatrix resolution: 16x16=1x, 32x32=2x, 64x64=4x.
+static inline uint8_t effectBandScale(){
+  return (MATRIX_WIDTH >= 64) ? 4 : ((MATRIX_WIDTH >= 32) ? 2 : 1);
+}
+
 uint8_t effectChannelTo8(uint8_t v){ return v>=127 ? 255 : v*2; }
 CRGB getEffectColor(uint8_t i){ if(!effectState.colorCount) return CRGB::White; return effectState.colors[i%effectState.colorCount]; }
 
@@ -2202,7 +2596,7 @@ void renderEffect3(){
   uint32_t raw=effectPhase()/10;
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
-  const uint8_t stripeWidth=4;
+  const uint8_t stripeWidth=(uint8_t)(4U*effectBandScale());
   for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++)
     framebuffer[logicalIndex(x,y)]=getEffectColor(((x+ph)/stripeWidth)%count);
 }
@@ -2212,7 +2606,7 @@ void renderEffect4(){
   uint32_t raw=effectPhase()/10;
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
-  const uint8_t stripeWidth=4;
+  const uint8_t stripeWidth=(uint8_t)(4U*effectBandScale());
   for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++)
     framebuffer[logicalIndex(x,y)]=getEffectColor(((x+y+ph)/stripeWidth)%count);
 }
@@ -2222,7 +2616,10 @@ void renderEffect5(){
   uint32_t raw=effectPhase()/11;
   uint32_t ph=(raw/2)*2;
   uint8_t count=max((uint8_t)1,effectState.colorCount);
-  const uint8_t colorWidth=5, blackWidth=4, block=colorWidth+blackWidth;
+  const uint8_t scale=effectBandScale();
+  const uint8_t colorWidth=(uint8_t)(5U*scale);
+  const uint8_t blackWidth=(uint8_t)(4U*scale);
+  const uint8_t block=(uint8_t)(colorWidth+blackWidth);
   for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
     uint16_t d=x+y+ph; uint8_t within=d%block;
     if(within<colorWidth) putPixel(x,y,getEffectColor((d/block)%count));
@@ -2329,6 +2726,7 @@ void stopGIFPlayback(){
   destroyGIFDecoder();
   gifEventPlaybackFileActive=false;
   gifCarouselPlaybackFileActive=false;
+  gifPresetPlaybackFileActive=false;
   if(removeEventFile && littleFsReady) LittleFS.remove(EVENT_GIF_PLAY_FILE);
 }
 void freeGIF(){
@@ -2439,22 +2837,26 @@ bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
 }
 
 bool startGIF(){
+  if(presetActive) stopPresetPlayback();
   carouselActive=false;
   carouselActiveSlot=-1;
   carouselStartPending=false;
   carouselEnterRequested=false;
   carouselUploadOpen=false;
   carouselUploadBlackout=false;
+  endCarouselTransferIndicator();
   return startGIFFile(GIF_PLAY_FILE,false,false);
 }
 
 bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uint32_t expectedCRC){
+  if(presetActive) stopPresetPlayback();
   carouselActive=false;
   carouselActiveSlot=-1;
   carouselStartPending=false;
   carouselEnterRequested=false;
   carouselUploadOpen=false;
   carouselUploadBlackout=false;
+  endCarouselTransferIndicator();
   if(!littleFsReady || !expectedSize) return false;
   File src=LittleFS.open(sourcePath,"r");
   if(!src || (uint32_t)src.size()!=expectedSize){ if(src) src.close(); return false; }
@@ -2687,6 +3089,7 @@ int8_t nextCarouselSlot(int8_t current) {
 }
 
 bool startCarouselSlot(uint8_t slot) {
+  if(presetActive) stopPresetPlayback();
   if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT) return false;
   carouselActive=false;
   carouselActiveSlot=-1;
@@ -2736,6 +3139,7 @@ void updateCarousel(uint32_t now) {
      (uint32_t)(now-carouselLastAssetCommitAt)>=CAROUSEL_UPLOAD_SETTLE_MS){
     carouselUploadOpen=false;
     carouselUploadBlackout=false;
+    endCarouselTransferIndicator();
     bool canStart=carouselEnterRequested && nextCarouselSlot(-1)>=0;
     if(canStart) carouselStartPending=true;
     else refreshMatrix(); // restore the preserved framebuffer if Assets view is not active
@@ -2831,6 +3235,8 @@ bool handleCarouselCommand(const uint8_t *data, size_t len) {
     carouselStartPending=false;
     carouselUploadOpen=true;
     carouselUploadBlackout=true;
+    carouselUploadCompletedMask=0;
+    endCarouselTransferIndicator();
     carouselLastAssetCommitAt=0;
     carouselOrderCount=count;
     for(uint8_t i=0;i<count;i++) carouselOrder[i]=data[5+i];
@@ -2873,15 +3279,228 @@ bool handleCarouselCommand(const uint8_t *data, size_t len) {
 }
 
 // ======================================================
+// PRESET / DEFAULT volatile bank
+// ======================================================
+String presetFileName(uint8_t localSlot, uint8_t dataType) {
+  return String("/pre") + localSlot + (dataType==3 ? ".txt" : ".gif");
+}
+String presetTempFileName(uint8_t localSlot) { return String("/pre") + localSlot + ".tmp"; }
+
+void clearPresetSlot(uint8_t localSlot) {
+  if(localSlot>=PRESET_SLOT_COUNT) return;
+  if(littleFsReady){
+    LittleFS.remove(presetTempFileName(localSlot));
+    LittleFS.remove(presetFileName(localSlot,1));
+    LittleFS.remove(presetFileName(localSlot,3));
+  }
+  presetSlots[localSlot]=PresetSlotMeta();
+}
+
+void clearPresetBank(bool removeFiles) {
+  presetActive=false;
+  presetActiveSlot=-1;
+  presetOrderCount=0;
+  presetSlotHoldMs=PRESET_DWELL_MS;
+  gifPresetPlaybackFileActive=false;
+  for(uint8_t i=0;i<PRESET_SLOT_COUNT;i++){
+    presetOrder[i]=0;
+    if(removeFiles) clearPresetSlot(i);
+    else presetSlots[i]=PresetSlotMeta();
+  }
+}
+
+void stopPresetPlayback() {
+  const bool hadGif=gifPresetPlaybackFileActive;
+  presetActive=false;
+  presetActiveSlot=-1;
+  presetSlotHoldMs=PRESET_DWELL_MS;
+  gifPresetPlaybackFileActive=false;
+  if(hadGif) stopGIFPlayback();
+  if(displayMode==DISPLAY_GIF || displayMode==DISPLAY_TEXT) displayMode=DISPLAY_RAW;
+}
+
+bool commitPresetSlot(uint8_t localSlot, uint8_t dataType, uint16_t timeSign, uint32_t size, uint32_t crc) {
+  if(!littleFsReady || localSlot>=PRESET_SLOT_COUNT || !size || (dataType!=1 && dataType!=3)) return false;
+  String tmp=presetTempFileName(localSlot);
+  if(!fileMatchesMedia(tmp,size,crc)) return false;
+
+  // Never replace the file currently being decoded/rendered.
+  if(presetActive && presetActiveSlot==(int8_t)localSlot) stopPresetPlayback();
+
+  String dst=presetFileName(localSlot,dataType);
+  LittleFS.remove(dst);
+  if(!LittleFS.rename(tmp,dst)) return false;
+  LittleFS.remove(presetFileName(localSlot,dataType==1 ? 3 : 1));
+
+  PresetSlotMeta &m=presetSlots[localSlot];
+  m.configured=1;
+  m.dataType=dataType;
+  m.timeSign=timeSign;
+  m.mediaSize=size;
+  m.mediaCRC=crc;
+#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
+  Serial.print("PRESET STORE slot="); Serial.print((unsigned)(PRESET_SLOT_BASE+localSlot));
+  Serial.print(" type="); Serial.print(dataType==3 ? "TEXT" : "GIF");
+  Serial.print(" timeSign="); Serial.print(timeSign);
+  Serial.print(" bytes="); Serial.println(size);
+#endif
+  return true;
+}
+
+int8_t nextPresetSlot(int8_t currentLocal) {
+  if(!littleFsReady || !presetOrderCount) return -1;
+  int start=-1;
+  for(uint8_t i=0;i<presetOrderCount;i++) if((int8_t)presetOrder[i]==currentLocal){ start=i; break; }
+  for(uint8_t step=1;step<=presetOrderCount;step++){
+    uint8_t pos=(uint8_t)((start<0 ? step-1 : start+step)%presetOrderCount);
+    uint8_t local=presetOrder[pos];
+    if(local>=PRESET_SLOT_COUNT) continue;
+    const PresetSlotMeta &m=presetSlots[local];
+    if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) continue;
+    String path=presetFileName(local,m.dataType);
+    if(fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return (int8_t)local;
+  }
+  return -1;
+}
+
+uint32_t presetTextHoldDurationMs() {
+  if(!textState.valid || !textState.glyphCount) return PRESET_DWELL_MS;
+
+  const uint8_t motion=textState.motionEffect;
+  const uint8_t capacity=textVisibleGlyphCapacity();
+  const uint16_t pages=(capacity>0)
+      ? (uint16_t)((textState.glyphCount + capacity - 1U) / capacity)
+      : 1U;
+
+  // LEFT/RIGHT are true continuous scroll modes. The original display advances
+  // the Preset as soon as the final glyph has completely left the matrix.
+  if(motion==1 || motion==2){
+    const uint32_t textWidth=(uint32_t)textState.glyphCount * textState.glyphAdvance;
+    const uint32_t travel=(uint32_t)MATRIX_WIDTH + textWidth + 1U;
+    return max((uint32_t)textFrameInterval(), travel * (uint32_t)textFrameInterval());
+  }
+
+  // PIN and the page/viewport based modes must show every page once, then keep
+  // the final page visible for the same ~3 s tail observed on original hardware.
+  if(motion==3 || motion==4){
+    const uint32_t pageTravel=(uint32_t)textState.glyphHeight + 1U;
+    const uint32_t perPage=pageTravel * (uint32_t)textFrameInterval();
+    return (pages>1U ? (uint32_t)(pages-1U)*perPage : 0U) + PRESET_DWELL_MS;
+  }
+
+  return (pages>1U ? (uint32_t)(pages-1U)*(uint32_t)textPageInterval() : 0U)
+       + PRESET_DWELL_MS;
+}
+
+bool startPresetSlot(uint8_t localSlot) {
+  if(!littleFsReady || localSlot>=PRESET_SLOT_COUNT) return false;
+  PresetSlotMeta &m=presetSlots[localSlot];
+  if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) return false;
+  String path=presetFileName(localSlot,m.dataType);
+  if(!fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return false;
+
+  if(carouselActive || gifCarouselPlaybackFileActive || carouselStartPending) stopCarouselPlayback();
+  stopGIFPlayback();
+  gifPresetPlaybackFileActive=false;
+
+  bool started=false;
+  if(m.dataType==1){
+    gifSize=m.mediaSize;
+    started=startGIFFile(path.c_str(),false,false);
+    if(started) gifPresetPlaybackFileActive=true;
+    else { gifSize=0; gifStoredOnFS=false; }
+  } else {
+    if(m.mediaSize<=MAX_TEXT_PAYLOAD){
+      File f=LittleFS.open(path,"r");
+      if(f && (uint32_t)f.size()==m.mediaSize){
+        size_t got=f.read(textPayload,m.mediaSize);
+        f.close();
+        if(got==m.mediaSize) started=parseTextPayloadInternal(textPayload,got,true);
+      } else if(f) f.close();
+    }
+  }
+  if(!started) return false;
+
+  presetActive=true;
+  presetActiveSlot=(int8_t)localSlot;
+  presetSlotStartedAt=millis();
+  presetSlotHoldMs=(m.dataType==3) ? presetTextHoldDurationMs() : PRESET_DWELL_MS;
+#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
+  Serial.print("PRESET PLAY slot="); Serial.print((unsigned)(PRESET_SLOT_BASE+localSlot));
+  Serial.print(" type="); Serial.print(m.dataType==3 ? "TEXT" : "GIF");
+  Serial.print(" holdMs="); Serial.print(presetSlotHoldMs);
+  if(m.dataType==3){
+    Serial.print(" motion="); Serial.print(textState.motionEffect);
+    Serial.print(" pages=");
+    const uint8_t cap=textVisibleGlyphCapacity();
+    Serial.print(cap ? (unsigned)((textState.glyphCount+cap-1U)/cap) : 1U);
+  }
+  Serial.println();
+#endif
+  return true;
+}
+
+void updatePreset(uint32_t now) {
+  if(!presetActive || presetActiveSlot<0 || presetOrderCount<=1) return;
+  if((uint32_t)(now-presetSlotStartedAt)<presetSlotHoldMs) return;
+  int8_t next=nextPresetSlot(presetActiveSlot);
+  if(next>=0 && next!=presetActiveSlot) startPresetSlot((uint8_t)next);
+  else presetSlotStartedAt=now;
+}
+
+bool handlePresetCommand(const uint8_t *data, size_t len) {
+  if(!data || len<5 || data[2]!=0x06 || data[3]!=0x02) return false;
+  uint16_t declared=(uint16_t)data[0] | ((uint16_t)data[1]<<8);
+  if(declared!=len) return false;
+  uint8_t count=data[4];
+  if(count>PRESET_SLOT_COUNT || len!=(size_t)(5U+count)) return false;
+
+  bool seen[PRESET_SLOT_COUNT]={false};
+  uint8_t localOrder[PRESET_SLOT_COUNT]={0};
+  for(uint8_t i=0;i<count;i++){
+    uint8_t deviceSlot=data[5+i];
+    if(deviceSlot<PRESET_SLOT_BASE || deviceSlot>=PRESET_SLOT_BASE+PRESET_SLOT_COUNT) return false;
+    uint8_t local=(uint8_t)(deviceSlot-PRESET_SLOT_BASE);
+    if(seen[local]) return false;
+    seen[local]=true;
+    localOrder[i]=local;
+  }
+
+#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
+  Serial.print("PRESET ACT count="); Serial.print(count); Serial.print(" slots=");
+  for(uint8_t i=0;i<count;i++){ if(i) Serial.print(','); Serial.print(data[5+i]); }
+  Serial.println();
+#endif
+
+  stopPresetPlayback();
+  presetOrderCount=count;
+  for(uint8_t i=0;i<count;i++) presetOrder[i]=localOrder[i];
+  for(uint8_t i=count;i<PRESET_SLOT_COUNT;i++) presetOrder[i]=0;
+
+  if(count){
+    int8_t first=nextPresetSlot(-1);
+    if(first>=0) startPresetSlot((uint8_t)first);
+#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
+    else Serial.println("PRESET ACT: no valid uploaded slots");
+#endif
+  }
+  sendCommandAck(0x06,0x02);
+  return true;
+}
+
+// ======================================================
 // BULK
 // ======================================================
 bool startsWithGIF(const uint8_t *data,size_t len){ return len>=6 && (!memcmp(data,"GIF87a",6)||!memcmp(data,"GIF89a",6)); }
 void resetBulkTransfer(bool removePartialGif=false){
   int8_t rxSlot=bulk.gifRxSlot;
+  const bool abortedCarouselTransfer=removePartialGif && bulk.carouselToFS;
   if(gifBulkFile) gifBulkFile.close();
   if(littleFsReady && removePartialGif){
     if(bulk.carouselToFS && bulk.carouselLocalSlot>=0 && bulk.carouselLocalSlot<CAROUSEL_SLOT_COUNT){
       LittleFS.remove(carouselTempFileName((uint8_t)bulk.carouselLocalSlot));
+    } else if(bulk.presetToFS && bulk.presetLocalSlot>=0 && bulk.presetLocalSlot<PRESET_SLOT_COUNT){
+      LittleFS.remove(presetTempFileName((uint8_t)bulk.presetLocalSlot));
     } else if(rxSlot>=0 && rxSlot<=1){
       // Never remove a completed file already queued for deferred playback.
       if(!(pendingGifStart && pendingGifSlot==rxSlot)) LittleFS.remove(GIF_RX_FILES[(uint8_t)rxSlot]);
@@ -2892,6 +3511,7 @@ void resetBulkTransfer(bool removePartialGif=false){
   textPayloadReceived=0;
   if(rawRgbData){ free(rawRgbData); rawRgbData=nullptr; }
   rawRgbWriteOffset=0;
+  if(abortedCarouselTransfer) endCarouselTransferIndicator();
 }
 
 void expireStalledTransfers(uint32_t now){
@@ -2919,6 +3539,17 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   uint32_t crc=(uint32_t)data[9]|((uint32_t)data[10]<<8)|((uint32_t)data[11]<<16)|((uint32_t)data[12]<<24);
   uint16_t timeSign=(uint16_t)data[13]|((uint16_t)data[14]<<8);
   uint8_t imageIndex=data[15];
+  const bool presetTraceSlot=(imageIndex>=0x0E && imageIndex<=0x13);
+#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
+  if((type==1 || type==3) && presetTraceSlot){
+    Serial.print("PRESET BULK HDR type="); Serial.print(type);
+    Serial.print(" slot="); Serial.print(imageIndex);
+    Serial.print(" timeSign="); Serial.print(timeSign);
+    Serial.print(" total="); Serial.print(total);
+    Serial.print(" crc=0x"); Serial.println(crc,HEX);
+    Serial.print("PRESET BULK RAW [16]: "); dumpHex(data,16);
+  }
+#endif
   if(!total || total>10UL*1024UL*1024UL) return false;
   if(type==3 && total>MAX_TEXT_PAYLOAD){
 #if DEBUG_SERIAL
@@ -2943,7 +3574,42 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     if(type==1 || type==3){ Serial.print(" timeSign="); Serial.print(timeSign); Serial.print(" imageIndex="); Serial.print(imageIndex); }
     Serial.print(" format="); Serial.println(bulk.format.length() ? bulk.format : "UNKNOWN");
 #endif
-    if(type==3 && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT){
+    if((type==1 || type==3) && presetTraceSlot){
+      // A new preset invocation re-sends the whole selected bank. Freeze the
+      // previous preset on its last framebuffer while replacement assets arrive
+      // so old/new files can never be mixed during a long multi-chunk upload.
+      if(presetActive) stopPresetPlayback();
+      if(!littleFsReady){
+#if DEBUG_SERIAL
+        Serial.println("PRESET BULK rejected: LittleFS unavailable");
+#endif
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
+      size_t fsTotal=LittleFS.totalBytes();
+      size_t fsUsed=LittleFS.usedBytes();
+      size_t fsFree=fsTotal>fsUsed ? fsTotal-fsUsed : 0;
+      if((uint64_t)total > (uint64_t)fsFree){
+#if DEBUG_SERIAL
+        Serial.print("PRESET BULK rejected: bytes="); Serial.print(total);
+        Serial.print(" LittleFS free="); Serial.println(fsFree);
+#endif
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
+      uint8_t localSlot=(uint8_t)(imageIndex-PRESET_SLOT_BASE);
+      bulk.presetLocalSlot=(int8_t)localSlot;
+      bulk.presetToFS=true;
+      String tmp=presetTempFileName(localSlot);
+      LittleFS.remove(tmp);
+      gifBulkFile=LittleFS.open(tmp,"w");
+      if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
+      gifRxWriteOffset=0;
+#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
+      Serial.print("PRESET RX BEGIN slot="); Serial.print(imageIndex);
+      Serial.print(" type="); Serial.print(type);
+      Serial.print(" timeSign="); Serial.println(timeSign);
+#endif
+    }
+    if(type==3 && !bulk.presetToFS && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT){
       if(!littleFsReady){
 #if DEBUG_SERIAL
         Serial.println("BULK TEXT carousel rejected: LittleFS unavailable");
@@ -2968,12 +3634,13 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
       bulk.carouselToFS=true;
       gifRxWriteOffset=0;
+      beginCarouselTransferIndicator(total,localSlot);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
       Serial.print("BULK TEXT STORAGE: CAROUSEL slot="); Serial.print(localSlot);
       Serial.print(" dwell="); Serial.println(timeSign);
 #endif
     }
-    if(type==1){
+    if(type==1 && !bulk.presetToFS){
       if(!littleFsReady){
 #if DEBUG_SERIAL
         Serial.println("BULK GIF rejected: LittleFS unavailable");
@@ -3004,6 +3671,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
         if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
         bulk.carouselToFS=true;
         gifRxWriteOffset=0;
+        beginCarouselTransferIndicator(total,localSlot);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
         Serial.print("BULK GIF STORAGE: CAROUSEL slot="); Serial.print(localSlot);
         Serial.print(" dwell="); Serial.println(timeSign);
@@ -3034,7 +3702,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   }
   bulkLastRxMs=millis();
   if(type!=bulk.dataType || total!=bulk.expectedSize || crc!=bulk.expectedCRC ||
-     ((type==1 || bulk.carouselToFS) && (timeSign!=bulk.timeSign || imageIndex!=bulk.imageIndex))){
+     ((type==1 || bulk.carouselToFS || bulk.presetToFS) && (timeSign!=bulk.timeSign || imageIndex!=bulk.imageIndex))){
 #if DEBUG_SERIAL
     Serial.println("BULK header mismatch; aborting transaction");
 #endif
@@ -3042,7 +3710,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
   }
   uint32_t remain=bulk.expectedSize-bulk.receivedSize; size_t useful=min((size_t)remain,payloadSize);
   bulk.runningCRC=crc32Update(bulk.runningCRC,payload,useful);
-  if(bulk.carouselToFS || (type==1 && bulk.gifToFS)){
+  if(bulk.carouselToFS || bulk.presetToFS || (type==1 && bulk.gifToFS)){
     size_t n=gifBulkFile ? gifBulkFile.write(payload,useful) : 0;
     gifRxWriteOffset+=n;
     if(n!=useful){
@@ -3056,11 +3724,12 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     ::memcpy(rawRgbData+rawRgbWriteOffset,payload,useful);
     rawRgbWriteOffset+=useful;
   }
-  if(type==3 && !bulk.carouselToFS){
+  if(type==3 && !bulk.carouselToFS && !bulk.presetToFS){
     size_t off=bulk.receivedSize;
     if(off<MAX_TEXT_PAYLOAD){ size_t cp=min(useful,(size_t)MAX_TEXT_PAYLOAD-off); ::memcpy(textPayload+off,payload,cp); textPayloadReceived=off+cp; }
   }
   bulk.receivedSize+=useful; bulk.chunkCount++;
+  if(bulk.carouselToFS) updateCarouselTransferIndicatorProgress(bulk.receivedSize,bulk.expectedSize);
   if(bulk.receivedSize>=bulk.expectedSize){
     bool ok=((bulk.runningCRC^0xFFFFFFFF)==bulk.expectedCRC);
 #if DEBUG_SERIAL && TEXT_PROTOCOL_DEBUG
@@ -3076,8 +3745,26 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       bool stored=ok && localSlot<CAROUSEL_SLOT_COUNT && gifRxWriteOffset==bulk.expectedSize &&
                   commitCarouselSlot(localSlot,type,bulk.timeSign,bulk.expectedSize,bulk.expectedCRC);
       if(!stored && localSlot<CAROUSEL_SLOT_COUNT) LittleFS.remove(carouselTempFileName(localSlot));
+      if(stored && localSlot<CAROUSEL_SLOT_COUNT) carouselUploadCompletedMask |= (uint16_t)(1U<<localSlot);
+      ok=ok && stored;
+    } else if(bulk.presetToFS){
+      if(gifBulkFile){ gifBulkFile.flush(); gifBulkFile.close(); }
+      uint8_t localSlot=(bulk.presetLocalSlot>=0) ? (uint8_t)bulk.presetLocalSlot : 0xFF;
+      bool stored=ok && localSlot<PRESET_SLOT_COUNT && gifRxWriteOffset==bulk.expectedSize &&
+                  commitPresetSlot(localSlot,type,bulk.timeSign,bulk.expectedSize,bulk.expectedCRC);
+      if(!stored && localSlot<PRESET_SLOT_COUNT) LittleFS.remove(presetTempFileName(localSlot));
       ok=ok && stored;
     } else {
+#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
+      if(type==3 && ok && textPayloadReceived && presetTraceSlot){
+        const size_t h=min(textPayloadReceived,(size_t)TEXT_GLOBAL_HEADER);
+        Serial.print("PRESET TEXT GLOBAL ["); Serial.print(h); Serial.print("]: "); dumpHex(textPayload,h);
+        if(textPayloadReceived>TEXT_GLOBAL_HEADER){
+          const size_t m=min(textPayloadReceived-(size_t)TEXT_GLOBAL_HEADER,(size_t)TEXT_GLYPH_META);
+          Serial.print("PRESET TEXT META0 ["); Serial.print(m); Serial.print("]: "); dumpHex(textPayload+TEXT_GLOBAL_HEADER,m);
+        }
+      }
+#endif
       if(type==3 && ok && textPayloadReceived) parseTextPayload(textPayload,textPayloadReceived);
       if(type==1){
         if(gifBulkFile){ gifBulkFile.flush(); gifBulkFile.close(); }
@@ -3114,6 +3801,10 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       Serial.print(" storage=CAROUSEL slot="); Serial.print((int)bulk.carouselLocalSlot);
       Serial.print(" type="); Serial.print(type==3 ? "TEXT" : "GIF");
       Serial.print(" dwell="); Serial.print(bulk.timeSign);
+    } else if(bulk.presetToFS){
+      Serial.print(" storage=PRESET slot="); Serial.print((int)(PRESET_SLOT_BASE+bulk.presetLocalSlot));
+      Serial.print(" type="); Serial.print(type==3 ? "TEXT" : "GIF");
+      Serial.print(" timeSign="); Serial.print(bulk.timeSign);
     } else if(type==1){
       Serial.print(" storage=LittleFS-RX"); Serial.print(" slot="); Serial.print((int)bulk.gifRxSlot); Serial.print(" imageIndex="); Serial.print(bulk.imageIndex);
     }
@@ -3545,7 +4236,23 @@ void processFA02Packet(const uint8_t *data,size_t len){
     sendCommandAck(0x01,0x80); return;
   }
 
-  if(len==5 && cmd==0x07 && sub==0x01){ screenOn=data[4]!=0; setStatusLed(screenOn); refreshMatrix(); sendCommandAck(cmd,sub); return; }
+  if(len==5 && cmd==0x07 && sub==0x01){
+    const bool wasOn=screenOn;
+    screenOn=data[4]!=0;
+#if APP_POWER_VERSION_SPLASH
+    if(screenOn && !wasOn){
+      versionSplashActive=true;
+      versionSplashUntil=millis()+VERSION_SPLASH_MS;
+#if DEBUG_SERIAL
+      Serial.print("VERSION SPLASH R"); Serial.print(FW_RELEASE_MAJOR); Serial.print('.'); Serial.print(FW_RELEASE_MINOR);
+      Serial.print(" B"); Serial.println(FW_BUILD);
+#endif
+    } else if(!screenOn){
+      versionSplashActive=false;
+    }
+#endif
+    setStatusLed(screenOn); refreshMatrix(); sendCommandAck(cmd,sub); return;
+  }
   if(len==5 && cmd==0x06 && sub==0x80){ flipped180=data[4]!=0; refreshMatrix(); sendCommandAck(cmd,sub); return; }
 
   if(len==10 && cmd==0x02 && sub==0x80){
@@ -3634,6 +4341,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
 
   if (handleCarouselCommand(data, len)) return;
   if (handleScheduleCommand(data, len)) return;
+  if (handlePresetCommand(data, len)) return;
 
   // Unknown command: always latch it for the OLED, even when Serial debug is off.
   unknownCommandActive = true;
@@ -3653,52 +4361,69 @@ void processFA02Packet(const uint8_t *data,size_t len){
 // ======================================================
 // Caller must hold runtimeStateMutex: this function mutates reassembly, Bulk and renderer state.
 void processFA02Write(const uint8_t *data, size_t len) {
-  uint32_t now=millis();
-#if IOS_HANDSHAKE_DIAG
-  if (deviceConnected) {
-    static uint32_t iosDiagLastSummaryAt=0;
-    if ((uint32_t)(now-iosDiagLastSummaryAt) >= 2000UL) {
-      iosDiagLastSummaryAt=now;
-      Serial.print("[IOSDIAG +"); Serial.print(now-iosDiagConnectAt); Serial.print("ms] summary");
-      Serial.print(" FA02_RX="); Serial.print(iosDiagFa02Writes);
-      Serial.print(" AE01_RX="); Serial.print(iosDiagAe01Writes);
-      Serial.print(" FA03_TX="); Serial.print(iosDiagFa03Tx);
-      Serial.print(" FA03_READ="); Serial.print(iosDiagFa03Reads);
-      Serial.print(" FA03_CCCD_W="); Serial.print(iosDiagFa03CccdWrites);
-      Serial.print(" AE02_CCCD_W="); Serial.print(iosDiagAe02CccdWrites);
-      Serial.print(" heap="); Serial.println(ESP.getFreeHeap());
-    }
-  }
-#endif
+  if(!data || !len) return;
+  const uint32_t now=millis();
   expireStalledTransfers(now);
-  // Any fragment arriving while a Bulk transaction is active proves the BLE
-  // link is making progress toward the next reconstructed logical packet.
   if(bulk.active) bulkLastRxMs=now;
-  if(packetReceived==0){
-    if(len<2) return;
-    packetExpected=(uint16_t)data[0]|((uint16_t)data[1]<<8);
-    if(packetExpected<2||packetExpected>MAX_PACKET_SIZE){ packetExpected=packetReceived=0; packetLastRxMs=0; resetBulkTransfer(true); return; }
-  }
-  packetLastRxMs=now;
-  if(packetReceived+len>MAX_PACKET_SIZE){ packetExpected=packetReceived=0; packetLastRxMs=0; resetBulkTransfer(true); return; }
-  ::memcpy(packetBuffer+packetReceived,data,len); packetReceived+=len;
-  if(packetReceived>=packetExpected){
+
+  // A single ATT write can complete one logical packet and already contain
+  // bytes from the next one. Consume the write in bounded slices instead of
+  // discarding trailing bytes. Also preserve a split two-byte length header.
+  size_t offset=0;
+  while(offset<len){
+    if(packetReceived<2){
+      const size_t needHeader=2U-packetReceived;
+      const size_t available=len-offset;
+      const size_t take=needHeader<available?needHeader:available;
+      ::memcpy(packetBuffer+packetReceived,data+offset,take);
+      packetReceived+=take;
+      offset+=take;
+      packetLastRxMs=now;
+      if(packetReceived<2) return;
+
+      packetExpected=(uint16_t)packetBuffer[0]|((uint16_t)packetBuffer[1]<<8);
+      if(packetExpected<2||packetExpected>MAX_PACKET_SIZE){
+#if DEBUG_SERIAL
+        Serial.print("PACKET RX invalid declared length="); Serial.println(packetExpected);
+#endif
+        packetExpected=packetReceived=0; packetLastRxMs=0; resetBulkTransfer(true); return;
+      }
+    }
+
+    const size_t needed=(size_t)packetExpected-packetReceived;
+    const size_t available=len-offset;
+    const size_t take=needed<available?needed:available;
+    if(packetReceived+take>MAX_PACKET_SIZE){
+      packetExpected=packetReceived=0; packetLastRxMs=0; resetBulkTransfer(true); return;
+    }
+    if(take){
+      ::memcpy(packetBuffer+packetReceived,data+offset,take);
+      packetReceived+=take;
+      offset+=take;
+      packetLastRxMs=now;
+    }
+
+#if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
+    if(bulk.active || packetExpected>=512){
+      Serial.print("[RXASM] write="); Serial.print(len);
+      Serial.print(" consumed="); Serial.print(offset);
+      Serial.print(" packet="); Serial.print(packetReceived);
+      Serial.print('/'); Serial.println(packetExpected);
+    }
+#endif
+
+    if(packetReceived<packetExpected) return;
+
     processFA02Packet(packetBuffer,packetExpected);
     packetReceived=packetExpected=0;
     packetLastRxMs=0;
+    // Continue if this ATT write already contains the next logical packet.
   }
 }
 
 class FA02Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
     String value=c->getValue(); if(!value.length()) return;
-#if IOS_HANDSHAKE_DIAG
-    ++iosDiagFa02Writes;
-    Serial.print("[IOSDIAG +");
-    Serial.print(millis() - iosDiagConnectAt);
-    Serial.print("ms] ");
-    iosDiagPrintHex("FA02 RX", (const uint8_t*)value.c_str(), value.length());
-#endif
     if(!lockRuntimeState()) return;
     processFA02Write((const uint8_t*)value.c_str(),value.length());
     unlockRuntimeState();
@@ -3707,79 +4432,29 @@ class FA02Callbacks : public BLECharacteristicCallbacks {
 
 class AE01Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
-    String v=c->getValue(); if(!v.length()) return;
-#if IOS_HANDSHAKE_DIAG
-    ++iosDiagAe01Writes;
-    Serial.print("[IOSDIAG +");
-    Serial.print(millis() - iosDiagConnectAt);
-    Serial.print("ms] ");
-    iosDiagPrintHex("AE01 RX", (const uint8_t*)v.c_str(), v.length());
-#elif DEBUG_SERIAL
-    Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
+#if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
+    String v=c->getValue(); if(!v.length()) return; Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
 #endif
   }
 };
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer*) override {
-#if IOS_HANDSHAKE_DIAG
-    iosDiagConnectAt=millis();
-    iosDiagFa02Writes=0;
-    iosDiagAe01Writes=0;
-    iosDiagFa03Tx=0;
-    iosDiagAe02Tx=0;
-    iosDiagFa03Reads=0;
-    iosDiagAe02Reads=0;
-    iosDiagFa03CccdReads=0;
-    iosDiagFa03CccdWrites=0;
-    iosDiagAe02CccdReads=0;
-    iosDiagAe02CccdWrites=0;
-    iosDiagFa03NotifyStatus=0;
-    iosDiagAe02NotifyStatus=0;
-    Serial.println();
-    Serial.println("[IOSDIAG] ===== BLE CONNECT =====");
-    Serial.print("[IOSDIAG] release="); Serial.print(FW_RELEASE);
-    Serial.print(" build="); Serial.print(FW_BUILD);
-    Serial.print(" screenType=0x"); Serial.println(IDOTMATRIX_SCREEN_TYPE, HEX);
-#elif PNG_DIAG_SERIAL
+#if PNG_DIAG_SERIAL
     Serial.println("BLE C");
 #endif
     if(!lockRuntimeState()) return;
     deviceConnected=true;
-    screenOn=true;
-    setStatusLed(true);
-    refreshMatrix();
+    // BLE connection must not change display power/state. The boot policy or
+    // the latest app command remains authoritative, avoiding ON+black state.
     triggerConnectionBuzzer();
     pendingAdvertisingRestart=false;
-#if IOS_SUPPRESS_UNSOLICITED_DEVICE_INFO
-    // BUILD 122 controlled A/B test: do not send Device Info spontaneously.
-    // If the app explicitly requests Device Info through the normal protocol,
-    // that request is still handled normally.
-    pendingDeviceInfoPush=false;
-#if IOS_HANDSHAKE_DIAG
-    Serial.println("[IOSDIAG] unsolicited Device Info push=SUPPRESSED (BUILD 122 experiment)");
-#endif
-#else
     pendingDeviceInfoPush=true;
     deviceInfoPushAt=millis()+1200;
-#endif
     unlockRuntimeState();
   }
   void onDisconnect(BLEServer*) override {
-#if IOS_HANDSHAKE_DIAG
-    Serial.println("[IOSDIAG] ===== BLE DISCONNECT =====");
-    Serial.print("[IOSDIAG] session_ms="); Serial.print(millis() - iosDiagConnectAt);
-    Serial.print(" FA02_RX="); Serial.print(iosDiagFa02Writes);
-    Serial.print(" AE01_RX="); Serial.print(iosDiagAe01Writes);
-    Serial.print(" FA03_TX="); Serial.print(iosDiagFa03Tx);
-    Serial.print(" AE02_TX="); Serial.print(iosDiagAe02Tx);
-    Serial.print(" FA03_READ="); Serial.print(iosDiagFa03Reads);
-    Serial.print(" AE02_READ="); Serial.print(iosDiagAe02Reads);
-    Serial.print(" FA03_CCCD_W="); Serial.print(iosDiagFa03CccdWrites);
-    Serial.print(" AE02_CCCD_W="); Serial.print(iosDiagAe02CccdWrites);
-    Serial.print(" FA03_STATUS="); Serial.print(iosDiagFa03NotifyStatus);
-    Serial.print(" AE02_STATUS="); Serial.println(iosDiagAe02NotifyStatus);
-#elif PNG_DIAG_SERIAL
+#if PNG_DIAG_SERIAL
     Serial.println("BLE D");
 #endif
     if(!lockRuntimeState()) return;
@@ -3798,17 +4473,6 @@ class ServerCallbacks : public BLEServerCallbacks {
 // ======================================================
 // OTA
 // ======================================================
-#if OTA_ENABLED
-void setupOTA(){
-  WiFi.mode(WIFI_STA); WiFi.setSleep(false); WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
-  uint32_t t0=millis(); while(WiFi.status()!=WL_CONNECTED && millis()-t0<15000) delay(250);
-  if(WiFi.status()!=WL_CONNECTED){WiFi.disconnect(true);WiFi.mode(WIFI_OFF);return;}
-  if(ESP.getFreeHeap()<25000){WiFi.disconnect(true);WiFi.mode(WIFI_OFF);return;}
-  ArduinoOTA.setHostname(OTA_HOSTNAME); ArduinoOTA.setPassword(OTA_PASSWORD);
-  ArduinoOTA.onStart([](){otaRunning=true;}); ArduinoOTA.onEnd([](){otaRunning=false;}); ArduinoOTA.onError([](ota_error_t){otaRunning=false;});
-  ArduinoOTA.begin(); otaReady=true;
-}
-#endif
 
 // ======================================================
 // RESET RUNTIME
@@ -3849,7 +4513,7 @@ void resetRuntimeState(){
 // PROGRAM / SCHEDULE
 // The app stores the Programs; the device stores only the active Schedule.
 // 07 80 -> global state (bit0 enabled, bit1 sound), ACK=01
-// 05 80 -> complete activity, ACK=03
+// 05 80 -> activity media chunk: ACK=01 while incomplete, ACK=03 on final CRC-valid chunk
 // A new list is received in staging and committed after a short timeout.
 // -----------------------------------------------------------------------------
 struct ScheduleActivity {
@@ -3881,6 +4545,40 @@ DisplayMode schedulePreviousMode = DISPLAY_CLOCK;
 bool schedulePreviousCarousel = false;
 int8_t schedulePreviousCarouselSlot = -1;
 CRGB *scheduleSavedFrame = nullptr;
+
+// BUILD 136: hardware logs decoded the byte that appeared to change the
+// Schedule media type from 1 to 513. The field at offset 10 is the one-byte
+// content type. Offset 11 is a per-chunk marker: observed 0x00 on the first
+// chunk and 0x02 on continuation chunks. It is framing metadata, not part of
+// contentType and therefore must never reset staging. The complete media object
+// remains identified by contentType + mediaSize + mediaCRC.
+struct ScheduleMediaUploadState {
+  bool active = false;
+  ScheduleActivity candidate;
+  uint32_t received = 0;
+  uint32_t runningCRC = 0xFFFFFFFFUL;
+  uint32_t lastChunkAt = 0;
+};
+
+ScheduleMediaUploadState scheduleMediaUploads[SCHEDULE_MAX_ACTIVITIES];
+
+bool scheduleMediaObjectMatches(const ScheduleActivity &a, const ScheduleActivity &b) {
+  // For a multi-packet activity the media object itself is identified by type,
+  // declared complete size and complete-object CRC. BUILD 134 proved that one
+  // or more ancillary header fields can change between chunks, so they must
+  // not be used to decide whether the payload is a continuation.
+  return a.contentType == b.contentType &&
+         a.mediaSize == b.mediaSize &&
+         a.mediaCRC == b.mediaCRC;
+}
+
+bool scheduleActivityHeaderMetadataMatches(const ScheduleActivity &a, const ScheduleActivity &b) {
+  return a.flags == b.flags &&
+         a.startHour == b.startHour && a.startMinute == b.startMinute &&
+         a.endHour == b.endHour && a.endMinute == b.endMinute &&
+         a.reserved == b.reserved &&
+         a.mediaId == b.mediaId;
+}
 
 static inline uint16_t rd16le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -3978,22 +4676,62 @@ void loadSchedule() {
   Serial.print("SCH LOAD "); Serial.print(scheduleGlobalFlags, HEX); Serial.print("/"); Serial.println(count);
 }
 
-bool writeScheduleTemp(uint8_t idx, const uint8_t *payload, uint32_t size, uint32_t expectedCRC) {
-  if (!littleFsReady || idx >= SCHEDULE_MAX_ACTIVITIES || !payload || !size) return false;
-  uint32_t calc = crc32Update(0xFFFFFFFF, payload, size) ^ 0xFFFFFFFF;
-  if (calc != expectedCRC) {
+bool scheduleHasActiveMediaUpload() {
+  for (uint8_t i=0; i<SCHEDULE_MAX_ACTIVITIES; ++i)
+    if (scheduleMediaUploads[i].active) return true;
+  return false;
+}
 
-    Serial.print("SCH CRC FAIL i="); Serial.println(idx);
-    return false;
+void clearScheduleMediaUploadStates() {
+  for (uint8_t i=0; i<SCHEDULE_MAX_ACTIVITIES; ++i)
+    scheduleMediaUploads[i] = ScheduleMediaUploadState();
+}
+
+void resetScheduleMediaUpload(uint8_t idx, bool removeTemp) {
+  if (idx >= SCHEDULE_MAX_ACTIVITIES) return;
+  if (removeTemp && littleFsReady) LittleFS.remove(scheduleTempFileName(idx));
+  scheduleMediaUploads[idx] = ScheduleMediaUploadState();
+}
+
+void abortScheduleUploadTransaction(const char *reason) {
+#if DEBUG_SERIAL
+  if (reason) {
+    Serial.print("SCH UPLOAD ABORT reason="); Serial.println(reason);
   }
-  String tmp=scheduleTempFileName(idx);
-  LittleFS.remove(tmp);
-  File f = LittleFS.open(tmp, "w");
+#endif
+  if (littleFsReady) cleanupScheduleTempFiles();
+  clearScheduleMediaUploadStates();
+  for (uint8_t i=0; i<SCHEDULE_MAX_ACTIVITIES; ++i)
+    scheduleStaging[i] = ScheduleActivity();
+  scheduleReceivedMask = 0;
+  scheduleUploadOpen = false;
+  scheduleUploadDirty = false;
+}
+
+bool beginScheduleMediaUpload(uint8_t idx, const ScheduleActivity &candidate) {
+  if (!littleFsReady || idx >= SCHEDULE_MAX_ACTIVITIES || !candidate.mediaSize) return false;
+  resetScheduleMediaUpload(idx, true);
+  File f = LittleFS.open(scheduleTempFileName(idx), "w");
   if (!f) return false;
-  size_t wrote = f.write(payload, size);
   f.close();
-  if(wrote != size){ LittleFS.remove(tmp); return false; }
+  ScheduleMediaUploadState &u = scheduleMediaUploads[idx];
+  u.active = true;
+  u.candidate = candidate;
+  u.received = 0;
+  u.runningCRC = 0xFFFFFFFFUL;
+  u.lastChunkAt = millis();
   return true;
+}
+
+void updateScheduleMediaUploadTimeout() {
+  uint32_t now = millis();
+  for (uint8_t i=0; i<SCHEDULE_MAX_ACTIVITIES; ++i) {
+    const ScheduleMediaUploadState &u = scheduleMediaUploads[i];
+    if (u.active && (uint32_t)(now-u.lastChunkAt) > SCHEDULE_MEDIA_UPLOAD_TIMEOUT_MS) {
+      abortScheduleUploadTransaction("media timeout");
+      return;
+    }
+  }
 }
 
 void beginScheduleUpload(uint8_t flags) {
@@ -4003,6 +4741,7 @@ void beginScheduleUpload(uint8_t flags) {
   scheduleFailedIndex = -1;
   scheduleReceivedMask = 0;
   scheduleLastRxMs = millis();
+  clearScheduleMediaUploadStates();
   for (uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++) {
     recoverScheduleFile(i);
     scheduleStaging[i] = ScheduleActivity();
@@ -4044,6 +4783,9 @@ bool commitScheduleUpload() {
     scheduleUploadOpen = false;
     return false;
   }
+  // Never publish a partial list while one activity media object is still
+  // being assembled from multiple logical packets.
+  if (scheduleHasActiveMediaUpload()) return false;
 
   // Preflight every staged media file before touching the active Schedule.
   for(uint8_t i=0;i<SCHEDULE_MAX_ACTIVITIES;i++){
@@ -4055,6 +4797,7 @@ bool commitScheduleUpload() {
 #endif
       scheduleUploadOpen=false; scheduleUploadDirty=false;
       cleanupScheduleTransactionFiles();
+      clearScheduleMediaUploadStates();
       return false;
     }
   }
@@ -4084,6 +4827,7 @@ bool commitScheduleUpload() {
     bool rollbackOK=rollbackScheduleFilesystem(backedUpMask,promotedMask);
     scheduleUploadOpen=false; scheduleUploadDirty=false;
     cleanupScheduleTempFiles();
+    clearScheduleMediaUploadStates();
     if(rollbackOK) cleanupScheduleBackupFiles();
 #if DEBUG_SERIAL
     Serial.println("SCH COMMIT filesystem rollback");
@@ -4106,6 +4850,7 @@ bool commitScheduleUpload() {
     bool rollbackOK=rollbackScheduleFilesystem(backedUpMask,promotedMask);
     scheduleUploadOpen=false; scheduleUploadDirty=false;
     cleanupScheduleTempFiles();
+    clearScheduleMediaUploadStates();
     if(rollbackOK) cleanupScheduleBackupFiles();
 #if DEBUG_SERIAL
     Serial.println("SCH COMMIT preference rollback");
@@ -4124,6 +4869,7 @@ bool commitScheduleUpload() {
   scheduleUploadOpen=false;
   scheduleUploadDirty=false;
   scheduleFailedIndex=-1;
+  clearScheduleMediaUploadStates();
 
   Serial.print("SCH COMMIT "); Serial.println(scheduleReceivedMask, HEX);
   return true;
@@ -4361,6 +5107,7 @@ void startScheduleActivity(uint8_t idx) {
   if (idx >= SCHEDULE_MAX_ACTIVITIES || alarmActive) return;
   if (scheduleActiveIndex == idx) return;
   if (scheduleActiveIndex >= 0) stopScheduleActivity();
+  if(presetActive) stopPresetPlayback();
   schedulePreviousMode = displayMode;
   schedulePreviousCarousel = carouselActive || gifCarouselPlaybackFileActive;
   schedulePreviousCarouselSlot = carouselActiveSlot;
@@ -4369,7 +5116,12 @@ void startScheduleActivity(uint8_t idx) {
     scheduleActiveIndex = idx;
     scheduleFailedIndex = -1;
     if (scheduleGlobalFlags & 0x02) triggerScheduleStartBuzzer();
-
+#if DEBUG_SERIAL
+    Serial.print("SCH START i="); Serial.print(idx);
+    Serial.print(" type="); Serial.print(scheduleActivities[idx].contentType);
+    Serial.print(" window="); Serial.print(scheduleActivities[idx].startHour); Serial.print(':'); Serial.print(scheduleActivities[idx].startMinute);
+    Serial.print('-'); Serial.print(scheduleActivities[idx].endHour); Serial.print(':'); Serial.println(scheduleActivities[idx].endMinute);
+#endif
 #if PNG_DIAG_SERIAL
     Serial.print("S+"); Serial.println(idx);
 #endif
@@ -4377,6 +5129,10 @@ void startScheduleActivity(uint8_t idx) {
     // Importante: senza questo latch updateSchedule() ritenterebbe il decode
     // ad ogni giro di loop, saturando CPU/heap e facendo sembrare la scheda bloccata.
     scheduleFailedIndex = (int8_t)idx;
+#if DEBUG_SERIAL
+    Serial.print("SCH START FAIL i="); Serial.print(idx);
+    Serial.print(" type="); Serial.println(scheduleActivities[idx].contentType);
+#endif
 #if PNG_DIAG_SERIAL
     Serial.print("S!"); Serial.println(idx);
 #endif
@@ -4385,7 +5141,8 @@ void startScheduleActivity(uint8_t idx) {
 
 void updateSchedule() {
   uint32_t nowMs = millis();
-  if (scheduleUploadOpen && scheduleUploadDirty &&
+  updateScheduleMediaUploadTimeout();
+  if (scheduleUploadOpen && scheduleUploadDirty && !scheduleHasActiveMediaUpload() &&
       (uint32_t)(nowMs - scheduleLastRxMs) >= SCHEDULE_COMMIT_DELAY_MS) {
     commitScheduleUpload();
   }
@@ -4422,7 +5179,7 @@ void updateSchedule() {
 bool handleScheduleCommand(const uint8_t *data, size_t len) {
   if (!data || len < 5) return false;
 
-  // Stato globale: ACK 01
+  // Global state: ACK 01.
   if (len == 5 && data[0] == 0x05 && data[1] == 0x00 &&
       data[2] == 0x07 && data[3] == 0x80) {
     uint8_t flags = data[4];
@@ -4431,6 +5188,7 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
       scheduleUploadDirty = false;
       scheduleReceivedMask = 0;
       cleanupScheduleTempFiles();
+      clearScheduleMediaUploadStates();
       scheduleGlobalFlags = flags;
       scheduleStagingGlobalFlags = flags;
       bool persisted=saveScheduleGlobal();
@@ -4446,37 +5204,172 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
     return true;
   }
 
-  // Attivita completa: ACK 03
+  // Activity media. Small/legacy activities still complete in one logical
+  // packet. Large 64x64 activities repeat a 23-byte header for each logical
+  // packet; mediaSize/mediaCRC describe the complete object and bytes from
+  // offset 23 onward are the current chunk. BUILD 134 hardware validation
+  // established ACK 01 as the continuation request for an incomplete object
+  // and ACK 03 as the terminal ACK for the final CRC-valid chunk.
   if (len >= 23 && data[2] == 0x05 && data[3] == 0x80) {
-    uint16_t declared = rd16le(data);
-    uint8_t idx = data[4];
-    uint32_t payloadSize = rd32le(data + 12);
-    bool ok = declared == len && (23UL + payloadSize) == len && idx < SCHEDULE_MAX_ACTIVITIES;
+    const uint16_t declared = rd16le(data);
+    const uint8_t idx = data[4];
+    const uint8_t chunkMarker = data[11];
+    bool ok = declared == len && idx < SCHEDULE_MAX_ACTIVITIES && littleFsReady;
+    ScheduleActivity candidate;
+    size_t chunkSize = len - 23;
+
     if (ok) {
-      ScheduleActivity a;
-      a.configured = true;
-      a.flags = data[5];
-      a.startHour = data[6]; a.startMinute = data[7];
-      a.endHour = data[8]; a.endMinute = data[9];
-      a.contentType = rd16le(data + 10);
-      a.mediaSize = payloadSize;
-      a.mediaCRC = rd32le(data + 16);
-      a.reserved = rd16le(data + 20);
-      a.mediaId = data[22];
-      ok = a.startHour < 24 && a.endHour < 24 && a.startMinute < 60 && a.endMinute < 60;
-      if (ok) ok = writeScheduleTemp(idx, data + 23, payloadSize, a.mediaCRC);
-      if (ok) {
-        scheduleStaging[idx] = a;
-        scheduleReceivedMask |= (1UL << idx);
-        scheduleUploadOpen = true;
-        scheduleUploadDirty = true;
-        scheduleLastRxMs = millis();
+      candidate.configured = true;
+      candidate.flags = data[5];
+      candidate.startHour = data[6]; candidate.startMinute = data[7];
+      candidate.endHour = data[8]; candidate.endMinute = data[9];
+      candidate.contentType = data[10];
+      candidate.mediaSize = rd32le(data + 12);
+      candidate.mediaCRC = rd32le(data + 16);
+      candidate.reserved = rd16le(data + 20);
+      candidate.mediaId = data[22];
+      ok = candidate.startHour < 24 && candidate.endHour < 24 &&
+           candidate.startMinute < 60 && candidate.endMinute < 60 &&
+           candidate.mediaSize > 0 && chunkSize > 0 &&
+           (uint64_t)chunkSize <= (uint64_t)candidate.mediaSize;
+    }
+
+    if (ok) {
+      const uint32_t bit = (1UL << idx);
+      ScheduleMediaUploadState &u = scheduleMediaUploads[idx];
+
+#if DEBUG_SERIAL
+      Serial.print("SCH HDR i="); Serial.print(idx);
+      Serial.print(" f=0x"); Serial.print(candidate.flags, HEX);
+      Serial.print(" "); Serial.print(candidate.startHour); Serial.print(':'); Serial.print(candidate.startMinute);
+      Serial.print("-"); Serial.print(candidate.endHour); Serial.print(':'); Serial.print(candidate.endMinute);
+      Serial.print(" t="); Serial.print(candidate.contentType);
+      Serial.print(" m=0x"); Serial.print(chunkMarker, HEX);
+      Serial.print(" n="); Serial.print(candidate.mediaSize);
+      Serial.print(" crc=0x"); Serial.print(candidate.mediaCRC, HEX);
+      Serial.print(" r=0x"); Serial.print(candidate.reserved, HEX);
+      Serial.print(" id=0x"); Serial.print(candidate.mediaId, HEX);
+      Serial.print(" chunk="); Serial.println(chunkSize);
+#endif
+
+      // Reusing an already completed index means the app is replacing/retrying
+      // that activity inside the same list upload. Start its staging file over.
+      if (scheduleReceivedMask & bit) {
+        scheduleReceivedMask &= ~bit;
+        scheduleStaging[idx] = ScheduleActivity();
+        resetScheduleMediaUpload(idx, true);
+      } else if (u.active) {
+        if (!scheduleMediaObjectMatches(u.candidate, candidate)) {
+#if DEBUG_SERIAL
+          Serial.print("SCH OBJECT CHANGE i="); Serial.print(idx);
+          Serial.print(" old(t/n/crc)="); Serial.print(u.candidate.contentType); Serial.print('/');
+          Serial.print(u.candidate.mediaSize); Serial.print("/0x"); Serial.print(u.candidate.mediaCRC, HEX);
+          Serial.print(" new="); Serial.print(candidate.contentType); Serial.print('/');
+          Serial.print(candidate.mediaSize); Serial.print("/0x"); Serial.println(candidate.mediaCRC, HEX);
+#endif
+          // A different media identity really is a new/restarted activity.
+          resetScheduleMediaUpload(idx, true);
+        } else if (!scheduleActivityHeaderMetadataMatches(u.candidate, candidate)) {
+#if DEBUG_SERIAL
+          // Ancillary timing/id fields may vary without changing the media
+          // object. The per-chunk marker at offset 11 is intentionally excluded
+          // from ScheduleActivity and from this comparison.
+          Serial.print("SCH META VAR i="); Serial.print(idx);
+          Serial.print(" f "); Serial.print(u.candidate.flags, HEX); Serial.print('>'); Serial.print(candidate.flags, HEX);
+          Serial.print(" st "); Serial.print(u.candidate.startHour); Serial.print(':'); Serial.print(u.candidate.startMinute);
+          Serial.print('>'); Serial.print(candidate.startHour); Serial.print(':'); Serial.print(candidate.startMinute);
+          Serial.print(" en "); Serial.print(u.candidate.endHour); Serial.print(':'); Serial.print(u.candidate.endMinute);
+          Serial.print('>'); Serial.print(candidate.endHour); Serial.print(':'); Serial.print(candidate.endMinute);
+          Serial.print(" r "); Serial.print(u.candidate.reserved, HEX); Serial.print('>'); Serial.print(candidate.reserved, HEX);
+          Serial.print(" id "); Serial.print(u.candidate.mediaId, HEX); Serial.print('>'); Serial.println(candidate.mediaId, HEX);
+#endif
+        }
+      }
+
+      if (!scheduleMediaUploads[idx].active)
+        ok = beginScheduleMediaUpload(idx, candidate);
+    }
+
+    if (ok) {
+      ScheduleMediaUploadState &u = scheduleMediaUploads[idx];
+      if ((uint64_t)u.received + (uint64_t)chunkSize > (uint64_t)u.candidate.mediaSize) {
+        ok = false;
+      } else {
+        File f = LittleFS.open(scheduleTempFileName(idx), "a");
+        bool writeOK = (bool)f;
+        if (writeOK && (uint32_t)f.size() != u.received) writeOK = false;
+        if (writeOK && f.write(data + 23, chunkSize) != chunkSize) writeOK = false;
+        if (f) f.close();
+        if (!writeOK) {
+          ok = false;
+        } else {
+          u.runningCRC = crc32Update(u.runningCRC, data + 23, chunkSize);
+          u.received += (uint32_t)chunkSize;
+          u.lastChunkAt = millis();
+          // Keep the activity metadata from the first chunk. Later ancillary
+          // header fields may be chunk markers; SCH META VAR records changes.
+          scheduleUploadOpen = true;
+          scheduleLastRxMs = u.lastChunkAt;
+
+          if (u.received == u.candidate.mediaSize) {
+            const uint32_t calc = u.runningCRC ^ 0xFFFFFFFFUL;
+            if (calc != u.candidate.mediaCRC) {
+#if DEBUG_SERIAL
+              Serial.print("SCH CRC FAIL i="); Serial.print(idx);
+              Serial.print(" calc=0x"); Serial.print(calc,HEX);
+              Serial.print(" expected=0x"); Serial.println(u.candidate.mediaCRC,HEX);
+#endif
+              ok = false;
+            } else {
+              scheduleStaging[idx] = u.candidate;
+              scheduleReceivedMask |= (1UL << idx);
+              scheduleUploadDirty = true;
+              u.active = false;
+            }
+          }
+        }
       }
     }
 
-    Serial.print("SCH RX i="); Serial.print(idx);
-    Serial.print(" ok="); Serial.println(ok ? 1 : 0);
-    uint8_t ack[5] = {0x05,0x00,0x05,0x80, ok ? (uint8_t)0x03 : (uint8_t)0x02};
+    if (!ok) {
+      // Schedule replacement is list-atomic by design. A malformed/failed media
+      // chunk invalidates the new staging transaction but never touches the
+      // currently active Schedule.
+      abortScheduleUploadTransaction("activity media error");
+    }
+
+#if DEBUG_SERIAL
+    if (ok) {
+      const ScheduleMediaUploadState &u = scheduleMediaUploads[idx];
+      const uint32_t total = (scheduleReceivedMask & (1UL << idx))
+                               ? scheduleStaging[idx].mediaSize : u.received;
+      const uint32_t expected = (scheduleReceivedMask & (1UL << idx))
+                               ? scheduleStaging[idx].mediaSize : u.candidate.mediaSize;
+      Serial.print("SCH RX i="); Serial.print(idx);
+      Serial.print(" chunk="); Serial.print(chunkSize);
+      Serial.print(" total="); Serial.print(total); Serial.print("/"); Serial.print(expected);
+      Serial.print(" done="); Serial.println((scheduleReceivedMask & (1UL << idx)) ? 1 : 0);
+    } else {
+      Serial.print("SCH RX i="); Serial.print(idx);
+      Serial.print(" chunk="); Serial.print(chunkSize);
+      Serial.println(" ok=0");
+    }
+#endif
+
+    // BUILD 134 hardware validation established the large-activity flow:
+    // 0x01 requests the next chunk while the declared media object is incomplete,
+    // and 0x03 terminates the CRC-valid final chunk. One-packet/small activities
+    // therefore still receive the historically required 0x03 immediately.
+    uint8_t scheduleStatus=0x02;
+    if(ok){
+      const bool complete=(scheduleReceivedMask & (1UL << idx)) != 0;
+      scheduleStatus=complete ? (uint8_t)0x03 : (uint8_t)0x01;
+#if DEBUG_SERIAL
+      Serial.print("SCH ACK i="); Serial.print(idx);
+      Serial.print(" status="); Serial.println(scheduleStatus,HEX);
+#endif
+    }
+    uint8_t ack[5] = {0x05,0x00,0x05,0x80,scheduleStatus};
     sendFA03(ack, sizeof(ack));
     return true;
   }
@@ -4487,6 +5380,7 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
 // PERSISTENT RESET + BOOT POLICY
 // ======================================================
 void clearPersistentDeviceState() {
+  abortAlarmUpload(nullptr);
   alarmPrefs.clear();
   for (uint8_t i=0;i<ALARM_SLOT_COUNT;i++) alarms[i]=AlarmSlot();
 
@@ -4497,6 +5391,9 @@ void clearPersistentDeviceState() {
     scheduleActivities[i]=ScheduleActivity();
     scheduleStaging[i]=ScheduleActivity();
   }
+
+  stopPresetPlayback();
+  clearPresetBank(true);
 
   if (carouselPrefsReady) carouselPrefs.clear();
   carouselOrderCount=0;
@@ -4542,6 +5439,7 @@ void clearPersistentDeviceState() {
 }
 
 void applyBootDisplayPolicy() {
+  presetActive=false; presetActiveSlot=-1; presetOrderCount=0; gifPresetPlaybackFileActive=false;
   carouselUploadBlackout=false; carouselUploadOpen=false; carouselStartPending=false;
   carouselActive=false; carouselActiveSlot=-1; carouselEnterRequested=false;
 #if RTC_ENABLED
@@ -4575,8 +5473,8 @@ void applyBootDisplayPolicy() {
 const char* oledModeName(uint8_t m) {
   switch(m) {
     case DISPLAY_SOLID: return "SOLID"; case DISPLAY_RAW: return "IMAGE";
-    case DISPLAY_GRAFFITI: return "DIY"; case DISPLAY_GIF: return carouselActive ? "CAROUSEL" : "GIF";
-    case DISPLAY_TEXT: return carouselActive ? "CAROUSEL" : "TEXT"; case DISPLAY_EFFECT: return "EFFECT";
+    case DISPLAY_GRAFFITI: return "DIY"; case DISPLAY_GIF: return presetActive ? "PRESET" : (carouselActive ? "CAROUSEL" : "GIF");
+    case DISPLAY_TEXT: return presetActive ? "PRESET" : (carouselActive ? "CAROUSEL" : "TEXT"); case DISPLAY_EFFECT: return "EFFECT";
     case DISPLAY_AUDIO: return "AUDIO"; case DISPLAY_CLOCK: return "CLOCK";
     case DISPLAY_COUNTDOWN: return "COUNTDOWN"; case DISPLAY_STOPWATCH: return "STOPWATCH";
     case DISPLAY_SCOREBOARD: return "SCORE"; default: return "IDLE";
@@ -4737,9 +5635,10 @@ void setup(){
 
   delay(300);
 #if PNG_DIAG_SERIAL
-  Serial.print("B"); Serial.print(FW_BUILD);
-  Serial.print(" rr="); Serial.print((int)esp_reset_reason());
-  Serial.print(" h="); Serial.println(ESP.getFreeHeap());
+  Serial.print("IDOTMATRIX_FW="); Serial.print(FW_RELEASE);
+  Serial.print("-B"); Serial.println(FW_BUILD);
+  Serial.print("BOOT rr="); Serial.print((int)esp_reset_reason());
+  Serial.print(" heap="); Serial.println(ESP.getFreeHeap());
 #endif
 #if STATUS_LED_PIN >= 0
   pinMode(STATUS_LED_PIN,OUTPUT);
@@ -4781,6 +5680,18 @@ void setup(){
   Serial.print("LOGICAL BUFFERS: "); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
   Serial.print(" x3, bytes="); Serial.print(LOGICAL_FRAME_BYTES * 3U);
   Serial.print(" freeHeap="); Serial.println(ESP.getFreeHeap());
+  Serial.print("DISPLAY BACKEND: ");
+#if DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
+  Serial.println("HUB75 / MatrixPanel I2S DMA");
+  Serial.print("HUB75 color depth: "); Serial.print(HUB75_COLOR_DEPTH); Serial.println(" bit/channel");
+#else
+  Serial.println("WS2812 / FastLED");
+#endif
+  Serial.print("DISPLAY SCALE: logical="); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
+  Serial.print(" physical="); Serial.print(PHYSICAL_MATRIX_WIDTH); Serial.print('x'); Serial.println(PHYSICAL_MATRIX_HEIGHT);
+#if defined(BOARD_HAS_PSRAM)
+  Serial.print("PSRAM: total="); Serial.print(ESP.getPsramSize()); Serial.print(" free="); Serial.println(ESP.getFreePsram());
+#endif
 #endif
 
 #if RTC_ENABLED
@@ -4793,36 +5704,81 @@ void setup(){
 #endif
 #endif
   // Always try a non-destructive mount first. The repository default enables
-  // format-on-fail for first use and recovery from an unreadable filesystem;
-  // users who need strict preservation can set LITTLEFS_FORMAT_ON_MOUNT_FAIL=0.
+  // format-on-fail for first use/recovery; set it to 0 for forensic preservation.
+#if DEBUG_SERIAL
+  {
+    const esp_partition_t *fsPart=esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+    if(fsPart){
+      Serial.print("LittleFS partition: label="); Serial.print(fsPart->label);
+      Serial.print(" address=0x"); Serial.print(fsPart->address,HEX);
+      Serial.print(" size="); Serial.println(fsPart->size);
+    } else {
+      Serial.println("LittleFS partition: NOT FOUND (expected DATA/SPIFFS subtype)");
+    }
+  }
+#endif
   littleFsReady=LittleFS.begin(false);
 #if LITTLEFS_FORMAT_ON_MOUNT_FAIL
   if(!littleFsReady){
 #if DEBUG_SERIAL
     Serial.println("LittleFS: mount failed; explicit format-on-fail enabled");
 #endif
-    // Retry through the Arduino-ESP32 mount-and-format path.
+    // Reuse the Arduino-ESP32 mount-and-format path that older builds used,
+    // but only after the explicit opt-in above.
     littleFsReady=LittleFS.begin(true);
   }
 #endif
 #if DEBUG_SERIAL
-  Serial.print("LittleFS: "); Serial.println(littleFsReady ? "OK" : "ERROR (not formatted)");
-  if(!littleFsReady && !LITTLEFS_FORMAT_ON_MOUNT_FAIL)
+  Serial.print("LittleFS: "); Serial.println(littleFsReady ? "OK" : "ERROR (unavailable)");
+  if(!littleFsReady){
+#if LITTLEFS_FORMAT_ON_MOUNT_FAIL
+    Serial.println("LittleFS hint: verify the Arduino partition scheme includes a SPIFFS/LittleFS-compatible data partition; FAT-only schemes are unsupported.");
+#else
     Serial.println("LittleFS: set LITTLEFS_FORMAT_ON_MOUNT_FAIL=1 only for intentional recovery/first use");
+    Serial.println("LittleFS hint: verify the Arduino partition scheme includes a SPIFFS/LittleFS-compatible data partition; FAT-only schemes are unsupported.");
+#endif
+  }
   if(littleFsReady){
     Serial.print("LittleFS capacity: used="); Serial.print(LittleFS.usedBytes());
     Serial.print(" total="); Serial.println(LittleFS.totalBytes());
   }
   Serial.print("ALARM SLOTS: "); Serial.println(ALARM_SLOT_COUNT);
 #endif
-  if(littleFsReady) recoverGifPlayFile();
+  if(littleFsReady){
+    recoverGifPlayFile();
+    clearPresetBank(true); // Preset/Default slots are intentionally volatile across reboot.
+  }
   // Preferences metadata is still loaded when LittleFS is offline so the
   // device can report/retain configuration; media recovery simply no-ops.
   loadAlarms();
   loadSchedule();
   loadCarousel();
+#if DISPLAY_BACKEND == DISPLAY_BACKEND_WS2812
   FastLED.addLeds<LED_TYPE,MATRIX_PIN,COLOR_ORDER>(leds,PHYSICAL_NUM_LEDS);
-  loadBrightnessFromNVS(); FastLED.clear(); FastLED.show(); clearFramebuffer(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
+#elif DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
+  {
+    HUB75_I2S_CFG mxconfig(PHYSICAL_MATRIX_WIDTH, PHYSICAL_MATRIX_HEIGHT, 1, hub75Pins);
+    mxconfig.double_buff=false;
+    // WLED maps its normal (non-reversed) MatrixPortal configuration to the
+    // negative clock phase used successfully on this exact board/panel pair.
+    mxconfig.clkphase=false;
+    mxconfig.setPixelColorDepthBits(HUB75_COLOR_DEPTH);
+    hub75Matrix=new MatrixPanel_I2S_DMA(mxconfig);
+    const bool ok=hub75Matrix && hub75Matrix->begin();
+#if DEBUG_SERIAL
+    Serial.print("HUB75 MatrixPanel I2S DMA begin="); Serial.println(ok?"OK":"FAILED");
+    Serial.print("HUB75 double buffer: OFF, clkphase: false, max brightness: "); Serial.println(MAX_LED_BRIGHTNESS);
+#endif
+    if(!ok){
+#if DEBUG_SERIAL
+      Serial.println("FATAL: HUB75 MatrixPanel I2S DMA initialization failed");
+#endif
+      while(true) delay(1000);
+    }
+  }
+#endif
+  loadBrightnessFromNVS(); clearPhysicalDisplay(); clearFramebuffer(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 
   runtimeStateMutex=xSemaphoreCreateMutex();
   if(!runtimeStateMutex){
@@ -4842,70 +5798,30 @@ void setup(){
 
   applyBootDisplayPolicy();
 
-#if IOS_HANDSHAKE_DIAG
-  Serial.println("[IOSDIAG] ===== BLE/GATT SETUP =====");
-  Serial.print("[IOSDIAG] deviceName="); Serial.println(DEVICE_NAME);
-  Serial.print("[IOSDIAG] FA service="); Serial.println(FA_SERVICE_UUID);
-  Serial.print("[IOSDIAG] AE service="); Serial.println(AE_SERVICE_UUID);
-  Serial.println("[IOSDIAG] FA02 properties=WRITE|WRITE_NR");
-  Serial.println("[IOSDIAG] FA03 properties=READ|NOTIFY + BLE2902");
-  Serial.println("[IOSDIAG] AE01 properties=WRITE|WRITE_NR");
-  Serial.println("[IOSDIAG] AE02 properties=READ|NOTIFY + BLE2902");
-  Serial.print("[IOSDIAG] defaults matrixGPIO="); Serial.print(MATRIX_PIN);
-  Serial.print(" oled="); Serial.print(OLED_STATUS_ENABLED);
-  Serial.print(" buzzer="); Serial.print(ALARM_BUZZER_ENABLED);
-  Serial.print(" fsFormatOnFail="); Serial.println(LITTLEFS_FORMAT_ON_MOUNT_FAIL);
+  BLEDevice::init(DEVICE_NAME);
+  // Match the working WLED/NimBLE implementation and the official app's
+  // large-transfer expectations. On Arduino-ESP32 3.3.x the compatibility
+  // BLE layer otherwise negotiates an ATT payload of about 253 bytes. The app
+  // appears to schedule long writes as if a 517-byte MTU were available; that
+  // mismatch truncates 778-byte TEXT packets after 2 writes (506 bytes) and
+  // 2890-byte media packets after 6 writes (1518 bytes).
+  BLEDevice::setMTU(517);
+#if DEBUG_SERIAL
+  Serial.println("BLE local MTU configured: 517");
 #endif
-  BLEDevice::init(DEVICE_NAME); server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
+  server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService *fas=server->createService(FA_SERVICE_UUID);
   fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
-  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
-#if IOS_HANDSHAKE_DIAG
-  fa03->setCallbacks(new IOSDiagTxCharacteristicCallbacks("FA03", &iosDiagFa03Reads, &iosDiagFa03NotifyStatus));
-  BLE2902 *fa03Cccd=new BLE2902();
-  fa03Cccd->setCallbacks(new IOSDiagCccdCallbacks("FA03 CCCD", &iosDiagFa03CccdReads, &iosDiagFa03CccdWrites));
-  fa03->addDescriptor(fa03Cccd);
-#else
-  fa03->addDescriptor(new BLE2902());
-#endif
-  fas->start();
-
+  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); fa03->addDescriptor(new BLE2902()); fas->start();
   BLEService *aes=server->createService(AE_SERVICE_UUID);
   ae01=aes->createCharacteristic(AE01_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); ae01->setCallbacks(new AE01Callbacks());
-  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
-#if IOS_HANDSHAKE_DIAG
-  ae02->setCallbacks(new IOSDiagTxCharacteristicCallbacks("AE02", &iosDiagAe02Reads, &iosDiagAe02NotifyStatus));
-  BLE2902 *ae02Cccd=new BLE2902();
-  ae02Cccd->setCallbacks(new IOSDiagCccdCallbacks("AE02 CCCD", &iosDiagAe02CccdReads, &iosDiagAe02CccdWrites));
-  ae02->addDescriptor(ae02Cccd);
-#else
-  ae02->addDescriptor(new BLE2902());
-#endif
-  aes->start();
+  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); ae02->addDescriptor(new BLE2902()); aes->start();
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
-#if IOS_32X32_IDENTITY_TEST
-  // Exact manufacturer record captured from a real 32x32 iDotMatrix device.
-  // It is intentionally used verbatim for this diagnostic A/B test only.
-  const char mb[]={0x54,0x52,0x00,0x70,0x03,0x04,0x0F,0x00,0x01,0x04};
-#else
-  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR};
-#endif
-  ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
+  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
-#if IOS_HANDSHAKE_DIAG
-  Serial.print("[IOSDIAG] advertising started; manufacturer=");
-  iosDiagPrintHex("", (const uint8_t*)mb, sizeof(mb));
-#if IOS_32X32_IDENTITY_TEST
-  Serial.println("[IOSDIAG] identity experiment=REAL_32X32_CAPTURE logical=32x32 physical=16x16 preview=ON");
-#endif
-  Serial.println("[IOSDIAG] primary ADV complete service=FA; scan response complete service=AE");
-#endif
 
-#if OTA_ENABLED
-  setupOTA();
-#endif
   reportHeap("setup complete");
 }
 
@@ -4914,9 +5830,6 @@ void setup(){
 // ======================================================
 void loop(){
   bool restartAdvertisingNow=false;
-#if OTA_ENABLED
-  if(otaReady)ArduinoOTA.handle(); if(otaRunning){delay(1);return;}
-#endif
   if(!lockRuntimeState()){ delay(1); return; }
   // BUILD 88: take the time snapshot only after the runtime mutex is held.
   // If loop() captures millis() before blocking on the mutex, a BLE callback
@@ -5009,15 +5922,25 @@ void loop(){
     }
   }
 
-  if(displayMode==DISPLAY_EFFECT) updateEffect();
-  if(displayMode==DISPLAY_AUDIO){ static uint32_t lastAudioRender=0; if(now-lastAudioRender>=80){ lastAudioRender=now; renderAudio(); } }
+  if(carouselTransferIndicatorActive) renderCarouselTransferIndicator(now);
+
+#if APP_POWER_VERSION_SPLASH
+  if(versionSplashActive && (int32_t)(now-versionSplashUntil)>=0){
+    versionSplashActive=false;
+    refreshMatrix();
+  }
+#endif
+
+  if(!carouselTransferIndicatorActive && displayMode==DISPLAY_EFFECT) updateEffect();
+  if(!carouselTransferIndicatorActive && displayMode==DISPLAY_AUDIO){ static uint32_t lastAudioRender=0; if(now-lastAudioRender>=80){ lastAudioRender=now; renderAudio(); } }
   updateCarousel(now);
-  if(displayMode==DISPLAY_GIF) updateGIF();
-  if(displayMode==DISPLAY_TEXT) updateTextAnimation();
+  updatePreset(now);
+  if(!carouselTransferIndicatorActive && displayMode==DISPLAY_GIF) updateGIF();
+  if(!carouselTransferIndicatorActive && displayMode==DISPLAY_TEXT) updateTextAnimation();
 
-  if(displayMode==DISPLAY_CLOCK){ static uint32_t last=0; if(now-last>=100){last=now;renderClock();} }
+  if(!carouselTransferIndicatorActive && displayMode==DISPLAY_CLOCK){ static uint32_t last=0; if(now-last>=100){last=now;renderClock();} }
 
-  if(displayMode==DISPLAY_COUNTDOWN){
+  if(!carouselTransferIndicatorActive && displayMode==DISPLAY_COUNTDOWN){
     static uint32_t last=0; uint32_t remain=countdownRemainingMs;
     if(countdownRunning){ uint32_t e=now-countdownStartMillis; if(e>=countdownRemainingMs){remain=0;countdownRemainingMs=0;countdownRunning=false;if(!countdownFinishSent){countdownFinishSent=true;sendCommandStatus(0x08,0x80,0x03);triggerCountdownFinishBuzzer();}} else remain=countdownRemainingMs-e; }
     if(now-last>=200){
@@ -5026,12 +5949,17 @@ void loop(){
     }
   }
 
-  if(displayMode==DISPLAY_STOPWATCH){
+  if(!carouselTransferIndicatorActive && displayMode==DISPLAY_STOPWATCH){
     static uint32_t last=0; if(now-last>=200){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderStopwatch(e);}
   }
 
 #if DEBUG_SERIAL
-  static uint32_t lastHeap=0; if(now-lastHeap>=30000){lastHeap=now;reportHeap("periodic");}
+  static uint32_t lastHeap=0;
+#if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
+  if(now-lastHeap>=30000){lastHeap=now;reportHeap("periodic");}
+#else
+  (void)lastHeap;
+#endif
 #endif
   unlockRuntimeState();
   if(restartAdvertisingNow) BLEDevice::startAdvertising();

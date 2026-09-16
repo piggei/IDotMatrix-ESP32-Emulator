@@ -1,3 +1,52 @@
+# BUILD 141 consolidation / remaining Preset validation
+
+- [x] Capture `TEXT PJ -> image -> TEXT Ciao`: Bulk objects use slots 14, 15 and 16 and activate with `06/02 03 0E 0F 10`.
+- [x] Confirm mixed Preset media: TEXT (`type=3`) and GIF/image (`type=1`) coexist in one list.
+- [x] Capture a five-image Preset using slots 14..18, including 48,456-byte and 66,361-byte multi-packet objects.
+- [x] Confirm all captured Preset objects use `timeSign=5`, including TEXT and GIF/image; it is therefore not treated as the observed ~3 s dwell value.
+- [x] Confirm `06/02` carries only count plus ordered slot IDs and no explicit dwell.
+- [x] Hardware-test BUILD 140 with `TEXT PJ -> image -> TEXT Ciao`: static TEXT and GIF use ~3 s while scrolling TEXT waits for the final glyph to leave the display.
+- [x] Hardware-test a five-image Preset and confirm slots 14..18 rotate in command order.
+- [x] Confirm selecting another Preset replaces the active volatile bank cleanly, including replacement while the previous Preset is already playing and while large multi-packet assets are uploaded.
+- [ ] Confirm Preset playback survives BLE disconnect while power remains applied.
+- [ ] Confirm Preset media is not restored after emulator reboot/reset.
+
+- [x] Disable verbose Preset protocol diagnostics by default for the consolidation baseline; keep the compile-time switch available.
+- [x] Align README/PROTOCOL/HISTORY/capture documentation with hardware-validated Preset timing and BUILD 137 Schedule findings.
+
+## BUILD 137 Schedule validation
+
+- [x] Decode the BUILD 135 `1 -> 513` type change: offset 10 is the actual one-byte media type, offset 11 is a separate chunk marker (`00` first, `02` continuation in current captures).
+- [x] Save one Program containing exactly one multi-packet image and confirm continuation accumulation without `SCH OBJECT CHANGE` (hardware-validated in BUILD 137).
+- [x] Confirm `SCH HDR` reports stable media type `t=1` while `m=0x0` changes to `m=0x2` on continuation packets (hardware-validated in BUILD 137).
+- [x] Confirm the final media chunk reaches the declared byte count, `done=1`, receives `SCH ACK ... status=3`, and is followed by `SCH COMMIT` (hardware-validated in BUILD 137).
+- [x] Verify timed Program playback after commit using a currently active time window; `SCH START i=...` observed in BUILD 137.
+- [x] Repeat with a multi-activity Program; multiple activities committed and scheduled in BUILD 137.
+- [ ] Hardware-validate the updater sequence: compile only -> firmware signature check -> second serial/usbip check -> upload -> post-upload runtime reattach.
+
+## BUILD 134 hardware findings
+
+- [x] Screen OFF -> ON from the official app shows the temporary `R0.5` / `B134` overlay without changing the logical display mode (`VERSION SPLASH R0.5 B134` observed).
+- [x] Intermediate Schedule ACK `0x01` makes the 64x64 app continue transmitting a large activity.
+- [x] The app transmitted exactly the declared 48,456 media bytes in the captured large-image test.
+- [x] Identified first-chunk loss in emulator staging: totals `4096 -> 4096 ... -> 44360/48456` prove the first 4096 bytes were discarded when chunk 2 caused an activity-header metadata mismatch/reset.
+- [x] Large Program commit/execution validated on BUILD 137, including multi-activity scheduling.
+
+## v0.5.0-dev BUILD 132 validation
+
+- [x] Hardware-validate multi-packet 64x64 Alarm media storage and playback (observed capture: 4096 + 2610 bytes for one 6706-byte GIF).
+- [ ] Confirm Alarm replacement remains atomic if a multi-packet transfer is interrupted before completion.
+- [ ] Capture a 3+ packet Alarm media transfer, if the official app produces one, to characterize `reserved2` beyond the observed `0x00` then `0x02` sequence.
+- [ ] Verify dynamic MatrixPortal `/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3*-if00` discovery across upload detach/reattach.
+
+## v0.5.0-dev BUILD 133/134 historical Schedule findings
+
+- [x] Large 64x64 Program/Schedule activity spans many complete `05/80` logical packets with a repeated 23-byte framing header.
+- [x] `ACK 03` after an incomplete large chunk is terminal from the app's point of view; it advances/stops rather than continuing the same object.
+- [x] `ACK 01` after an incomplete large chunk requests continuation; `ACK 03` remains required when the activity is complete.
+- [ ] Interrupt a large Program transfer mid-activity and confirm that the previous active Schedule remains intact.
+- [x] Characterize the changing Schedule header byte: offset 11 changes `0x00 -> 0x02` between first and continuation chunks; exact semantic label remains open.
+
 # TODO
 
 ## Completed / verified
@@ -23,7 +72,7 @@
 ## Hardware validation
 
 - [ ] Test firmware on a physical 32x32 iDotMatrix-compatible panel
-- [ ] Test firmware on a physical 64x64 panel
+- [x] Test firmware on a physical 64x64 HUB75 panel using MatrixPortal ESP32-S3
 - [ ] Capture/sniff traffic from an original 32x32 device when available
 - [x] Evaluate ESP32-C3 as an alternate target: boots with adapted pin mapping, but current FastLED channel/driver timeouts make it unsupported for v0.4.0
 
@@ -102,27 +151,52 @@ Still open:
 ## ESP32-S3 / HUB75 next phase
 
 
-- [ ] Add an ESP32-S3 hardware profile
-- [ ] Integrate native 64x64 HUB75 output
+- [x] Add an ESP32-S3 hardware profile
+- [x] Integrate native 64x64 HUB75 output
 - [ ] Validate PSRAM-backed buffers/media paths
-- [ ] Re-run official-app 64x64 protocol tests on native 64x64 hardware
+- [x] Re-run official-app 64x64 protocol tests on native 64x64 hardware
 - [ ] Capture and decode the third 64x64 TEXT glyph size/marker
 - [ ] Revisit RTC integration on the new hardware platform
 
-## iOS compatibility investigation
+## v0.5 native display backend validation
 
+- [ ] Compile BUILD 123 against Arduino-ESP32 3.3.x + Adafruit Protomatter 1.7.1 + Adafruit GFX 1.12.6
+- [x] Validate native 64x64 logical -> 64x64 HUB75 output on MatrixPortal S3
+- [ ] Validate 32x32 logical -> 64x64 physical upscale
+- [ ] Validate 16x16 logical -> 64x64 physical upscale
+- [ ] Validate 16x16 logical -> 32x32 physical upscale
+- [ ] Validate 64x64 logical -> 32x32 and 16x16 physical downscale
+- [ ] Validate 32x32 logical -> 16x16 physical downscale
+- [x] Re-run major feature coverage (Clock, Text, GIF, Carousel, Graffiti, timers, brightness, flip) on HUB75
+- [ ] Decide which large media/frame buffers should move to PSRAM after baseline validation
 
-- [x] Obtain failing iOS and successful Android BUILD 119 traces from the same ESP32 hardware
-- [x] Confirm that the failing iOS session establishes BLE but sends no FA02/AE01 application writes before app errors
-- [ ] Capture FA03/AE02 CCCD subscription behavior with BUILD 120
-- [ ] Capture FA03 notification status during the automatic Device Info push
-- [ ] Compare emulator advertising/GATT database against an original iDotMatrix unit with nRF Connect
-- [x] Test BUILD 121 with the captured real 32x32 manufacturer identity: iOS recognizes 32x32 correctly but still sends no normal FA02 traffic
-- [ ] Test BUILD 122 without unsolicited Device Info while preserving the BUILD 121 identity
-- [ ] Verify the reporter's exact iDotMatrix iOS app version (`1.0.9` versus possible `1.9.0` typo)
-- [ ] Determine whether any emulator-side compatibility workaround is justified by evidence
+## BUILD 124 follow-up
 
-## Buzzer hardware follow-up
+- [x] Scale band-based light-effect geometry with logical resolution (16x16=1x, 32x32=2x, 64x64=4x)
+- [x] Document MatrixPortal S3 Arduino partition requirement for LittleFS-backed media
+- [x] Hardware-test GIF upload/playback on MatrixPortal S3 after selecting a SPIFFS/LittleFS-compatible partition scheme
+- [ ] Hardware-compare 32x32 and 16x16 logical profiles on the 64x64 physical HUB75 panel using automatic scaling
 
+## PlatformIO migration
 
-- [ ] Test the ordered passive buzzer and decide whether tone/frequency-capable output should be added alongside the existing active-buzzer implementation
+- [x] Add MatrixPortal S3 / HUB75 64x64 PlatformIO environment
+- [x] Pin Arduino-ESP32 3.3.11 reference toolchain through pioarduino
+- [x] Encode a LittleFS-compatible 8 MB partition layout in the repository
+- [ ] Hardware-build and upload BUILD 125 with PlatformIO on Windows
+- [ ] Compare first clean-build and incremental-build times against Arduino IDE
+- [ ] Add validated PlatformIO environments for legacy WS2812 and 16x16/32x32 logical/physical combinations as those configurations are re-tested
+
+## BUILD 127/128 hardware validation
+
+- [x] Confirm LittleFS partition discovery/mount on MatrixPortal S3 from a complete boot log.
+- [x] Capture BUILD 127 large-transfer `[RXASM]` diagnostics. The app stopped a 778-byte TEXT packet after 506 bytes (2 x 253) and a 2890-byte media packet after 1518 bytes (6 x 253).
+- [x] Validate local MTU 517: large TEXT/GIF/Carousel/Alarm/Schedule/Preset transfers now reach the protocol handlers completely on MatrixPortal S3.
+- [x] Retest Cloud/static/GIF image transfers after the MTU change.
+- [x] Retest 64-pixel TEXT / 32x64 glyph rendering after the MTU change.
+- [x] Compare fade effects at HUB75 bit depth 6 against BUILD 126 bit depth 4: hardware feedback still reports visibly poor/coarse fades.
+- [ ] Investigate HUB75 gradient quality separately (effective PWM depth, gamma and/or dithering) without mixing that experiment into the BLE MTU fix.
+- [ ] Confirm BLE connect no longer changes an OFF/black boot state.
+
+- [x] Hardware-test BUILD 129: Carousel/image/TEXT transfers remain functional; Snowflake visual banding and coarse HUB75 fades remain; Alarm full-media packets are received completely but rejected by header/media validation.
+- [ ] Hardware-validate BUILD 130 WLED-native HUB75 DMA output for fade quality, flicker/dithering and Snowflake appearance.
+- [ ] Capture BUILD 130 Alarm header diagnostics and compare the live 64x64 Alarm packet layout with the documented 24-byte header.

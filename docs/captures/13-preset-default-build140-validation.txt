@@ -1,0 +1,47 @@
+Preset / Default playback validation - BUILD 140
+Hardware/app profile: MatrixPortal ESP32-S3 + 64x64 HUB75, official 64x64 app profile
+
+Mixed preset: TEXT "PJ" -> GIF/image -> scrolling TEXT
+
+PRESET STORE slot=14 type=TEXT timeSign=5 bytes=534
+PRESET STORE slot=15 type=GIF timeSign=5 bytes=3572
+PRESET STORE slot=16 type=TEXT timeSign=5 bytes=1170
+PRESET ACT count=3 slots=14,15,16
+TEXT glyphs=2 size=32x64 marker=0x7
+PRESET PLAY slot=14 type=TEXT holdMs=3000 motion=0 pages=1
+PRESET PLAY slot=15 type=GIF holdMs=3000
+TEXT glyphs=17 size=16x32 marker=0x5
+PRESET PLAY slot=16 type=TEXT holdMs=14154 motion=1 pages=5
+
+Observed result:
+- static/PIN-style TEXT keeps its final view for approximately 3 seconds;
+- GIF/image items use approximately 3 seconds;
+- horizontal scrolling TEXT advances only after the final glyph leaves the display.
+
+Five-image preset:
+
+PRESET STORE slot=14 type=GIF timeSign=5 bytes=1981
+PRESET STORE slot=15 type=GIF timeSign=5 bytes=48456
+PRESET STORE slot=16 type=GIF timeSign=5 bytes=6386
+PRESET STORE slot=17 type=GIF timeSign=5 bytes=66361
+PRESET STORE slot=18 type=GIF timeSign=5 bytes=1936
+PRESET ACT count=5 slots=14,15,16,17,18
+PRESET PLAY slot=14 type=GIF holdMs=3000
+PRESET PLAY slot=15 type=GIF holdMs=3000
+PRESET PLAY slot=16 type=GIF holdMs=3000
+PRESET PLAY slot=17 type=GIF holdMs=3000
+PRESET PLAY slot=18 type=GIF holdMs=3000
+
+Observed result:
+- supplied slot order is honored;
+- large 48,456-byte and 66,361-byte multi-packet media commit successfully;
+- the sequence loops back to slot 14;
+- all captured items still carry timeSign=5, confirming that this field must not be interpreted as a five-second Preset dwell.
+
+Active-bank replacement:
+A new two-item TEXT/GIF Preset was uploaded while the five-image Preset was running. The previous playback stopped, the new volatile assets were committed, and 06/02 started the replacement list cleanly.
+
+Remaining validation not established by this capture:
+- behavior after BLE disconnect while Preset playback is active;
+- original-device persistence across a power cycle;
+- emulator reboot/reset clearing is implemented by policy but should remain covered by regression testing.

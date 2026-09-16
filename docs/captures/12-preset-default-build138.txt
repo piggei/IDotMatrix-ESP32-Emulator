@@ -1,0 +1,45 @@
+Preset / Default protocol capture - BUILD 138 diagnostics
+Hardware/app profile: official app controlling 64x64 profile
+
+Mixed three-item preset: TEXT "PJ" -> image -> TEXT "Ciao"
+
+PRESET BULK HDR type=3 slot=14 timeSign=5 total=534 crc=0xEA878E71
+PRESET BULK RAW [16]: 26 02 03 00 00 16 02 00 00 71 8E 87 EA 05 00 0E
+PRESET TEXT GLOBAL [14]: 02 00 01 01 00 55 02 FF FF FF 00 00 00 00
+PRESET TEXT META0 [4]: 07 FF FF FF
+
+PRESET BULK HDR type=1 slot=15 timeSign=5 total=3572 crc=0x2D78EBC2
+PRESET BULK RAW [16]: 04 0E 01 00 00 F4 0D 00 00 C2 EB 78 2D 05 00 0F
+
+PRESET BULK HDR type=3 slot=16 timeSign=5 total=1054 crc=0xC6EED50C
+PRESET BULK RAW [16]: 2E 04 03 00 00 1E 04 00 00 0C D5 EE C6 05 00 10
+PRESET TEXT GLOBAL [14]: 04 00 01 01 00 55 01 FF 00 00 00 00 00 00
+PRESET TEXT META0 [4]: 07 FF FF FF
+
+PRESET ACT count=3 slots=14,15,16
+Raw activation: 08 00 06 02 03 0E 0F 10
+
+Five-image preset summary:
+slot 14 type=1 total=1981  crc=0x36EFD950 timeSign=5
+slot 15 type=1 total=48456 crc=0x9BD5BBEA timeSign=5
+slot 16 type=1 total=6386  crc=0xDFC0A5E1 timeSign=5
+slot 17 type=1 total=66361 crc=0xAE023301 timeSign=5
+slot 18 type=1 total=1936  crc=0x37B3F379 timeSign=5
+PRESET ACT count=5 slots=14,15,16,17,18
+Raw activation: 0A 00 06 02 05 0E 0F 10 11 12
+
+Large media use the ordinary Bulk continuation marker in byte 4:
+0x00 on the first logical packet, 0x02 on continuation packets.
+The complete-object size/CRC, timeSign and imageIndex remain stable.
+
+Direct original-hardware observation: items advance at approximately 3 seconds.
+The app exposes no Preset dwell control. Since timeSign is consistently 5,
+BUILD 140/141 preserve it as opaque metadata. GIF/image items use the observed ~3000 ms dwell; TEXT timing follows the renderer mode rather than a fixed Preset dwell.
+
+BUILD 140 hardware validation:
+- mixed TEXT "PJ" -> GIF -> scrolling TEXT played in slots 14,15,16;
+- static/PIN-style TEXT used a ~3000 ms final hold;
+- scrolling TEXT advanced after the final glyph left the display (example holdMs=14154 for 17 glyphs at 16x32);
+- five GIF/image items in slots 14..18 rotated in command order at ~3000 ms each;
+- 48,456-byte and 66,361-byte multi-packet objects committed successfully;
+- selecting a new Preset while another was active cleanly replaced the volatile bank.

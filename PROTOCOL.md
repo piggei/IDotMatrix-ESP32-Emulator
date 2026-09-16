@@ -69,16 +69,17 @@ Example:
 1. completion of a bulk transfer;
 2. ACK for one complete Schedule activity.
 
-For Schedules the distinction is critical:
+For Schedules the distinction is critical and depends on whether the activity media object is complete:
 
 ```text
 07 80 -> ACK 01
-05 80 -> ACK 03
+05 80 incomplete large activity chunk -> ACK 01
+05 80 final / one-packet CRC-valid activity -> ACK 03
 ```
 
-Replying with `01` to a `05 80` activity makes the app report an error and prevents subsequent activities from being sent. With `03`, the app continues correctly.
+Earlier small-activity tests established that a complete one-packet `05/80` must receive `03`; replying with `01` there makes the app report an error. BUILD 134 hardware captures on the 64x64 path established the complementary rule for large media: `01` is required while more chunks are expected, and `03` is terminal/final.
 
-The universal semantics of `01/02/03` are not yet considered fully decoded.
+The universal semantics of `01/02/03` outside these observed command families are not yet considered fully decoded.
 
 ---
 
@@ -200,7 +201,7 @@ The configured reduction is re-evaluated once per second. This is an emulator ru
 
 Direct testing on an original 64×64 shows that reset removes the stored Device Assets content; the password remembered by the original device/app workflow is also cleared. BUILD 99 therefore promotes the emulator command from the earlier runtime-only reset to a destructive device-state reset.
 
-The emulator clears transient renderers plus persisted Carousel, Alarm and Schedule media/metadata, stored brightness, ECO configuration and rotation. Starting with BUILD 101, an app-issued `03/80` is not treated as an electrical power cycle: the active BLE connection remains valid, the already synchronized volatile software clock is preserved, and the matrix remains logically ON with a black framebuffer ready for the next command. A real boot still follows the RTC -> stored Carousel -> screen-off policy. Password support is not currently implemented in BUILD 104, so there is no emulator password state to clear.
+The emulator clears transient renderers plus persisted Carousel, Alarm and Schedule media/metadata, the volatile Preset/Default bank, stored brightness, ECO configuration and rotation. Starting with BUILD 101, an app-issued `03/80` is not treated as an electrical power cycle: the active BLE connection remains valid, the already synchronized volatile software clock is preserved, and the matrix remains logically ON with a black framebuffer ready for the next command. A real boot still follows the RTC -> stored Carousel -> screen-off policy. Password support is not currently implemented in BUILD 104, so there is no emulator password state to clear.
 
 Clearing Alarm/Schedule and the additional emulator settings is an intentional, easy-to-explain reset policy; it is not yet claimed that the original hardware clears every one of those fields.
 
@@ -314,13 +315,15 @@ Several different limits coexist and must not be conflated:
 - the bulk parser accepts declared transfers up to 10 MiB; this is a transport sanity limit, not a promise that every payload can be decoded;
 - normal BLE GIF uploads use LittleFS and are governed primarily by filesystem capacity and decoder constraints; BUILD 87 also rejects a GIF at transfer start when its declared payload is larger than the currently available LittleFS free space;
 - BUILD 89 removes the active full-RAM compressed-GIF path: Alarm/Schedule GIF playback is also LittleFS-backed and no longer depends on one contiguous compressed-media allocation;
-- Alarm and Schedule media are still embedded in a single reconstructed logical packet, so the current `MAX_PACKET_SIZE = 8192` imposes a separate practical transport ceiling (roughly 8168 bytes of Alarm media after its 24-byte header and 8169 bytes of Schedule payload after its 23-byte header);
+- BUILD 132 hardware captures show that 64x64 Alarm media can span multiple complete FA02 logical packets. Each chunk repeats the 24-byte Alarm header; `mediaSize`/`mediaCRC` describe the complete object. The per-logical-packet `MAX_PACKET_SIZE = 8192` therefore no longer limits the total Alarm media size to one packet. BUILD 137 hardware captures confirm the corresponding large Program/Schedule behavior: each `05/80` logical packet repeats the 23-byte activity framing, offset 10 is the one-byte media type, offset 11 is observed as `0x00` on the first packet and `0x02` on continuations, incomplete chunks receive ACK `0x01`, and the CRC-valid final chunk receives `0x03`;
 - Alarm/Schedule GIF playback requires temporary filesystem capacity for a second copy of the selected GIF in `/event_play.gif`; this copy isolates the decoder from transactional source-file renames.
 - TEXT has a 4096-byte payload ceiling. With the current canonical record sizes and the 64-glyph storage cap, this permits up to 64 8x16 glyphs or 60 16x32 glyphs in one TEXT payload.
 
 These are implementation limits of the reference firmware, not confirmed limits of the iDotMatrix protocol.
 
 BUILD 87 also changes storage failure policy: LittleFS is mounted without implicit formatting. `LITTLEFS_FORMAT_ON_MOUNT_FAIL=1` is an explicit emulator recovery option, disabled by default, and is not part of the iDotMatrix protocol. If storage is unavailable, filesystem-backed media operations fail while Preferences metadata remains readable.
+
+Current repository note (BUILD 124): the public configuration now enables `LITTLEFS_FORMAT_ON_MOUNT_FAIL=1` by default for first-use/recovery convenience. MatrixPortal S3 users must also select an Arduino partition scheme containing a SPIFFS/LittleFS-compatible data partition; a FAT-only scheme cannot be repaired by formatting through LittleFS.
 
 ### RAW RGB 16x16 - CONFIRMED
 
@@ -648,6 +651,14 @@ Media types confirmed in the firmware:
 - `01` = GIF;
 - `02` = RAW RGB.
 
+### BUILD 132 multi-packet Alarm media observation
+
+On the 64x64 profile, Alarm media has been observed split across more than one complete FA02 logical packet. Every logical packet repeats the 24-byte Alarm header. `mediaSize` and `mediaCRC32` remain the size and CRC of the **complete** media object, while bytes from offset 24 onward are only the current chunk.
+
+A captured 6706-byte GIF was delivered as 4096 bytes followed by 2610 bytes. `reserved2` was `0x00` on the first packet and `0x02` on the following packet. The exact protocol meaning of `reserved2` is still not claimed; BUILD 132 uses accumulated byte count plus the complete-object CRC to determine completion.
+
+The emulator stages these chunks in LittleFS and publishes the new Alarm media only after the declared byte count and CRC are both valid.
+
 Text content also appeared in alarm packets during testing; the full semantics of all `contentType` values still need dedicated captures.
 
 ### Weekday flags - CONFIRMED
@@ -727,7 +738,8 @@ Format:
 | 7 | 1 | start minute |
 | 8 | 1 | end hour |
 | 9 | 1 | end minute |
-| 10 | 2 | contentType LE |
+| 10 | 1 | contentType |
+| 11 | 1 | per-chunk marker; observed `00` on first chunk, `02` on continuation chunks |
 | 12 | 4 | payloadSize LE |
 | 16 | 4 | CRC32 LE |
 | 20 | 2 | reserved LE |
@@ -767,19 +779,19 @@ A5 = enabled + Tuesday + Friday + Sunday
 
 ### Activity ACK - CONFIRMED AND CRITICAL
 
-On success:
+For a complete one-packet activity, or the final CRC-valid chunk of a large activity:
 
 ```text
 05 00 05 80 03
 ```
 
-This was verified experimentally. Replying with:
+For an accepted but incomplete large activity chunk:
 
 ```text
 05 00 05 80 01
 ```
 
-the app reports an error even for a program containing a single activity and does not continue with later activities. With `03`, a 12-activity program is transferred completely.
+The two observations are complementary. Historical small-activity tests showed that `01` is wrong when the activity is already complete: the app reports an error and does not proceed normally. BUILD 134 large-media hardware tests showed that `03` is wrong while more bytes remain: after the first ~4096-byte chunk the app does not continue the same media object. Returning `01` for incomplete chunks makes the 64x64 app send the remaining chunks, while the final chunk still receives `03`.
 
 The firmware uses `02` when validation fails; the original meaning of this status is not confirmed by a real device.
 
@@ -788,6 +800,20 @@ The firmware uses `02` when validation fails; the original meaning of this statu
 No explicit end-of-list command was observed. The firmware therefore uses temporary staging and considers the upload complete after about 900 ms without new activities. It then commits the staged Schedule. In BUILD 83 this remains an emulator implementation strategy rather than an observed protocol rule. The commit now preflights staged media by size/CRC, backs up the previous media set, promotes the new files, persists Preferences metadata, and only then publishes the new runtime Schedule. Failures use best-effort rollback. On boot, destination/backup media are reconciled against the metadata that actually persisted. This reduces partial-update risk but is **not claimed to be a filesystem-wide ACID transaction**, especially across unexpected power loss.
 
 This is an emulator design choice, not a confirmed field or behavior of the original protocol.
+
+### BUILD 133-136 large Schedule media continuation - HARDWARE CHARACTERIZED
+
+BUILD 133 removed the emulator's previous assumption that one Schedule activity's complete media object must fit behind the 23-byte `05/80` header in a single reconstructed logical packet. The 64x64 app is now confirmed to repeat that framing across many chunks, with `mediaSize` and CRC32 describing the complete media object.
+
+BUILD 134 established the flow-control rule: an incomplete accepted chunk must receive status `0x01`; the final CRC-valid chunk receives `0x03`. In the captured 48,456-byte image transfer the app then sent exactly 48,456 payload bytes.
+
+The same capture exposed a header-identity issue. Emulator totals advanced `4096 -> 4096 -> 8192 ... -> 44360/48456`. Since the payload transmitted by the app summed exactly to the declared 48,456 bytes, the second logical packet had caused the emulator to discard the already staged first 4096 bytes. The reset path can only occur when one of the activity-header fields used by BUILD 134 transaction matching changes between chunks.
+
+BUILD 135 therefore identifies an in-progress continuation by activity index plus the immutable media-object tuple `contentType + mediaSize + mediaCRC`. Day/time fields, `reserved`, and `mediaId` are retained from the first chunk but are no longer allowed to reset the media staging file while that object identity remains unchanged. Narrow `SCH HDR` / `SCH META VAR` diagnostics record their exact variations for later protocol documentation.
+
+BUILD 135 hardware validation then identified the actual changing byte. The first chunk decoded as `t=1`, while continuation chunks decoded as `t=513`; in hexadecimal this is exactly `0x0001 -> 0x0201`. Size, CRC and the other logged activity metadata remained unchanged. BUILD 136 therefore corrects the field boundary: offset 10 is the one-byte `contentType`, and offset 11 is separate per-chunk framing metadata. It is observed as `0x00` on the first chunk and `0x02` on following chunks. The firmware logs it separately as `m=0x..` and does not use it as media identity. The exact semantic name of that marker is still unconfirmed.
+
+A partial activity suppresses the 900 ms list commit. If the media transaction times out, its media identity changes, or validation fails, the new staging transaction is discarded/restarted without publishing a partial Schedule; the previously active committed Schedule remains untouched.
 
 ### PNG
 
@@ -865,7 +891,7 @@ After a valid app time synchronization the original unit continues Alarm executi
 
 ### Reset policy
 
-BUILD 99 introduced destructive clearing of emulator-managed persistent state. BUILD 101 refined the live behavior of `03/80`: Carousel, Alarm and Schedule media/metadata, stored brightness, ECO and rotation are cleared, but the already synchronized volatile software clock is preserved because the BLE session is still alive. The matrix remains logically ON and black, ready for the next app command. A real power cycle remains distinct and follows the normal boot policy. BUILD 104 removes the unverified emulator password runtime, so reset currently has no password state to clear.
+BUILD 99 introduced destructive clearing of emulator-managed persistent state. BUILD 101 refined the live behavior of `03/80`; current BUILD 141 also clears the volatile Preset/Default bank. Carousel, Preset, Alarm and Schedule media/metadata, stored brightness, ECO and rotation are cleared, but the already synchronized volatile software clock is preserved because the BLE session is still alive. The matrix remains logically ON and black, ready for the next app command. A real power cycle remains distinct and follows the normal boot policy. BUILD 104 removes the unverified emulator password runtime, so reset currently has no password state to clear.
 
 
 
@@ -874,3 +900,68 @@ BUILD 99 introduced destructive clearing of emulator-managed persistent state. B
 BUILD 101-103 explored password SET/VERIFY acknowledgements and timing, but those runtime experiments were removed in BUILD 104 because the official app never completed the SET-password flow. Source review also showed that the nominal BUILD 103 “deferred main-loop” timing was not implemented as independently as originally described. Therefore those builds are historical experiments only and must not be treated as protocol evidence.
 
 Current firmware does **not** implement password SET/VERIFY runtime behavior. The observed packet framing, decimal-pair encoding, app-side `pwdByMac` caching, and 7-byte-write / 5-byte-notification evidence remain documented as partial reverse-engineering findings.
+
+
+## Preset / Default (`06/02`) - CAPTURED, IMPLEMENTED AND HARDWARE-VALIDATED (BUILD 140; CONSOLIDATED IN BUILD 141)
+
+Official-app captures on the 64x64 profile show a second media bank, distinct from the persistent Device Assets Carousel. The app section is labelled **Preset / Default**.
+
+### Activation command
+
+The activation command is:
+
+```text
+06 02 <count> <slot0> ... <slotN>
+```
+
+The two-byte little-endian packet length precedes the command/subcommand as usual. Captured examples include:
+
+```text
+07 00 06 02 02 0E 0F
+08 00 06 02 03 0E 0F 10
+0A 00 06 02 05 0E 0F 10 11 12
+```
+
+The observed device-slot range is `0x0E..0x13` (14..19), giving a maximum of six items. The order after `count` is the playback order.
+
+### Media transfer
+
+Preset items use the ordinary 16-byte Bulk header and may be mixed media. A hardware capture of `TEXT "PJ" -> image -> TEXT "Ciao"` produced:
+
+```text
+type=3 slot=14 timeSign=5
+type=1 slot=15 timeSign=5
+type=3 slot=16 timeSign=5
+06/02 count=3 slots=14,15,16
+```
+
+A separate five-image capture used slots 14, 15, 16, 17 and 18. Large objects use the normal multi-packet Bulk continuation model: byte 4 is observed as `0x00` on the first logical packet and `0x02` on continuation packets, while total media size, CRC, `timeSign` and slot remain stable. Intermediate accepted chunks receive transfer ACK `0x01`; the CRC-valid final chunk receives `0x03`.
+
+For all captured Preset media, Bulk bytes 13..14 (`timeSign`, LE16) were `5`, including TEXT, small images and multi-packet images. Original-hardware visual observation is approximately **3 seconds per item**, and the app exposes no dwell setting. Therefore the emulator does **not** interpret `timeSign=5` as five seconds; it preserves the field as opaque metadata. GIF/image items use the directly observed ~3000 ms dwell. TEXT timing is content-aware and follows the renderer behavior documented below.
+
+### Storage and lifetime
+
+The app re-sends the selected Preset media when the Preset is invoked, unlike the persistent Device Assets Carousel workflow. BUILD 140 therefore keeps Preset media in a separate **volatile** LittleFS bank:
+
+```text
+/pre0.gif or /pre0.txt   <- device slot 14
+...
+/pre5.gif or /pre5.txt   <- device slot 19
+```
+
+The files are staging/playback storage only and are deleted on reboot or emulator reset. They are not stored in Carousel NVS metadata and are never restored by the boot policy. This is an emulator policy consistent with the captured re-upload workflow; persistence semantics of every original-device power state should not be generalized beyond the direct observations.
+
+### BUILD 140/141 behavior
+
+- slots 14..19 are intercepted before the normal live GIF/TEXT preview path;
+- GIF/image and TEXT objects are CRC-validated and committed to the volatile Preset bank;
+- media does not begin playback merely because upload completes;
+- `06/02` validates the count/list and starts the first available item;
+- playback rotates through the supplied list using content-aware timing: GIF/image items use ~3000 ms; TEXT waits for its presentation to complete as described below;
+- selecting another ordinary display mode stops Preset playback;
+- a new Preset upload freezes the previous Preset on its last framebuffer while replacement assets arrive, avoiding mixed old/new playback;
+- reboot/reset clears all Preset files and runtime metadata.
+
+### Preset TEXT playback timing (hardware observation)
+
+Preset item timing is content-aware rather than a fixed per-item delay. Images/GIFs use an observed dwell of about 3 seconds. For TEXT, continuous LEFT/RIGHT scrolling advances when the final glyph has fully left the display. PIN and viewport/page-based text modes present all required text pages once and retain the final page for about 3 seconds before the next Preset item. The captured Bulk `timeSign` remains `5` and is retained as opaque metadata; it is not interpreted as seconds. BUILD 140 hardware logs validated both a mixed `TEXT -> GIF -> scrolling TEXT` sequence and a five-GIF sequence, including large multi-packet objects and replacement of a currently active Preset.
