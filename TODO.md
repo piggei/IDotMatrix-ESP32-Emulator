@@ -210,3 +210,10 @@ Still open:
 - [x] Hardware-test BUILD 129: Carousel/image/TEXT transfers remain functional; Snowflake visual banding and coarse HUB75 fades remain; Alarm full-media packets are received completely but rejected by header/media validation.
 - [ ] Hardware-validate BUILD 130 WLED-native HUB75 DMA output for fade quality, flicker/dithering and Snowflake appearance.
 - [ ] Capture BUILD 130 Alarm header diagnostics and compare the live 64x64 Alarm packet layout with the documented 24-byte header.
+
+## iOS / RCSP
+
+- Capture BUILD 143 connection logs from the official iOS app.
+- Determine whether iOS sends a raw JieLi authentication challenge on AE01 after the opcode `0x06` probe.
+- Capture the real iDotMatrix `GET_TARGET_FEATURE` (`0x03`) response before implementing MCU-version emulation.
+- If AE01 remains silent, obtain a short iPhone <-> original iDotMatrix connection capture focused on AE01/AE02.

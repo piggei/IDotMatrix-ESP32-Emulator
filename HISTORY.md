@@ -1,3 +1,12 @@
+# BUILD 143 - iOS RCSP probe
+
+- Preserves the BUILD 142 32x32 iOS identity and delayed FA03 Device Info experiment.
+- Adds complete AE01 raw-write logging and FA03/AE02 characteristic-read diagnostics.
+- Classifies JieLi raw authentication messages and `FE DC BA ... EF` RCSP frames.
+- Adds a conservative response only for RCSP opcode `0x06` (session/auth reset), echoing the observed sequence in a generic success ACK.
+- Detects opcode `0x03` (`GET_TARGET_FEATURE`) but does not fabricate the unknown iDotMatrix-specific target payload.
+- Extends disconnect diagnostics with RCSP/auth/read/TX counters.
+
 # BUILD 142 - v0.5.0-dev: iOS delayed Device Info handshake experiment
 
 - Branched directly from the hardware-validated BUILD 141 consolidation baseline; no Preset, Schedule, Alarm, Carousel, MTU or media-path behavior is intentionally changed.

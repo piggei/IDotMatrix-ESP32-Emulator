@@ -11,7 +11,7 @@
 #define FW_RELEASE "0.5.0-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 142
+#define FW_BUILD 143
 
 // Temporary hardware-test aid: when the official app changes screen power
 // from OFF to ON, briefly overlay the release/build identifier without
@@ -27,10 +27,12 @@
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
 
-// BUILD 142 iOS development experiment. The ios_dev PlatformIO environment
+// BUILD 143 iOS development experiment. The ios_dev PlatformIO environment
 // enables this without changing the normal MatrixPortal/HUB75 behavior.
-// The experiment waits until BOTH FA03 and AE02 notifications are subscribed,
-// then sends one delayed Device Info notification.
+// B143 preserves the delayed FA03 Device Info experiment from B142 and adds a
+// conservative JieLi RCSP probe on AE01/AE02: raw auth/RCSP classification,
+// characteristic-read diagnostics, and a standards-shaped ACK for opcode 0x06.
+// Unknown RCSP commands are logged only; no guessed Target Feature payload is sent.
 #ifndef IOS_HANDSHAKE_EXPERIMENT
 #define IOS_HANDSHAKE_EXPERIMENT 0
 #endif
@@ -1350,6 +1352,11 @@ bool iosDeviceInfoPushSent = false;
 uint32_t iosSessionStartedAt = 0;
 uint32_t iosFa02RxCount = 0;
 uint32_t iosAe01RxCount = 0;
+uint32_t iosFa03ReadCount = 0;
+uint32_t iosAe02ReadCount = 0;
+uint32_t iosAe02TxCount = 0;
+uint32_t iosRcspFrameRxCount = 0;
+uint32_t iosRcspAuthRxCount = 0;
 #endif
 bool pendingSoftReset = false;
 uint32_t softResetAt = 0;
@@ -1810,6 +1817,95 @@ void sendFA03(const uint8_t *data, size_t len) {
   Serial.print("TX FA03 ["); Serial.print(len); Serial.print("]: "); dumpHex(data, len);
 #endif
 }
+
+#if IOS_HANDSHAKE_EXPERIMENT
+void sendAE02Probe(const uint8_t *data, size_t len, const char *tag) {
+  if (!deviceConnected || !ae02 || !iosAe02NotifyEnabled || !data || !len) return;
+  ae02->setValue(data, len);
+  ae02->notify();
+  iosAe02TxCount++;
+#if DEBUG_SERIAL
+  Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+  Serial.print("ms] AE02 TX #"); Serial.print(iosAe02TxCount);
+  Serial.print(" "); Serial.print(tag ? tag : "probe");
+  Serial.print(" len="); Serial.print(len); Serial.print(" raw="); dumpHex(data, len);
+#endif
+}
+
+void handleIosRcspProbe(const uint8_t *data, size_t len) {
+  if (!data || !len) return;
+
+  // JieLi authentication packets are raw, i.e. not FE/DC/BA framed.
+  if (len == 17 && (data[0] == 0x00 || data[0] == 0x01)) {
+    iosRcspAuthRxCount++;
+#if DEBUG_SERIAL
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print("ms] RCSP AUTH raw step=0x"); Serial.print(data[0], HEX);
+    Serial.print(" len="); Serial.print(len);
+    if (data[0] == 0x00) Serial.println(" phone challenge observed; crypto response intentionally not guessed in B143");
+    else Serial.println(" encrypted response observed");
+#endif
+    return;
+  }
+  if (len == 5 && data[0] == 0x02 && data[1] == 'p' && data[2] == 'a' && data[3] == 's' && data[4] == 's') {
+    iosRcspAuthRxCount++;
+#if DEBUG_SERIAL
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.println("ms] RCSP AUTH raw PASS observed");
+#endif
+    return;
+  }
+
+  if (len < 8 || data[0] != 0xFE || data[1] != 0xDC || data[2] != 0xBA) {
+#if DEBUG_SERIAL
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.println("ms] AE01 payload is neither known raw auth nor RCSP FE frame");
+#endif
+    return;
+  }
+
+  const uint8_t flags = data[3];
+  const uint8_t opcode = data[4];
+  const uint16_t bodyLen = ((uint16_t)data[5] << 8) | data[6];
+  const size_t expected = (size_t)bodyLen + 8U;
+  const bool complete = (len == expected && data[len-1] == 0xEF);
+  iosRcspFrameRxCount++;
+#if DEBUG_SERIAL
+  Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+  Serial.print("ms] RCSP RX #"); Serial.print(iosRcspFrameRxCount);
+  Serial.print(" flags=0x"); Serial.print(flags, HEX);
+  Serial.print(" opcode=0x"); Serial.print(opcode, HEX);
+  Serial.print(" bodyLen="); Serial.print(bodyLen);
+  Serial.print(" expected="); Serial.print(expected);
+  Serial.print(" complete="); Serial.println(complete ? "YES" : "NO");
+#endif
+  if (!complete) return;
+
+  const uint8_t *body = data + 7;
+  if (flags == 0xC0 && opcode == 0x06 && bodyLen >= 2) {
+    // Captures show variants [seq,01] and [02,seq,01]. The generic response
+    // body is [status=0, echoed_seq]. ACK only this well-understood opener.
+    const uint8_t seq = (bodyLen >= 3 && body[0] == 0x02) ? body[1] : body[0];
+    const uint8_t ack[] = {0xFE,0xDC,0xBA,0x00,0x06,0x00,0x02,0x00,seq,0xEF};
+#if DEBUG_SERIAL
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print("ms] RCSP opcode 0x06 session-init -> ACK seq=0x"); Serial.println(seq,HEX);
+#endif
+    sendAE02Probe(ack, sizeof(ack), "RCSP-06-ACK");
+    return;
+  }
+
+  if (flags == 0xC0 && opcode == 0x03) {
+#if DEBUG_SERIAL
+    const uint8_t seq = bodyLen ? body[0] : 0;
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print("ms] RCSP GET_TARGET_FEATURE (0x03) observed seq=0x"); Serial.print(seq,HEX);
+    Serial.println("; B143 logs it but does not send an unverified 125-byte target payload");
+#endif
+    return;
+  }
+}
+#endif
 
 void sendCommandStatus(uint8_t cmd, uint8_t sub, uint8_t status) {
   uint8_t r[] = {0x05,0x00,cmd,sub,status};
@@ -4473,21 +4569,40 @@ class AE01Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
     String v=c->getValue(); if(!v.length()) return;
 #if IOS_HANDSHAKE_EXPERIMENT
-    if(lockRuntimeState()){
-      iosAe01RxCount++;
+    iosAe01RxCount++;
 #if DEBUG_SERIAL
-      Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
-      Serial.print("ms] AE01 RX #"); Serial.print(iosAe01RxCount);
-      Serial.print(" len="); Serial.print(v.length());
-      Serial.print(" head="); dumpHex((const uint8_t*)v.c_str(), v.length()<16?v.length():16);
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print("ms] AE01 RX #"); Serial.print(iosAe01RxCount);
+    Serial.print(" len="); Serial.print(v.length());
+    Serial.print(" raw="); dumpHex((const uint8_t*)v.c_str(), v.length());
 #endif
-      unlockRuntimeState();
-    }
+    handleIosRcspProbe((const uint8_t*)v.c_str(), v.length());
 #elif DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
     Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
 #endif
   }
 };
+
+#if IOS_HANDSHAKE_EXPERIMENT
+class IosNotifyCharacteristicCallbacks : public BLECharacteristicCallbacks {
+public:
+  explicit IosNotifyCharacteristicCallbacks(bool aeChannel) : aeChannel_(aeChannel) {}
+  void onRead(BLECharacteristic *c) override {
+    if (aeChannel_) iosAe02ReadCount++; else iosFa03ReadCount++;
+#if DEBUG_SERIAL
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print("ms] "); Serial.print(aeChannel_ ? "AE02" : "FA03");
+    Serial.print(" READ #"); Serial.print(aeChannel_ ? iosAe02ReadCount : iosFa03ReadCount);
+    String v = c ? c->getValue() : String();
+    Serial.print(" currentLen="); Serial.print(v.length());
+    if (v.length()) { Serial.print(" value="); dumpHex((const uint8_t*)v.c_str(), v.length()); }
+    else Serial.println();
+#endif
+  }
+private:
+  bool aeChannel_;
+};
+#endif
 
 #if IOS_HANDSHAKE_EXPERIMENT
 enum class IosCccdChannel : uint8_t { FA03, AE02 };
@@ -4551,6 +4666,11 @@ class ServerCallbacks : public BLEServerCallbacks {
     iosDeviceInfoPushSent=false;
     iosFa02RxCount=0;
     iosAe01RxCount=0;
+    iosFa03ReadCount=0;
+    iosAe02ReadCount=0;
+    iosAe02TxCount=0;
+    iosRcspFrameRxCount=0;
+    iosRcspAuthRxCount=0;
     pendingDeviceInfoPush=false;
     deviceInfoPushAt=0;
 #if DEBUG_SERIAL
@@ -4576,6 +4696,11 @@ class ServerCallbacks : public BLEServerCallbacks {
     Serial.print("[IOSDIAG] session_ms="); Serial.print(millis()-iosSessionStartedAt);
     Serial.print(" FA02_RX="); Serial.print(iosFa02RxCount);
     Serial.print(" AE01_RX="); Serial.print(iosAe01RxCount);
+    Serial.print(" FA03_READ="); Serial.print(iosFa03ReadCount);
+    Serial.print(" AE02_READ="); Serial.print(iosAe02ReadCount);
+    Serial.print(" AE02_TX="); Serial.print(iosAe02TxCount);
+    Serial.print(" RCSP_FRAMES="); Serial.print(iosRcspFrameRxCount);
+    Serial.print(" RCSP_AUTH="); Serial.print(iosRcspAuthRxCount);
     Serial.print(" FA03_NOTIFY="); Serial.print(iosFa03NotifyEnabled?1:0);
     Serial.print(" AE02_NOTIFY="); Serial.print(iosAe02NotifyEnabled?1:0);
     Serial.print(" DEVICE_INFO_SENT="); Serial.println(iosDeviceInfoPushSent?1:0);
@@ -5941,6 +6066,9 @@ void setup(){
   BLEService *fas=server->createService(FA_SERVICE_UUID);
   fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
   fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
+#if IOS_HANDSHAKE_EXPERIMENT
+  fa03->setCallbacks(new IosNotifyCharacteristicCallbacks(false));
+#endif
   {
     BLE2902 *cccd=new BLE2902();
 #if IOS_HANDSHAKE_EXPERIMENT
@@ -5952,6 +6080,9 @@ void setup(){
   BLEService *aes=server->createService(AE_SERVICE_UUID);
   ae01=aes->createCharacteristic(AE01_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); ae01->setCallbacks(new AE01Callbacks());
   ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
+#if IOS_HANDSHAKE_EXPERIMENT
+  ae02->setCallbacks(new IosNotifyCharacteristicCallbacks(true));
+#endif
   {
     BLE2902 *cccd=new BLE2902();
 #if IOS_HANDSHAKE_EXPERIMENT
@@ -5976,13 +6107,14 @@ void setup(){
 #if IOS_HANDSHAKE_EXPERIMENT && DEBUG_SERIAL
   Serial.println("[IOSDIAG] ===== BLE/GATT SETUP =====");
   Serial.print("[IOSDIAG] deviceName="); Serial.println(DEVICE_NAME);
-  Serial.println("[IOSDIAG] identity=REAL_32X32_MANUFACTURER + DELAYED_DEVICE_INFO");
+  Serial.println("[IOSDIAG] identity=REAL_32X32_MANUFACTURER + DELAYED_DEVICE_INFO + RCSP_PROBE");
   Serial.print("[IOSDIAG] logical="); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
   Serial.print(" physical="); Serial.print(PHYSICAL_MATRIX_WIDTH); Serial.print('x'); Serial.println(PHYSICAL_MATRIX_HEIGHT);
   Serial.print("[IOSDIAG] matrixGPIO="); Serial.println(MATRIX_PIN);
   Serial.print("[IOSDIAG] manufacturer len="); Serial.print(sizeof(mb)); Serial.print(" data="); dumpHex((const uint8_t*)mb,sizeof(mb));
   Serial.print("[IOSDIAG] Device Info will be sent once, "); Serial.print(IOS_DEVICE_INFO_DELAY_MS);
   Serial.println(" ms after both FA03 and AE02 notifications are enabled");
+  Serial.println("[IOSDIAG] AE01 probe: log raw auth + FE/DC/BA RCSP; ACK opcode 0x06 only; 0x03 is diagnostic-only");
 #endif
 
   reportHeap("setup complete");
