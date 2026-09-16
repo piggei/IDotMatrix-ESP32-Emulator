@@ -4,7 +4,7 @@
 
 PlatformIO support was introduced in `v0.5.0-dev / BUILD 125`.
 
-The recommended development target is currently:
+The recommended **main-branch** development target is currently:
 
 - Adafruit MatrixPortal S3;
 - ESP32-S3;
@@ -37,19 +37,49 @@ Open the repository root in VS Code with PlatformIO/pioarduino installed, or use
 pio run
 ```
 
-The default environment is:
+On the main branch / BUILD 141 consolidation package, the default environment is `matrixportal_s3_hub75_64`. In this BUILD 142 `ios-dev` package, the default is intentionally `ios_dev_esp32_ws2812_32` so Thiago cannot accidentally build the MatrixPortal target.
 
-```text
-matrixportal_s3_hub75_64
-```
-
-An explicit build is equivalent:
+The main MatrixPortal target is still available explicitly:
 
 ```text
 pio run -e matrixportal_s3_hub75_64
 ```
 
 The first build is expected to take longer because PlatformIO must download the platform, framework and libraries. Subsequent incremental builds should reuse those packages and only rebuild changed translation units/dependencies.
+
+## BUILD 142 iOS development target
+
+The `ios-dev` branch adds a second environment for Thiago's hardware and makes it the default environment in the BUILD 142 package:
+
+```text
+ios_dev_esp32_ws2812_32
+```
+
+Configuration:
+
+```text
+board                = esp32dev
+display backend      = WS2812 / FastLED
+logical profile      = 32x32 / screen type 0x03
+physical matrix      = 16x16
+WS2812 GPIO          = 17
+partition layout     = min_spiffs.csv
+IOS_HANDSHAKE_EXPERIMENT = 1
+```
+
+Build explicitly with:
+
+```text
+pio run -e ios_dev_esp32_ws2812_32
+```
+
+Upload with:
+
+```text
+pio run -e ios_dev_esp32_ws2812_32 -t upload
+```
+
+The root `update_idotmatrix_emulator.sh` remains tailored to PJ's MatrixPortal S3 / WSL USB workflow and should not be used as Thiago's generic classic-ESP32 uploader.
 
 ## Upload
 

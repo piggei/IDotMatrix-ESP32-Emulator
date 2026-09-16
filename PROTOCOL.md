@@ -32,6 +32,26 @@ All hexadecimal values are written as separate bytes. Multi-byte fields observed
 
 The emulator advertising exposes the FA service and manufacturer data derived from observed devices. The resolution/profile byte depends on `IDOTMATRIX_SCREEN_TYPE`. Advertising fields are useful for discovery/profile behavior, but BUILD 108 testing showed that changing advertising version bytes alone does **not** change the MCU version shown by the official app.
 
+### iOS session-start investigation - PARTIAL
+
+The official iOS app uses the same FA/AE GATT layout but, in BUILD 122 testing, connected and subscribed to both notification characteristics without sending any application traffic. The captured session showed FA03 CCCD `01 00`, AE02 CCCD `01 00`, then approximately 71 seconds with `FA02_RX=0` and `AE01_RX=0`. A manual Clock command sent to FA02 with the LightBlue BLE utility worked on the same emulator, isolating the failure to the official iOS app's session-start logic rather than the FA02 command parser.
+
+BUILD 142 is a controlled experiment, not a confirmed protocol rule:
+
+1. advertise the exact 10-byte manufacturer payload captured from a real 32x32 device: `54 52 00 70 03 04 0F 00 01 04`;
+2. wait until notifications are enabled on **both** FA03 and AE02;
+3. wait another 250 ms;
+4. send exactly one Device Info notification on FA03;
+5. log whether FA02 or AE01 traffic begins afterwards.
+
+The experimental Device Info bytes are:
+
+```text
+09 00 01 80 04 0E 01 03 00
+```
+
+`04 0E` is taken from the documented original-device 16x16 Device Info capture and `0x03` selects the 32x32 profile. The complete packet above has **not** been captured from a real 32x32 device and therefore remains an explicit BUILD 142 hypothesis.
+
 ### Packet length
 
 In FA02 packets the first `uint16` normally contains the total packet length, little-endian. Example:
@@ -891,7 +911,7 @@ After a valid app time synchronization the original unit continues Alarm executi
 
 ### Reset policy
 
-BUILD 99 introduced destructive clearing of emulator-managed persistent state. BUILD 101 refined the live behavior of `03/80`; current BUILD 141 also clears the volatile Preset/Default bank. Carousel, Preset, Alarm and Schedule media/metadata, stored brightness, ECO and rotation are cleared, but the already synchronized volatile software clock is preserved because the BLE session is still alive. The matrix remains logically ON and black, ready for the next app command. A real power cycle remains distinct and follows the normal boot policy. BUILD 104 removes the unverified emulator password runtime, so reset currently has no password state to clear.
+BUILD 99 introduced destructive clearing of emulator-managed persistent state. BUILD 101 refined the live behavior of `03/80`; BUILD 141 and later also clear the volatile Preset/Default bank. Carousel, Preset, Alarm and Schedule media/metadata, stored brightness, ECO and rotation are cleared, but the already synchronized volatile software clock is preserved because the BLE session is still alive. The matrix remains logically ON and black, ready for the next app command. A real power cycle remains distinct and follows the normal boot policy. BUILD 104 removes the unverified emulator password runtime, so reset currently has no password state to clear.
 
 
 

@@ -11,3 +11,5 @@ The files have been reduced to the useful portions by removing periodic heap rep
 `12-preset-default-build138.txt` records the BUILD 138 Preset/Default protocol captures and the subsequent BUILD 140 hardware validation: volatile slots 14..19, mixed TEXT/GIF media, constant `timeSign=5`, the `06/02 <count> <slots...>` activation list, normal Bulk continuation markers on large Preset images, and content-aware TEXT timing.
 
 `13-preset-default-build140-validation.txt` records the BUILD 140 hardware playback validation: mixed TEXT/GIF timing, five-image ordered playback, large multi-packet media, looping, and clean active-bank replacement.
+
+- `14-ios-build122-baseline.txt` - iOS connection/subscription baseline from Thiago: real 32x32 manufacturer payload, FA03+AE02 notifications enabled, no FA02/AE01 app traffic while unsolicited Device Info was suppressed; motivates BUILD 142.

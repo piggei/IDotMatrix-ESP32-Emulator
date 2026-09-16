@@ -1,3 +1,15 @@
+# BUILD 142 - v0.5.0-dev: iOS delayed Device Info handshake experiment
+
+- Branched directly from the hardware-validated BUILD 141 consolidation baseline; no Preset, Schedule, Alarm, Carousel, MTU or media-path behavior is intentionally changed.
+- Added a dedicated PlatformIO environment, `ios_dev_esp32_ws2812_32`, for Thiago's classic ESP32 test hardware: physical 16x16 WS2812 on GPIO17 while exposing logical iDotMatrix profile `0x03` (32x32).
+- Reintroduced iOS diagnostics in an isolated compile-time path (`IOS_HANDSHAKE_EXPERIMENT=1`) rather than merging the old BUILD 119-122 experimental branch back into the normal MatrixPortal target.
+- Preserved the exact 10-byte manufacturer payload captured from a real 32x32 device: `54 52 00 70 03 04 0F 00 01 04`.
+- Changed the unsolicited Device Info experiment: BUILD 142 does **not** send Device Info immediately after connection. It waits until the client has enabled notifications on both FA03 and AE02, then schedules exactly one FA03 Device Info notification 250 ms later.
+- The experimental Device Info payload is `09 00 01 80 04 0E 01 03 00`. Bytes `04 0E` come from the documented original-device 16x16 capture; only the profile byte is changed to `0x03`. This is an explicit hypothesis for the iOS test and must not be documented as a captured real-32x32 Device Info response.
+- Added narrow `[IOSDIAG]` logging for CCCD writes, delayed Device Info scheduling/transmission, first application writes on FA02/AE01 and disconnect summary counters.
+- BUILD 122 established the baseline: iOS connected and subscribed to FA03/AE02 for ~71 s but sent no FA02/AE01 traffic while unsolicited Device Info was suppressed. The same emulator accepted a manual FA02 Clock command from LightBlue, proving the GATT write path and application command handler work independently of the official iOS app.
+- The normal `matrixportal_s3_hub75_64` environment remains available and keeps the BUILD 141 behavior because the iOS experiment is compile-time isolated.
+
 # BUILD 141 - v0.5.0-dev: Preset/Default consolidation baseline
 
 - Consolidation checkpoint after successful hardware validation of BUILD 140 Preset/Default playback. No intentional protocol or playback behavior changes.

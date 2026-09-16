@@ -1,4 +1,4 @@
-# BUILD 141 consolidation / remaining Preset validation
+# BUILD 142 iOS experiment / remaining validation
 
 - [x] Capture `TEXT PJ -> image -> TEXT Ciao`: Bulk objects use slots 14, 15 and 16 and activate with `06/02 03 0E 0F 10`.
 - [x] Confirm mixed Preset media: TEXT (`type=3`) and GIF/image (`type=1`) coexist in one list.
@@ -140,6 +140,16 @@ Still open:
 - [ ] complete dedicated Text/Effect protocol captures on the original 64×64, especially the third text size and any 64x64-specific glyph marker/geometry;
 - [ ] verify which additional original-device settings survive/reset across `03/80` if protocol fidelity becomes important.
 
+
+## iOS compatibility branch
+
+- [x] Preserve BUILD 122 baseline evidence: iOS connects, subscribes to FA03 and AE02, keeps the link open, but sends no FA02/AE01 application traffic when unsolicited Device Info is suppressed.
+- [x] Confirm the same emulator accepts a manual FA02 Clock command through LightBlue, excluding the basic write path / Clock parser as the immediate blocker.
+- [x] Add a current-code classic-ESP32 PlatformIO target for Thiago: logical 32x32, physical 16x16 WS2812, GPIO17.
+- [ ] Hardware-test BUILD 142 delayed Device Info after both CCCDs are enabled.
+- [ ] Record whether iOS identifies the emulator as 32x32 after the delayed Device Info notification.
+- [ ] Record whether any FA02 or AE01 application traffic begins after the delayed Device Info notification.
+- [ ] If BUILD 142 remains silent, capture GATT/service discovery against an original device before introducing speculative AE/RCSP replies.
 
 ## Original hardware physical documentation
 

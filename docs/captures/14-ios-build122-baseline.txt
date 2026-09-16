@@ -1,0 +1,24 @@
+# iOS BUILD 122 baseline supplied by Thiago
+# Purpose: preserve the pre-B142 session behavior that motivates the delayed Device Info experiment.
+
+LOGICAL BUFFERS: 32x32 x3, bytes=9216
+BOOT POLICY: no valid RTC/carousel -> SCREEN OFF
+[IOSDIAG] advertising started; manufacturer= len=10 data=54 52 00 70 03 04 0F 00 01 04
+[IOSDIAG] identity experiment=REAL_32X32_CAPTURE logical=32x32 physical=16x16 preview=ON
+
+[IOSDIAG] ===== BLE CONNECT =====
+[IOSDIAG] release=0.4.1-dev build=122 screenType=0x3
+[IOSDIAG] unsolicited Device Info push=SUPPRESSED (BUILD 122 experiment)
+[IOSDIAG +991ms] FA03 CCCD WRITE value len=2 data=01 00
+[IOSDIAG +992ms] FA03 CCCD decoded notifications=ON indications=OFF
+[IOSDIAG +1171ms] AE02 CCCD WRITE value len=2 data=01 00
+[IOSDIAG +1172ms] AE02 CCCD decoded notifications=ON indications=OFF
+...
+[IOSDIAG +71642ms] FA03 CCCD WRITE value len=2 data=00 00
+[IOSDIAG +71642ms] FA03 CCCD decoded notifications=OFF indications=OFF
+[IOSDIAG] ===== BLE DISCONNECT =====
+[IOSDIAG] session_ms=71728 FA02_RX=0 AE01_RX=0 FA03_TX=0 AE02_TX=0 FA03_READ=0 AE02_READ=0 FA03_CCCD_W=2 AE02_CCCD_W=1 FA03_STATUS=0 AE02_STATUS=0
+
+# External observation from the same tester:
+# LightBlue successfully wrote the Clock command sequence observed on Android to FA02,
+# and the ESP32/matrix displayed the Clock.

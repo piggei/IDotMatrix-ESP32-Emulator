@@ -11,7 +11,7 @@
 #define FW_RELEASE "0.5.0-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 141
+#define FW_BUILD 142
 
 // Temporary hardware-test aid: when the official app changes screen power
 // from OFF to ON, briefly overlay the release/build identifier without
@@ -26,6 +26,15 @@
 #define PRESET_PROTOCOL_DEBUG 0  // Set to 1 only for Preset/Default protocol tracing (volatile slots 14..19).
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
+
+// BUILD 142 iOS development experiment. The ios_dev PlatformIO environment
+// enables this without changing the normal MatrixPortal/HUB75 behavior.
+// The experiment waits until BOTH FA03 and AE02 notifications are subscribed,
+// then sends one delayed Device Info notification.
+#ifndef IOS_HANDSHAKE_EXPERIMENT
+#define IOS_HANDSHAKE_EXPERIMENT 0
+#endif
+#define IOS_DEVICE_INFO_DELAY_MS 250UL
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
 #define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
@@ -1334,6 +1343,14 @@ size_t rawRgbWriteOffset = 0;
 
 bool pendingDeviceInfoPush = false;
 uint32_t deviceInfoPushAt = 0;
+#if IOS_HANDSHAKE_EXPERIMENT
+bool iosFa03NotifyEnabled = false;
+bool iosAe02NotifyEnabled = false;
+bool iosDeviceInfoPushSent = false;
+uint32_t iosSessionStartedAt = 0;
+uint32_t iosFa02RxCount = 0;
+uint32_t iosAe01RxCount = 0;
+#endif
 bool pendingSoftReset = false;
 uint32_t softResetAt = 0;
 bool pendingAdvertisingRestart = false;
@@ -1802,6 +1819,20 @@ void sendCommandAck(uint8_t cmd, uint8_t sub) { sendCommandStatus(cmd, sub, 0x01
 void sendTransferAck(uint8_t type, uint8_t status) { sendCommandStatus(type, 0x00, status); }
 
 void sendDeviceInfo() {
+#if IOS_HANDSHAKE_EXPERIMENT
+  // Controlled iOS identity experiment. The 16x16 original-hardware capture
+  // used 04 0E in these version-like bytes; only the final screen type is
+  // changed to 0x03 for the 32x32 logical profile under test. This is not
+  // claimed as a captured 32x32 Device Info packet; it is intentionally an
+  // identity hypothesis isolated to the ios_dev build.
+  uint8_t r[] = {0x09,0x00,0x01,0x80,0x04,0x0E,0x01,0x03,0x00};
+  iosDeviceInfoPushSent=true;
+  pendingDeviceInfoPush=false;
+#if DEBUG_SERIAL
+  Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+  Serial.print("ms] DEVICE INFO TX raw="); dumpHex(r, sizeof(r));
+#endif
+#else
   uint8_t r[] = {0x09,0x00,0x01,0x80,FW_RELEASE_MAJOR,FW_RELEASE_MINOR,0x01,IDOTMATRIX_SCREEN_TYPE,0x00};
 #if DEVICE_INFO_PROTOCOL_DEBUG
   Serial.print("DEVICE INFO TX: release="); Serial.print(FW_RELEASE);
@@ -1809,6 +1840,7 @@ void sendDeviceInfo() {
   Serial.print(" screenType="); Serial.print(IDOTMATRIX_SCREEN_TYPE);
   Serial.print(" raw="); dumpHex(r, sizeof(r));
   Serial.println("DEVICE INFO NOTE: app MCU field is encoded by the 9-byte FA03 Device Info response");
+#endif
 #endif
   sendFA03(r, sizeof(r));
 }
@@ -4425,6 +4457,13 @@ class FA02Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
     String value=c->getValue(); if(!value.length()) return;
     if(!lockRuntimeState()) return;
+#if IOS_HANDSHAKE_EXPERIMENT && DEBUG_SERIAL
+    iosFa02RxCount++;
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print("ms] FA02 RX #"); Serial.print(iosFa02RxCount);
+    Serial.print(" len="); Serial.print(value.length());
+    Serial.print(" head="); dumpHex((const uint8_t*)value.c_str(), value.length()<16?value.length():16);
+#endif
     processFA02Write((const uint8_t*)value.c_str(),value.length());
     unlockRuntimeState();
   }
@@ -4432,11 +4471,67 @@ class FA02Callbacks : public BLECharacteristicCallbacks {
 
 class AE01Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
-#if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
-    String v=c->getValue(); if(!v.length()) return; Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
+    String v=c->getValue(); if(!v.length()) return;
+#if IOS_HANDSHAKE_EXPERIMENT
+    if(lockRuntimeState()){
+      iosAe01RxCount++;
+#if DEBUG_SERIAL
+      Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+      Serial.print("ms] AE01 RX #"); Serial.print(iosAe01RxCount);
+      Serial.print(" len="); Serial.print(v.length());
+      Serial.print(" head="); dumpHex((const uint8_t*)v.c_str(), v.length()<16?v.length():16);
+#endif
+      unlockRuntimeState();
+    }
+#elif DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
+    Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
 #endif
   }
 };
+
+#if IOS_HANDSHAKE_EXPERIMENT
+enum class IosCccdChannel : uint8_t { FA03, AE02 };
+
+class IosCccdCallbacks : public BLEDescriptorCallbacks {
+public:
+  explicit IosCccdCallbacks(IosCccdChannel channel) : channel_(channel) {}
+
+  void onWrite(BLEDescriptor *d) override {
+    const size_t len=d?d->getLength():0;
+    const uint8_t *raw=(d && len)?d->getValue():nullptr;
+    const uint16_t value=(raw && len>=2)?((uint16_t)raw[0] | ((uint16_t)raw[1]<<8)):0;
+    const bool notifications=(value & 0x0001U)!=0;
+    const bool indications=(value & 0x0002U)!=0;
+
+    if(!lockRuntimeState()) return;
+    bool &state=(channel_==IosCccdChannel::FA03)?iosFa03NotifyEnabled:iosAe02NotifyEnabled;
+    state=notifications;
+#if DEBUG_SERIAL
+    Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print("ms] "); Serial.print(channel_==IosCccdChannel::FA03?"FA03":"AE02");
+    Serial.print(" CCCD WRITE len="); Serial.print(len);
+    Serial.print(" value=0x"); Serial.print(value,HEX);
+    Serial.print(" notifications="); Serial.print(notifications?"ON":"OFF");
+    Serial.print(" indications="); Serial.println(indications?"ON":"OFF");
+#endif
+
+    if(deviceConnected && iosFa03NotifyEnabled && iosAe02NotifyEnabled &&
+       !iosDeviceInfoPushSent && !pendingDeviceInfoPush){
+      pendingDeviceInfoPush=true;
+      deviceInfoPushAt=millis()+IOS_DEVICE_INFO_DELAY_MS;
+#if DEBUG_SERIAL
+      Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+      Serial.print("ms] DEVICE INFO scheduled in "); Serial.print(IOS_DEVICE_INFO_DELAY_MS);
+      Serial.println(" ms after both CCCDs became active");
+#endif
+    }
+    unlockRuntimeState();
+  }
+
+private:
+  IosCccdChannel channel_;
+};
+#endif
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer*) override {
@@ -4449,8 +4544,26 @@ class ServerCallbacks : public BLEServerCallbacks {
     // the latest app command remains authoritative, avoiding ON+black state.
     triggerConnectionBuzzer();
     pendingAdvertisingRestart=false;
+#if IOS_HANDSHAKE_EXPERIMENT
+    iosSessionStartedAt=millis();
+    iosFa03NotifyEnabled=false;
+    iosAe02NotifyEnabled=false;
+    iosDeviceInfoPushSent=false;
+    iosFa02RxCount=0;
+    iosAe01RxCount=0;
+    pendingDeviceInfoPush=false;
+    deviceInfoPushAt=0;
+#if DEBUG_SERIAL
+    Serial.println("[IOSDIAG] ===== BLE CONNECT =====");
+    Serial.print("[IOSDIAG] release="); Serial.print(FW_RELEASE);
+    Serial.print(" build="); Serial.print(FW_BUILD);
+    Serial.print(" screenType=0x"); Serial.println(IDOTMATRIX_SCREEN_TYPE,HEX);
+    Serial.println("[IOSDIAG] waiting for FA03 + AE02 notification subscriptions");
+#endif
+#else
     pendingDeviceInfoPush=true;
     deviceInfoPushAt=millis()+1200;
+#endif
     unlockRuntimeState();
   }
   void onDisconnect(BLEServer*) override {
@@ -4458,7 +4571,22 @@ class ServerCallbacks : public BLEServerCallbacks {
     Serial.println("BLE D");
 #endif
     if(!lockRuntimeState()) return;
+#if IOS_HANDSHAKE_EXPERIMENT && DEBUG_SERIAL
+    Serial.println("[IOSDIAG] ===== BLE DISCONNECT =====");
+    Serial.print("[IOSDIAG] session_ms="); Serial.print(millis()-iosSessionStartedAt);
+    Serial.print(" FA02_RX="); Serial.print(iosFa02RxCount);
+    Serial.print(" AE01_RX="); Serial.print(iosAe01RxCount);
+    Serial.print(" FA03_NOTIFY="); Serial.print(iosFa03NotifyEnabled?1:0);
+    Serial.print(" AE02_NOTIFY="); Serial.print(iosAe02NotifyEnabled?1:0);
+    Serial.print(" DEVICE_INFO_SENT="); Serial.println(iosDeviceInfoPushSent?1:0);
+#endif
     deviceConnected=false;
+#if IOS_HANDSHAKE_EXPERIMENT
+    iosFa03NotifyEnabled=false;
+    iosAe02NotifyEnabled=false;
+    pendingDeviceInfoPush=false;
+    deviceInfoPushAt=0;
+#endif
     packetReceived=packetExpected=0;
     packetLastRxMs=0;
     resetBulkTransfer(true);
@@ -5812,15 +5940,50 @@ void setup(){
   server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService *fas=server->createService(FA_SERVICE_UUID);
   fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
-  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); fa03->addDescriptor(new BLE2902()); fas->start();
+  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
+  {
+    BLE2902 *cccd=new BLE2902();
+#if IOS_HANDSHAKE_EXPERIMENT
+    cccd->setCallbacks(new IosCccdCallbacks(IosCccdChannel::FA03));
+#endif
+    fa03->addDescriptor(cccd);
+  }
+  fas->start();
   BLEService *aes=server->createService(AE_SERVICE_UUID);
   ae01=aes->createCharacteristic(AE01_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); ae01->setCallbacks(new AE01Callbacks());
-  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); ae02->addDescriptor(new BLE2902()); aes->start();
+  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY);
+  {
+    BLE2902 *cccd=new BLE2902();
+#if IOS_HANDSHAKE_EXPERIMENT
+    cccd->setCallbacks(new IosCccdCallbacks(IosCccdChannel::AE02));
+#endif
+    ae02->addDescriptor(cccd);
+  }
+  aes->start();
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
-  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
+#if IOS_HANDSHAKE_EXPERIMENT
+  // Exact 10-byte manufacturer payload previously captured from a real 32x32
+  // unit and used in the BUILD 122 iOS identity experiment.
+  const char mb[]={0x54,0x52,0x00,0x70,0x03,0x04,0x0F,0x00,0x01,0x04};
+#else
+  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR};
+#endif
+  ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
+
+#if IOS_HANDSHAKE_EXPERIMENT && DEBUG_SERIAL
+  Serial.println("[IOSDIAG] ===== BLE/GATT SETUP =====");
+  Serial.print("[IOSDIAG] deviceName="); Serial.println(DEVICE_NAME);
+  Serial.println("[IOSDIAG] identity=REAL_32X32_MANUFACTURER + DELAYED_DEVICE_INFO");
+  Serial.print("[IOSDIAG] logical="); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
+  Serial.print(" physical="); Serial.print(PHYSICAL_MATRIX_WIDTH); Serial.print('x'); Serial.println(PHYSICAL_MATRIX_HEIGHT);
+  Serial.print("[IOSDIAG] matrixGPIO="); Serial.println(MATRIX_PIN);
+  Serial.print("[IOSDIAG] manufacturer len="); Serial.print(sizeof(mb)); Serial.print(" data="); dumpHex((const uint8_t*)mb,sizeof(mb));
+  Serial.print("[IOSDIAG] Device Info will be sent once, "); Serial.print(IOS_DEVICE_INFO_DELAY_MS);
+  Serial.println(" ms after both FA03 and AE02 notifications are enabled");
+#endif
 
   reportHeap("setup complete");
 }
@@ -5845,7 +6008,26 @@ void loop(){
     pendingAdvertisingRestart=false;
     restartAdvertisingNow=true;
   }
-  if(pendingDeviceInfoPush && (long)(now-deviceInfoPushAt)>=0){pendingDeviceInfoPush=false;if(deviceConnected)sendDeviceInfo();}
+  if(pendingDeviceInfoPush && (long)(now-deviceInfoPushAt)>=0){
+    pendingDeviceInfoPush=false;
+#if IOS_HANDSHAKE_EXPERIMENT
+    if(deviceConnected && iosFa03NotifyEnabled && iosAe02NotifyEnabled && !iosDeviceInfoPushSent){
+      iosDeviceInfoPushSent=true;
+#if DEBUG_SERIAL
+      Serial.print("[IOSDIAG +"); Serial.print(now-iosSessionStartedAt);
+      Serial.println("ms] both CCCDs still active; sending one Device Info notification");
+#endif
+      sendDeviceInfo();
+    } else {
+#if DEBUG_SERIAL
+      Serial.print("[IOSDIAG +"); Serial.print(now-iosSessionStartedAt);
+      Serial.println("ms] Device Info push canceled because subscription state changed");
+#endif
+    }
+#else
+    if(deviceConnected) sendDeviceInfo();
+#endif
+  }
   if(pendingSoftReset && (long)(now-softResetAt)>=0){pendingSoftReset=false;resetRuntimeState();}
 
   updateAlarms();
