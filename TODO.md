@@ -213,7 +213,7 @@ Still open:
 
 ## iOS / RCSP
 
-- Capture BUILD 143 connection logs from the official iOS app.
-- Determine whether iOS sends a raw JieLi authentication challenge on AE01 after the opcode `0x06` probe.
+- [x] Capture BUILD 143 connection logs from the official iOS app: iOS subscribed to FA03/AE02 but produced no FA02, AE01, RCSP or raw-auth traffic.
+- [ ] Capture BUILD 144 connection logs and determine whether the unsolicited AE02 raw-auth stimulus triggers any AE01 response.
 - Capture the real iDotMatrix `GET_TARGET_FEATURE` (`0x03`) response before implementing MCU-version emulation.
 - If AE01 remains silent, obtain a short iPhone <-> original iDotMatrix connection capture focused on AE01/AE02.

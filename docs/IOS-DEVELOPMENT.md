@@ -1,6 +1,16 @@
-# iOS compatibility development
+# iOS development branch
 
-## Current experiment
+## Current experiment: BUILD 144
+
+BUILD 144 keeps the successful BUILD 142 identity/timing experiment (the official iOS app identifies the emulator as 32x32 after the delayed FA03 Device Info notification) and the BUILD 143 passive RCSP diagnostics. BUILD 143 showed that, even after FA03 and AE02 notification subscriptions are enabled, the app sends no FA02 command, no AE01 write, no characteristic read, no raw JieLi authentication packet, and no `FE DC BA ... EF` RCSP frame.
+
+BUILD 144 adds one deliberately isolated stimulus. At 900 ms after both notification CCCDs are active, the emulator sends exactly one deterministic raw JieLi-style packet on AE02: `0x00` followed by 16 challenge bytes. This packet is **diagnostic only**. It is not documented as stock iDotMatrix behavior, it does not prove authentication, and the emulator does not forge the later `pass` stage. The test asks only whether the iOS JieLi layer reacts at all.
+
+A useful result is any AE01 packet after the stimulus, especially `0x01` followed by 16 bytes. If AE01 remains completely silent through disconnect, the remaining gate is likely earlier than the RCSP authentication exchange and an original iPhone-to-iDotMatrix capture becomes the preferred next step.
+
+For Thiago's test, capture the complete serial log from boot through disconnect and leave the official app connected for at least 30 seconds. No manual LightBlue writes are needed.
+
+# Historical baseline: BUILD 142
 
 **Release:** `v0.5.0-dev`  
 **Build:** `142`  

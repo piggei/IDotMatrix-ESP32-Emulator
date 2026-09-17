@@ -1,3 +1,12 @@
+# BUILD 144 - iOS device-originated RCSP stimulus probe
+
+- Preserves the BUILD 143 passive RCSP diagnostics and the BUILD 142 delayed FA03 Device Info notification.
+- Adds one deterministic, unsolicited raw JieLi-style authentication challenge (`0x00` + 16 bytes) on AE02 900 ms after both FA03 and AE02 notifications are enabled.
+- The stimulus is explicitly diagnostic only: it does not claim to reproduce stock iDotMatrix ordering, does not verify cryptography, and does not forge authentication success.
+- Any AE01 `0x01 + 16-byte` response is logged as evidence that the iOS JieLi authentication layer is actively listening to AE02.
+- Keeps opcode `0x03 GET_TARGET_FEATURE` diagnostic-only; no unverified MCU/target-feature payload is generated.
+- Disconnect summary now reports whether the RCSP stimulus was actually transmitted.
+
 # BUILD 143 - iOS RCSP probe
 
 - Preserves the BUILD 142 32x32 iOS identity and delayed FA03 Device Info experiment.

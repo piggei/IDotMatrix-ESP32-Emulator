@@ -987,7 +987,7 @@ The files are staging/playback storage only and are deleted on reboot or emulato
 Preset item timing is content-aware rather than a fixed per-item delay. Images/GIFs use an observed dwell of about 3 seconds. For TEXT, continuous LEFT/RIGHT scrolling advances when the final glyph has fully left the display. PIN and viewport/page-based text modes present all required text pages once and retain the final page for about 3 seconds before the next Preset item. The captured Bulk `timeSign` remains `5` and is retained as opaque metadata; it is not interpreted as seconds. BUILD 140 hardware logs validated both a mixed `TEXT -> GIF -> scrolling TEXT` sequence and a five-GIF sequence, including large multi-packet objects and replacement of a currently active Preset.
 
 
-## iOS / JieLi RCSP diagnostic probe (BUILD 143)
+## iOS / JieLi RCSP diagnostic stimulus (BUILD 144)
 
 The official device exposes a second BLE channel beside the normal iDotMatrix FA service:
 
@@ -995,6 +995,8 @@ The official device exposes a second BLE channel beside the normal iDotMatrix FA
 - app -> device write `AE01`
 - device -> app notify/read `AE02`
 
-BUILD 143 treats this channel as JieLi RCSP for diagnostic purposes. Known RCSP envelopes are recognized as `FE DC BA | flags | opcode | length_BE16 | body | EF`. Raw authentication packets are not FE-framed and are logged separately.
+BUILD 144 treats this channel as JieLi RCSP for diagnostic purposes. Known RCSP envelopes are recognized as `FE DC BA | flags | opcode | length_BE16 | body | EF`. Raw authentication packets are not FE-framed and are logged separately.
 
 The current probe intentionally implements only the generic response to opcode `0x06`; the iDotMatrix-specific payload for `0x03 GET_TARGET_FEATURE` is still unknown. No firmware/MCU identity is fabricated on AE02. The captured 32x32 identity experiment on FA03 remains unchanged from BUILD 142.
+
+BUILD 144 additionally transmits exactly one deterministic raw `0x00 + 16-byte` challenge on AE02 900 ms after both notification CCCDs become active. This is an intentionally unsolicited diagnostic stimulus. It is used only to determine whether the official iOS app's JieLi authentication layer reacts on AE01; it is not considered authenticated traffic and it does not advance the emulated authentication state.

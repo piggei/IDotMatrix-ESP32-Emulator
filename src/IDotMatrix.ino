@@ -11,7 +11,7 @@
 #define FW_RELEASE "0.5.0-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 143
+#define FW_BUILD 144
 
 // Temporary hardware-test aid: when the official app changes screen power
 // from OFF to ON, briefly overlay the release/build identifier without
@@ -27,16 +27,18 @@
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
 
-// BUILD 143 iOS development experiment. The ios_dev PlatformIO environment
+// BUILD 144 iOS development experiment. The ios_dev PlatformIO environment
 // enables this without changing the normal MatrixPortal/HUB75 behavior.
-// B143 preserves the delayed FA03 Device Info experiment from B142 and adds a
-// conservative JieLi RCSP probe on AE01/AE02: raw auth/RCSP classification,
-// characteristic-read diagnostics, and a standards-shaped ACK for opcode 0x06.
-// Unknown RCSP commands are logged only; no guessed Target Feature payload is sent.
+// B144 preserves the B143 passive RCSP diagnostics and adds one controlled
+// device-originated raw-auth challenge on AE02 after both notification CCCDs
+// are active. This is an experimental stimulus, not a claim that stock
+// iDotMatrix initiates authentication this way. Any AE01 reaction is logged;
+// no cryptographic success is forged and no Target Feature payload is guessed.
 #ifndef IOS_HANDSHAKE_EXPERIMENT
 #define IOS_HANDSHAKE_EXPERIMENT 0
 #endif
 #define IOS_DEVICE_INFO_DELAY_MS 250UL
+#define IOS_RCSP_STIMULUS_DELAY_MS 900UL
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
 #define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
@@ -1357,6 +1359,9 @@ uint32_t iosAe02ReadCount = 0;
 uint32_t iosAe02TxCount = 0;
 uint32_t iosRcspFrameRxCount = 0;
 uint32_t iosRcspAuthRxCount = 0;
+bool iosRcspStimulusPending = false;
+bool iosRcspStimulusSent = false;
+uint32_t iosRcspStimulusAt = 0;
 #endif
 bool pendingSoftReset = false;
 uint32_t softResetAt = 0;
@@ -1842,7 +1847,7 @@ void handleIosRcspProbe(const uint8_t *data, size_t len) {
     Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
     Serial.print("ms] RCSP AUTH raw step=0x"); Serial.print(data[0], HEX);
     Serial.print(" len="); Serial.print(len);
-    if (data[0] == 0x00) Serial.println(" phone challenge observed; crypto response intentionally not guessed in B143");
+    if (data[0] == 0x00) Serial.println(" phone challenge observed; crypto response intentionally not guessed in B144");
     else Serial.println(" encrypted response observed");
 #endif
     return;
@@ -1900,7 +1905,7 @@ void handleIosRcspProbe(const uint8_t *data, size_t len) {
     const uint8_t seq = bodyLen ? body[0] : 0;
     Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
     Serial.print("ms] RCSP GET_TARGET_FEATURE (0x03) observed seq=0x"); Serial.print(seq,HEX);
-    Serial.println("; B143 logs it but does not send an unverified 125-byte target payload");
+    Serial.println("; B144 logs it but does not send an unverified target payload");
 #endif
     return;
   }
@@ -4630,15 +4635,26 @@ public:
     Serial.print(" indications="); Serial.println(indications?"ON":"OFF");
 #endif
 
-    if(deviceConnected && iosFa03NotifyEnabled && iosAe02NotifyEnabled &&
-       !iosDeviceInfoPushSent && !pendingDeviceInfoPush){
-      pendingDeviceInfoPush=true;
-      deviceInfoPushAt=millis()+IOS_DEVICE_INFO_DELAY_MS;
+    if(deviceConnected && iosFa03NotifyEnabled && iosAe02NotifyEnabled){
+      if(!iosDeviceInfoPushSent && !pendingDeviceInfoPush){
+        pendingDeviceInfoPush=true;
+        deviceInfoPushAt=millis()+IOS_DEVICE_INFO_DELAY_MS;
 #if DEBUG_SERIAL
-      Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
-      Serial.print("ms] DEVICE INFO scheduled in "); Serial.print(IOS_DEVICE_INFO_DELAY_MS);
-      Serial.println(" ms after both CCCDs became active");
+        Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+        Serial.print("ms] DEVICE INFO scheduled in "); Serial.print(IOS_DEVICE_INFO_DELAY_MS);
+        Serial.println(" ms after both CCCDs became active");
 #endif
+      }
+      if(!iosRcspStimulusSent && !iosRcspStimulusPending){
+        iosRcspStimulusPending=true;
+        iosRcspStimulusAt=millis()+IOS_RCSP_STIMULUS_DELAY_MS;
+#if DEBUG_SERIAL
+        Serial.print("[IOSDIAG +"); Serial.print(millis()-iosSessionStartedAt);
+        Serial.print("ms] experimental AE02 raw-auth stimulus scheduled in ");
+        Serial.print(IOS_RCSP_STIMULUS_DELAY_MS);
+        Serial.println(" ms");
+#endif
+      }
     }
     unlockRuntimeState();
   }
@@ -4671,6 +4687,9 @@ class ServerCallbacks : public BLEServerCallbacks {
     iosAe02TxCount=0;
     iosRcspFrameRxCount=0;
     iosRcspAuthRxCount=0;
+    iosRcspStimulusPending=false;
+    iosRcspStimulusSent=false;
+    iosRcspStimulusAt=0;
     pendingDeviceInfoPush=false;
     deviceInfoPushAt=0;
 #if DEBUG_SERIAL
@@ -4703,12 +4722,15 @@ class ServerCallbacks : public BLEServerCallbacks {
     Serial.print(" RCSP_AUTH="); Serial.print(iosRcspAuthRxCount);
     Serial.print(" FA03_NOTIFY="); Serial.print(iosFa03NotifyEnabled?1:0);
     Serial.print(" AE02_NOTIFY="); Serial.print(iosAe02NotifyEnabled?1:0);
-    Serial.print(" DEVICE_INFO_SENT="); Serial.println(iosDeviceInfoPushSent?1:0);
+    Serial.print(" DEVICE_INFO_SENT="); Serial.print(iosDeviceInfoPushSent?1:0);
+    Serial.print(" RCSP_STIMULUS_SENT="); Serial.println(iosRcspStimulusSent?1:0);
 #endif
     deviceConnected=false;
 #if IOS_HANDSHAKE_EXPERIMENT
     iosFa03NotifyEnabled=false;
     iosAe02NotifyEnabled=false;
+    iosRcspStimulusPending=false;
+    iosRcspStimulusAt=0;
     pendingDeviceInfoPush=false;
     deviceInfoPushAt=0;
 #endif
@@ -6107,7 +6129,7 @@ void setup(){
 #if IOS_HANDSHAKE_EXPERIMENT && DEBUG_SERIAL
   Serial.println("[IOSDIAG] ===== BLE/GATT SETUP =====");
   Serial.print("[IOSDIAG] deviceName="); Serial.println(DEVICE_NAME);
-  Serial.println("[IOSDIAG] identity=REAL_32X32_MANUFACTURER + DELAYED_DEVICE_INFO + RCSP_PROBE");
+  Serial.println("[IOSDIAG] identity=REAL_32X32_MANUFACTURER + DELAYED_DEVICE_INFO + RCSP_STIMULUS");
   Serial.print("[IOSDIAG] logical="); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
   Serial.print(" physical="); Serial.print(PHYSICAL_MATRIX_WIDTH); Serial.print('x'); Serial.println(PHYSICAL_MATRIX_HEIGHT);
   Serial.print("[IOSDIAG] matrixGPIO="); Serial.println(MATRIX_PIN);
@@ -6115,6 +6137,8 @@ void setup(){
   Serial.print("[IOSDIAG] Device Info will be sent once, "); Serial.print(IOS_DEVICE_INFO_DELAY_MS);
   Serial.println(" ms after both FA03 and AE02 notifications are enabled");
   Serial.println("[IOSDIAG] AE01 probe: log raw auth + FE/DC/BA RCSP; ACK opcode 0x06 only; 0x03 is diagnostic-only");
+  Serial.print("[IOSDIAG] AE02 stimulus: one raw 0x00 + 16-byte diagnostic challenge at +"); Serial.print(IOS_RCSP_STIMULUS_DELAY_MS);
+  Serial.println(" ms after both CCCDs; no auth success is forged");
 #endif
 
   reportHeap("setup complete");
@@ -6160,6 +6184,33 @@ void loop(){
     if(deviceConnected) sendDeviceInfo();
 #endif
   }
+#if IOS_HANDSHAKE_EXPERIMENT
+  if(iosRcspStimulusPending && (long)(now-iosRcspStimulusAt)>=0){
+    iosRcspStimulusPending=false;
+    if(deviceConnected && iosAe02NotifyEnabled && !iosRcspStimulusSent){
+      // Diagnostic-only, deterministic raw JieLi-style challenge.  A real
+      // mutual-auth session normally has state on both sides; B144 uses this
+      // unsolicited device-side challenge only to test whether the iOS RCSP
+      // layer is listening to AE02 at all.  Never treat a reaction as proof of
+      // successful authentication.
+      static const uint8_t challenge[17] = {
+        0x00, 0x14,0x25,0x36,0x47, 0x58,0x69,0x7A,0x8B,
+        0x9C,0xAD,0xBE,0xCF, 0xD0,0xE1,0xF2,0x03
+      };
+      iosRcspStimulusSent=true;
+#if DEBUG_SERIAL
+      Serial.print("[IOSDIAG +"); Serial.print(now-iosSessionStartedAt);
+      Serial.println("ms] sending experimental device-originated raw-auth challenge on AE02");
+#endif
+      sendAE02Probe(challenge, sizeof(challenge), "RCSP-RAW-CHALLENGE");
+    } else {
+#if DEBUG_SERIAL
+      Serial.print("[IOSDIAG +"); Serial.print(now-iosSessionStartedAt);
+      Serial.println("ms] RCSP stimulus canceled because AE02 subscription is no longer active");
+#endif
+    }
+  }
+#endif
   if(pendingSoftReset && (long)(now-softResetAt)>=0){pendingSoftReset=false;resetRuntimeState();}
 
   updateAlarms();
