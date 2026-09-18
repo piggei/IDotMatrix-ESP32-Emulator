@@ -1,3 +1,5 @@
+> **BUILD 148 rendering note:** TEXT wire format is unchanged. For non-scrolling effects the emulator now packs rasterized glyphs into all rows allowed by the logical display/font height and vertically centers the rows actually used. Scrolling modes remain single-line. This is renderer behavior, not a new BLE field or command.
+
 # iDotMatrix BLE Protocol - reverse-engineering notes
 
 > Cross-project validation and model comparison: see [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md).
@@ -858,7 +860,7 @@ The emulator now stores large media in LittleFS rather than requiring one contig
 
 When the app enables date display, the emulator keeps the selected clock visual effect and alternates 30 seconds of `HH:MM` with 5 seconds of `DD/MM`. The date phase uses `/` rather than the clock `:` separator. This is emulator rendering behavior derived from the app option; exact timing/presentation on every original hardware model is not yet claimed.
 
-The 16x16 stopwatch and countdown use a matching vertical layout with an animated timer icon above the numeric value. Stopwatch animation advances forward and remains white. Countdown remains white until the final five seconds, when it turns red.
+Stopwatch retains the emulator's vertical animated-timer layout. Countdown is now reconstructed from a captured original-device 16x16 GIF: a grayscale animated hourglass occupies the left side, minutes are displayed in white above seconds on the right, and the separator is squeezed into the remaining gap on the original 16x16 layout. Native 32x32 and 64x64 rendering preserves the same composition but centers the separator dots in the wider gap. Only the seconds change to red during the final ten seconds; minutes and separator keep their normal colors.
 
 ## Reference implementation caveats (v0.3.1 / BUILD 90)
 
@@ -891,7 +893,7 @@ After a valid app time synchronization the original unit continues Alarm executi
 
 ### Reset policy
 
-BUILD 99 introduced destructive clearing of emulator-managed persistent state. BUILD 101 refined the live behavior of `03/80`; current BUILD 141 also clears the volatile Preset/Default bank. Carousel, Preset, Alarm and Schedule media/metadata, stored brightness, ECO and rotation are cleared, but the already synchronized volatile software clock is preserved because the BLE session is still alive. The matrix remains logically ON and black, ready for the next app command. A real power cycle remains distinct and follows the normal boot policy. BUILD 104 removes the unverified emulator password runtime, so reset currently has no password state to clear.
+BUILD 99 introduced destructive clearing of emulator-managed persistent state. BUILD 101 refined the live behavior of `03/80`; current BUILD 144 also clears the volatile Preset/Default bank. Carousel, Preset, Alarm and Schedule media/metadata, stored brightness, ECO and rotation are cleared, but the already synchronized volatile software clock is preserved because the BLE session is still alive. The matrix remains logically ON and black, ready for the next app command. A real power cycle remains distinct and follows the normal boot policy. BUILD 104 removes the unverified emulator password runtime, so reset currently has no password state to clear.
 
 
 
@@ -965,3 +967,29 @@ The files are staging/playback storage only and are deleted on reboot or emulato
 ### Preset TEXT playback timing (hardware observation)
 
 Preset item timing is content-aware rather than a fixed per-item delay. Images/GIFs use an observed dwell of about 3 seconds. For TEXT, continuous LEFT/RIGHT scrolling advances when the final glyph has fully left the display. PIN and viewport/page-based text modes present all required text pages once and retain the final page for about 3 seconds before the next Preset item. The captured Bulk `timeSign` remains `5` and is retained as opaque metadata; it is not interpreted as seconds. BUILD 140 hardware logs validated both a mixed `TEXT -> GIF -> scrolling TEXT` sequence and a five-GIF sequence, including large multi-packet objects and replacement of a currently active Preset.
+## BUILD 158/159 renderer/state and audio framing notes
+
+These are renderer/state rules only; they do not change the BLE wire format.
+
+- LEVEL 1 uses the global LEVEL value and `packetCounter`/last-packet freshness. A new body-part combination may be selected only on a fresh non-silent LEVEL packet. No new packet or silence freezes the current pose.
+- LEVEL 3 uses a 16x16 reference perimeter with one cyan pixel ON followed by two OFF pixels, moving counter-clockwise by one perimeter pixel approximately every 95 ms.
+- LEVEL 5 has four eye states and four mouth states selected independently.
+- FFT keeps the existing 8-logical-band renderers, but BUILD 159 fixes transport parsing: the wire frame is exactly 21 bytes (`21 00 01 02 <mode> <16 bands>`), BLE ATT writes may split/coalesce frames, and adjacent wire-band pairs are averaged into the 8 logical renderer bands.
+- Clock `showDate` is treated as a user preference rather than an unconditional persistent update during the approximately 1-second entry window.
+- On 64x64, Clock styles 0 and 3 render time and date simultaneously when date display is enabled.
+- Preset transfer indication remains active across multiple slot uploads and ends on `06/02` activation or a 5-second safety timeout.
+
+
+### BUILD 159 FA02 Audio/Rhythm stream framing
+
+Audio/Rhythm traffic is not assembled with the normal FA02 little-endian logical-length parser. Two fixed wire-frame types are recognized before normal FA02 reassembly:
+
+```text
+LEVEL: 06 00 00 02 <level> <mode>        = 6 bytes
+FFT:   21 00 01 02 <mode> <16 bands>     = 21 bytes
+```
+
+The leading bytes `21 00` in an FFT frame must **not** be decoded as a normal LE16 packet length of 33. Captures show that a 33-byte ATT write can contain one complete 21-byte FFT frame followed by the first 12 bytes of the next frame. BUILD 159 retains those 12 bytes and completes the next frame from the following ATT write.
+
+At a partial audio boundary, recognized normal FA02 commands take ownership immediately and discard the incomplete audio frame. This prevents stale Audio/Rhythm state from swallowing Reset, Carousel, Clock, GIF/image or other normal commands. Partial audio state is also cleared after a 1-second no-progress timeout, on BLE disconnect and on protocol reset.
+

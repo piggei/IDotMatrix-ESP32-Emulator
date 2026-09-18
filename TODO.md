@@ -1,4 +1,25 @@
-# BUILD 141 consolidation / remaining Preset validation
+## BUILD 159 validation
+
+- [ ] Verify all five FFT effects animate continuously on the official app without freezing FA02 routing.
+- [ ] Verify an observed-style 33-byte FFT write is reconstructed as one 21-byte frame plus 12 retained bytes, with the following write completing the next frame.
+- [ ] Rapidly switch FFT -> LEVEL -> FFT across all ten Audio/Rhythm effects.
+- [ ] While FFT is active, switch directly to Clock, Solid, GIF/image, Carousel and Preset without reconnecting.
+- [ ] While FFT is active, issue protocol Reset and verify it is not swallowed by audio routing.
+- [ ] Disconnect with a partial FFT frame pending, reconnect and verify the first normal command works immediately.
+- [ ] Run at least 30 rapid Audio/Rhythm -> normal-content transitions without sticky audio state or reboot.
+- [ ] Confirm the 16 FFT wire bands are represented through 8 adjacent-pair averages and that no FFT renderer geometry changed from BUILD 158.
+
+## BUILD 158 validation
+
+- Hardware regression-test LEVEL 1, LEVEL 3 and LEVEL 5 while confirming all five FFT effects remain unchanged and responsive.
+- Verify 64x64 Clock styles 0 and 3 simultaneous time/date composition and the one-second `showDate` entry protection with the official app.
+- Verify Countdown/Stopwatch colon blink and 32x32/64x64 offsets.
+- Verify Preset transfer indicator persists across multiple uploaded elements and disappears on `06/02` or timeout.
+
+- [ ] Hardware-validate BUILD 148 multiline TEXT packing on 32x32 and 64x64: 16 px font with partial/full row counts, 32 px font with one/two rows, 64 px font single row, and verify vertical centering of incomplete row blocks.
+- [ ] Regression-test LEFT/RIGHT and UP/DOWN TEXT after BUILD 148 to confirm scrolling remains single-line and unchanged.
+- [ ] Visually confirm BUILD 148 Scoreboard palette (`#7858F8` / `#F82078`) against original hardware/app appearance.
+# BUILD 145 Countdown refinement / remaining validation
 
 - [x] Capture `TEXT PJ -> image -> TEXT Ciao`: Bulk objects use slots 14, 15 and 16 and activate with `06/02 03 0E 0F 10`.
 - [x] Confirm mixed Preset media: TEXT (`type=3`) and GIF/image (`type=1`) coexist in one list.
@@ -13,6 +34,14 @@
 
 - [x] Disable verbose Preset protocol diagnostics by default for the consolidation baseline; keep the compile-time switch available.
 - [x] Align README/PROTOCOL/HISTORY/capture documentation with hardware-validated Preset timing and BUILD 137 Schedule findings.
+
+## BUILD 145 Countdown visual validation
+
+- [ ] Hardware-compare the 16x16 Countdown color palette and final-frame freeze against the supplied original-device video.
+- [ ] Verify native 32x32 separator centering and proportions.
+- [ ] Verify native 64x64 separator centering and proportions.
+- [ ] Confirm only the seconds turn red at 00:10 and remain red through 00:00.
+- [ ] Re-test `update_idotmatrix_emulator.sh` end-to-end with the split JTAG upload and Adafruit runtime-monitor by-id paths, including the embedded `FW_SIGNATURE` check.
 
 ## BUILD 137 Schedule validation
 
@@ -200,3 +229,5 @@ Still open:
 - [x] Hardware-test BUILD 129: Carousel/image/TEXT transfers remain functional; Snowflake visual banding and coarse HUB75 fades remain; Alarm full-media packets are received completely but rejected by header/media validation.
 - [ ] Hardware-validate BUILD 130 WLED-native HUB75 DMA output for fade quality, flicker/dithering and Snowflake appearance.
 - [ ] Capture BUILD 130 Alarm header diagnostics and compare the live 64x64 Alarm packet layout with the documented 24-byte header.
+
+- [x] Original-device Stopwatch artwork and color/animation reconstruction (Build 146).

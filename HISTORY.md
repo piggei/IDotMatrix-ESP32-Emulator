@@ -1,3 +1,88 @@
+## BUILD 159
+
+- Fixed FA02 Audio/Rhythm framing so FFT traffic is no longer passed through the normal little-endian logical-packet assembler.
+- Added a dedicated audio byte-stream reassembler: LEVEL frames are 6 bytes and FFT frames are 21 bytes, with partial frames preserved across BLE ATT writes.
+- Correctly handles observed 33-byte FFT writes containing one complete 21-byte frame plus the first 12 bytes of the following frame.
+- Added explicit Audio/Rhythm -> normal-command recovery based on the same known-frame routing principle used by the WLED Usermod, preventing sticky audio state from swallowing Clock, GIF, Carousel, Reset and other FA02 commands.
+- Added a 1-second safety timeout for abandoned partial audio frames and clears audio reassembly state on BLE disconnect and protocol reset.
+- FFT wire data now consumes all 16 transmitted bands and maps them to the legacy 8 logical renderer bands by averaging adjacent pairs, matching the current WLED model.
+- Audio renderers themselves are unchanged from BUILD 158. LEVEL 1/3/5 visual parity, LEVEL 2/4, all five FFT renderers, Clock/timer graphics and Preset behavior are otherwise untouched.
+- Replaced `platformio.ini` with the user-supplied three-target baseline: MatrixPortal S3 64x64 HUB75, classic ESP32 iOS-dev 32x32 logical / 16x16 physical, and ESP32-C3 native 16x16 WS2812.
+
+## BUILD 158
+
+- Synchronized emulator behavior with the WLED Usermod `0.9.0-rc.1` technical handover.
+- LEVEL 1 dancer now recomposes independent body parts only when a fresh, non-silent LEVEL packet is received; stale/silent audio freezes the current pose.
+- LEVEL 3 keeps its internal visualization and adds the validated cyan `ON, OFF, OFF` perimeter moving counter-clockwise at approximately 95 ms per logical perimeter pixel.
+- LEVEL 5 now uses four independent eye states and four independent mouth states reconstructed from the original-device reference; LEVEL 2, LEVEL 4 and all FFT effects are unchanged.
+- Countdown and Stopwatch colons now blink at 1 Hz (500 ms on / 500 ms off) and shift right by +1 physical pixel on 32x32 and +2 on 64x64.
+- Clock style 0 and style 3 now use native 64x64 simultaneous `HH:MM` + `DD/MM` layouts when date display is enabled; style 0 retains the rainbow border and style 3 retains its selected-color background with black text.
+- Clock style 2 separator receives the validated -1 px (32x32) / -2 px (64x64) adjustment.
+- Added approximately 1 second of Clock-entry protection so transient app `showDate=0` packets do not erase an existing date preference; an explicit later disable is still accepted.
+- Preset uploads now use the same indeterminate transfer indicator as Carousel across multiple assets, ending on `06/02` activation or after a 5-second abandoned-transfer timeout.
+- No BLE wire-format changes were introduced; Alarm, Schedule, Carousel and Preset protocol semantics remain unchanged.
+
+## BUILD 157
+
+- Restored the firmware runtime to the exact BUILD 149 pre-audio-experiment baseline, except for the internal build number.
+- Removed all audio renderer/timing changes introduced in BUILD 150 through BUILD 156.
+- Retained the direct PlatformIO upload workflow from the later updater revision; no pre-upload JTAG-device check is performed.
+- Intended as a clean diagnostic baseline for re-validating all LEVEL and FFT audio modes before any further visual changes.
+
+## Build 148 — Original-device multiline TEXT layout and scoreboard palette refinement
+
+- Added resolution-aware multiline layout for non-scrolling TEXT effects, matching the behavior observed on original hardware. A 16-pixel-high font can use 1 row on 16x16, 2 rows on 32x32 and 4 rows on 64x64; a 32-pixel-high font can use 1/2 rows on 32x32/64x64; a 64-pixel-high font uses one row on 64x64.
+- Wrapped glyphs are packed sequentially into the rows available on the current logical display. When the current page uses fewer than the maximum number of rows, the complete row block is centered vertically (for example, three 16-pixel rows on 64x64 start at y=8).
+- LEFT/RIGHT and UP/DOWN scrolling effects deliberately retain the established single-line renderer and vertical centering; only non-scrolling/PIN and visual effects use the multiline page layout.
+- Long non-scrolling text still pages when it exceeds the complete multi-row page capacity. Preset/Default TEXT hold calculations automatically use the new page capacity.
+- Refined the original-device Scoreboard palette using the official app UI as the color reference: player A `RGB(120,88,248)` / `#7858F8`, player B `RGB(248,32,120)` / `#F82078`. The BUILD 147 digit geometry is unchanged.
+- No BLE protocol, glyph parsing, Carousel, Alarm, Schedule, Preset/Default, timer or storage behavior was intentionally changed.
+
+## Build 147 — Original scoreboard artwork
+
+- Replaced the previous two-digit `AA:BB` scoreboard renderer with the original-device 16x16 layout captured from hardware: three blue digits for player A on rows 0..6 and three red digits for player B on rows 9..15.
+- Added a dedicated 4x7 pixel-outline digit set matching the supplied manufacturer `000 / 000` reference. Scores are rendered as fixed-width three-digit values (`000..999`) with leading zeroes.
+- BUILD 147 initially used the palette sampled from the supplied pixel-art reference. BUILD 148 supersedes those colors with the softer official-app palette while preserving this geometry.
+- 32x32 and 64x64 logical profiles preserve the same symmetric manufacturer composition by integer-scaling the 16x16 reference artwork.
+- BLE scoreboard protocol/state handling is unchanged.
+
+## Build 146 — Original stopwatch artwork
+
+- Replaced the legacy stopwatch icon with the original 16x16 manufacturer animation reconstructed from the supplied GIF/video capture.
+- Restored the original color palette observed in the video: white face, gray/lilac case shading, orange top button and seconds, and red animated hand.
+- Stopwatch minutes are rendered in white and seconds in orange, matching the original device layout.
+- The animated hand uses eight 100 ms phases and is driven by elapsed stopwatch time, so pausing freezes the current frame and resuming continues naturally.
+- On 32x32 and 64x64 logical profiles the artwork is rendered natively at integer scale and the separator dots are centered in the enlarged gap.
+- No stopwatch protocol/state behavior changed.
+
+# BUILD 145 - v0.5.0-dev: Countdown color/final-frame fidelity + split USB endpoints
+
+- Corrected the Countdown hourglass palette from the grayscale GIF export using the supplied original-device video as the color reference: white glass/frame, brown top/bottom bases (`RGB 146,86,61`) and orange sand/drop (`RGB 242,119,6`).
+- Preserved the validated ten-frame 200 ms animation and native 16x16/32x32/64x64 layout from BUILD 144.
+- When the Countdown reaches `00:00`, the hourglass now freezes on the final captured animation frame instead of continuing to cycle. The existing final-ten-seconds rule is unchanged: only the seconds are red from `00:10` through `00:00`.
+- Updated `update_idotmatrix_emulator.sh` for the MatrixPortal S3's two distinct persistent USB identities: flashing waits for `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00`, while runtime monitoring waits for `/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3_*-if00`.
+- After compilation/signature verification the updater now explicitly waits for the JTAG endpoint before upload; after flashing it waits for that endpoint to disappear and then for the Adafruit runtime serial endpoint before opening the monitor.
+- BUILD 142 remains reserved for the separate `ios-dev` branch; BUILD 145 continues the main branch after BUILD 144.
+
+# BUILD 144 - v0.5.0-dev: original-device Countdown artwork and firmware signature fix
+
+- Replaced the standalone Countdown artwork with the pixel-accurate 16x16 manufacturer animation captured from the original device: animated hourglass at left, minutes above seconds at right, white minute digits and gray second digits.
+- Preserved the exact original 16x16 separator placement while centering the separator dots inside the wider gap available on native 32x32 and 64x64 logical profiles.
+- Countdown seconds alone turn red from 00:10 through completion; minute digits and separator retain their normal colors.
+- Larger logical profiles render the captured artwork natively at 2x/4x pixel scale instead of rendering a 16x16 framebuffer and post-scaling it.
+- Stopwatch artwork is intentionally unchanged; the original-device GIF supplied for this build documents Countdown only.
+- Fixed the updater firmware-signature check by defining one compile-time `FW_SIGNATURE` literal (`IDOTMATRIX_FW=<release>-B<build>`) and printing that exact literal at boot. The complete signature now exists physically in `firmware.bin`, matching the `strings` verification performed by `update_idotmatrix_emulator.sh`.
+- BUILD 142 remains reserved for the separate `ios-dev` branch; BUILD 144 continues the main branch after BUILD 143.
+
+# BUILD 143 - v0.5.0-dev: WLED Carousel transfer artwork alignment
+
+- Replaced the standalone emulator's older Carousel upload artwork (falling packet + matrix icon) with the current WLED Usermod transfer indicator.
+- 64x64 now uses the dedicated native WLED artwork: animated red downward arrow, highlighted blue receiving tray and separate sweeping activity bar, avoiding a coarse 4x enlargement.
+- 16x16 and 32x32 use the validated compact WLED artwork with the same transfer semantics.
+- The activity bar is intentionally indeterminate, matching the WLED implementation: the app does not announce the size/count of future assets, so a whole-session percentage would be misleading.
+- Preserved the existing 250 ms visibility threshold, Carousel upload/storage logic, BLE protocol handling, Preset/Default, Alarm and Schedule behavior from BUILD 141.
+- BUILD 142 remains reserved for the separate `ios-dev` handshake experiment and is not part of the main development baseline.
+
 # BUILD 141 - v0.5.0-dev: Preset/Default consolidation baseline
 
 - Consolidation checkpoint after successful hardware validation of BUILD 140 Preset/Default playback. No intentional protocol or playback behavior changes.
@@ -300,6 +385,13 @@ Password handshake timing experiment. BUILD 102 proved that sending `05 00 04 02
 ## v0.4.0-dev — BUILD 102
 
 Password SET handshake hotfix. A syntactically valid `04/02` SET command is now acknowledged on FA03 immediately with `05 00 04 02 01`, before Preferences/NVS persistence is attempted. This matches the timing expected by the official app and decouples protocol acknowledgement from local durability. Invalid password-pair payloads still receive status `0x00`. No password value is printed in diagnostics. Runtime behaviour outside the password SET path is unchanged from BUILD 101.
+
+## BUILD 149
+
+- Fixed the Scoreboard compile regression introduced by the original-device renderer: the 4x7 score glyph helper now writes to the legacy 16x16 canvas with `putPixel()`, matching the subsequent `scaleLegacy16CanvasToLogical()` path.
+- Hardened firmware stale-build verification in `update_idotmatrix_emulator.sh`. The updater now verifies the compile-time signature in `firmware.elf`, requires `firmware.bin` to have been regenerated during the current compile invocation, and treats a directly searchable signature inside `firmware.bin` as an additional diagnostic rather than the sole gate.
+- The expected release/build signature is re-read from the synchronized source after compilation, preventing a long-running updater process from carrying an obsolete expected build value.
+- `FW_SIGNATURE` is explicitly marked `used` so the linker-visible diagnostic literal remains part of the build.
 
 ## BUILD 101 - Password handshake diagnostics and live reset
 

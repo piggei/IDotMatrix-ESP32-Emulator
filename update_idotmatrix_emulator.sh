@@ -7,15 +7,12 @@ set -euo pipefail
 #   1. Select newest generated source ZIP from the Windows Downloads folder.
 #   2. Extract it to a temporary directory.
 #   3. Synchronize it into the Git working repository while preserving .git/.pio.
-#   4. Verify that the MatrixPortal persistent serial device is attached.
-#   5. Compile the selected PlatformIO environment only.
-#   6. Verify the generated firmware signature.
-#   7. Re-check the MatrixPortal serial device before upload. This intentionally
-#      gives WSL/usbip users a chance to re-bind/re-attach the board if it moved
-#      from the runtime/data endpoint to the programming/JTAG endpoint.
-#   8. Upload the already compiled firmware.
-#   9. Force a post-upload USB detach/reattach cycle and verify runtime serial.
-#  10. Open the MatrixPortal S3 serial monitor through its persistent /dev/serial/by-id path.
+#   4. Force the emulator translation unit to rebuild while preserving caches.
+#   5. Run the PlatformIO upload target directly (build + programming).  There is
+#      intentionally no pre-upload JTAG endpoint check: that USB identity appears
+#      only after PlatformIO has already started the programming transition.
+#   6. Optionally report the linked firmware signature after upload, then wait for
+#      the Adafruit runtime serial endpoint and optionally open the monitor.
 #
 # Every operational step requires explicit confirmation.
 
@@ -25,10 +22,24 @@ ARCHIVE_PATTERN="${ARCHIVE_PATTERN:-IDotMatrix-ESP32-Emulator-*.zip}"
 REPO="${REPO:-$HOME/repo/idotmatrix-esp32-emulator}"
 PIO_ENV="${PIO_ENV:-matrixportal_s3_hub75_64}"
 
-SERIAL_PORT_OVERRIDE="${SERIAL_PORT:-}"
+# PlatformIO itself handles the transient Espressif JTAG/programming identity.
+# The helper only resolves the stable Adafruit runtime serial endpoint used by
+# the post-upload monitor.
+MONITOR_SERIAL_PATTERN="${MONITOR_SERIAL_PATTERN:-/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3_*-if00}"
+MONITOR_SERIAL_PORT_OVERRIDE="${MONITOR_SERIAL_PORT:-${SERIAL_PORT:-}}"
+SERIAL_ROLE="runtime/monitor"
+SERIAL_PORT_OVERRIDE="$MONITOR_SERIAL_PORT_OVERRIDE"
+SERIAL_PATTERN="$MONITOR_SERIAL_PATTERN"
 SERIAL_PORT=""
-SERIAL_PATTERN="${SERIAL_PATTERN:-/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3*-if00}"
 SERIAL_BAUD="${SERIAL_BAUD:-115200}"
+
+select_serial_role() {
+    [[ "$1" == "monitor" ]] || die "Only the runtime/monitor serial role is resolved by this helper"
+    SERIAL_ROLE="runtime/monitor"
+    SERIAL_PATTERN="$MONITOR_SERIAL_PATTERN"
+    SERIAL_PORT_OVERRIDE="$MONITOR_SERIAL_PORT_OVERRIDE"
+    SERIAL_PORT=""
+}
 
 confirm() {
     local prompt="$1"
@@ -113,7 +124,7 @@ resolve_serial_port() {
 
     SERIAL_PORT=""
     if [[ ${#matches[@]} -gt 1 ]]; then
-        echo "Multiple MatrixPortal serial devices match:" >&2
+        echo "Multiple MatrixPortal $SERIAL_ROLE devices match:" >&2
         printf '  %s\n' "${matches[@]}" >&2
         echo "Set SERIAL_PORT explicitly to choose one." >&2
         return 2
@@ -130,7 +141,7 @@ any_serial_present() {
 wait_for_serial_detach() {
     while any_serial_present; do
         echo
-        echo "A MatrixPortal serial device is still attached to Linux/WSL."
+        echo "A MatrixPortal $SERIAL_ROLE device is still attached to Linux/WSL."
         if [[ -n "$SERIAL_PORT" ]]; then
             echo "  Current port: $SERIAL_PORT"
         else
@@ -146,7 +157,7 @@ wait_for_serial_detach() {
 
     SERIAL_PORT=""
     echo
-    echo "MatrixPortal serial device detached."
+    echo "MatrixPortal $SERIAL_ROLE device detached."
 }
 
 wait_for_serial_port() {
@@ -154,7 +165,7 @@ wait_for_serial_port() {
         local status=0
         if resolve_serial_port; then
             echo
-            echo "MatrixPortal serial device found:"
+            echo "MatrixPortal $SERIAL_ROLE device found:"
             echo "  $SERIAL_PORT"
             echo "  -> $(readlink -f "$SERIAL_PORT" 2>/dev/null || true)"
             return 0
@@ -164,9 +175,9 @@ wait_for_serial_port() {
 
         echo
         if [[ $status -eq 2 ]]; then
-            echo "More than one matching MatrixPortal serial device is present."
+            echo "More than one matching MatrixPortal $SERIAL_ROLE device is present."
         else
-            echo "MatrixPortal serial device not found."
+            echo "MatrixPortal $SERIAL_ROLE device not found."
             if [[ -n "$SERIAL_PORT_OVERRIDE" ]]; then
                 echo "  Expected: $SERIAL_PORT_OVERRIDE"
             else
@@ -174,7 +185,7 @@ wait_for_serial_port() {
             fi
         fi
         echo
-        echo "Attach the MatrixPortal USB device from Windows to Linux, then retry."
+        echo "Attach/re-bind the MatrixPortal $SERIAL_ROLE USB device from Windows to Linux/WSL, then retry."
         if ! confirm "Retry serial detection?"; then
             echo "Aborted while waiting for the serial device."
             exit 0
@@ -228,6 +239,7 @@ ARCHIVE="$(
 
 [[ -n "${ARCHIVE:-}" ]] || die "No archive matching '$ARCHIVE_PATTERN' found in $ARCHIVE_DIR"
 
+select_serial_role monitor
 SERIAL_TARGET=""
 if resolve_serial_port >/dev/null 2>&1; then
     SERIAL_TARGET="$(readlink -f "$SERIAL_PORT" 2>/dev/null || true)"
@@ -239,18 +251,19 @@ echo "  Archive directory : $ARCHIVE_DIR"
 echo "  Selected archive  : $ARCHIVE"
 echo "  Repository        : $REPO"
 echo "  PlatformIO env    : $PIO_ENV"
-echo "  Serial pattern    : $SERIAL_PATTERN"
-if [[ -n "$SERIAL_PORT_OVERRIDE" ]]; then
-    echo "  Serial override   : $SERIAL_PORT_OVERRIDE"
+echo "  Monitor pattern   : $MONITOR_SERIAL_PATTERN"
+if [[ -n "$MONITOR_SERIAL_PORT_OVERRIDE" ]]; then
+    echo "  Monitor override  : $MONITOR_SERIAL_PORT_OVERRIDE"
 fi
-echo "  Serial current    : ${SERIAL_PORT:-currently unavailable}"
-echo "  Serial target     : ${SERIAL_TARGET:-currently unavailable}"
+echo "  Runtime current   : ${SERIAL_PORT:-currently unavailable}"
+echo "  Runtime target    : ${SERIAL_TARGET:-currently unavailable}"
 echo "  Serial baud       : $SERIAL_BAUD"
 echo
 echo "Important:"
 echo "  .git/ and .pio/ are preserved during repository synchronization."
-echo "  Compile and upload are separate operations."
-echo "  A second mandatory serial check runs after compilation and before upload."
+echo "  Build and upload run as one PlatformIO upload target."
+echo "  No JTAG endpoint is checked before upload; it appears only during programming."
+echo "  After upload the script waits for the Adafruit runtime endpoint used by the serial monitor."
 
 if ! confirm "Start emulator update workflow?"; then
     echo "Aborted."
@@ -355,86 +368,53 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# STEP 5 - Verify serial attachment before compile
+# STEP 5 - Upload with PlatformIO (build + program in one operation)
 # -----------------------------------------------------------------------------
 echo
-echo "==> [5] Verify MatrixPortal serial attachment before compile"
-if ! confirm "Proceed to the MatrixPortal serial check before compilation?"; then
-    echo "Aborted before serial verification."
-    exit 0
-fi
-wait_for_serial_port
+echo "==> [5] Build and upload with PlatformIO"
+echo "    pio run -d '$REPO' -e '$PIO_ENV' -t upload"
+echo "    The MatrixPortal changes from the Adafruit runtime USB identity to the"
+echo "    Espressif JTAG/programming identity only after PlatformIO starts upload."
+echo "    Therefore there is intentionally no pre-upload JTAG serial check."
 
-# -----------------------------------------------------------------------------
-# STEP 6 - Compile only
-# -----------------------------------------------------------------------------
-echo
-echo "==> [6] Compile with PlatformIO (no upload)"
-echo "    pio run -d '$REPO' -e '$PIO_ENV'"
-if confirm "Compile ${REPO_RELEASE:-firmware} BUILD ${REPO_BUILD:-?}?"; then
-    pio run -d "$REPO" -e "$PIO_ENV"
-else
-    echo "Compilation skipped."
-fi
-
-FIRMWARE="$REPO/.pio/build/$PIO_ENV/firmware.bin"
-if [[ -f "$FIRMWARE" ]]; then
-    echo
-    echo "Generated firmware:"
-    ls -lh "$FIRMWARE"
-
-    EXPECTED_SIGNATURE="IDOTMATRIX_FW=${REPO_RELEASE}-B${REPO_BUILD}"
-    if strings "$FIRMWARE" | grep -Fq "$EXPECTED_SIGNATURE"; then
-        echo "Firmware signature: $EXPECTED_SIGNATURE [MATCH]"
-    else
-        die "Compiled firmware does not contain expected signature '$EXPECTED_SIGNATURE'. Upload blocked."
-    fi
-else
-    die "No firmware.bin found at: $FIRMWARE. Compile before upload."
-fi
-
-# -----------------------------------------------------------------------------
-# STEP 7 - Mandatory serial re-check after compile, before upload
-# -----------------------------------------------------------------------------
-echo
-echo "==> [7] Re-check MatrixPortal serial attachment before upload"
-echo "    The board may have changed USB mode/endpoints while preparing the upload."
-echo "    If WSL/usbip lost the runtime serial device, re-bind/re-attach it now."
-SERIAL_PORT=""
-if ! confirm "Proceed to the mandatory post-build serial check?"; then
-    echo "Aborted before upload serial verification."
-    exit 0
-fi
-wait_for_serial_port
-
-# -----------------------------------------------------------------------------
-# STEP 8 - Upload the compiled firmware
-# -----------------------------------------------------------------------------
-echo
-echo "==> [8] Upload compiled firmware with PlatformIO"
-echo "    pio run -d '$REPO' -e '$PIO_ENV' -t upload --upload-port '$SERIAL_PORT'"
-if confirm "Upload ${REPO_RELEASE:-firmware} BUILD ${REPO_BUILD:-?} using $SERIAL_PORT?"; then
-    # The build has already completed and its signature was verified above.
-    # PlatformIO may still perform dependency/timestamp checks for the upload
-    # target, but compilation and upload are deliberately separate user steps.
-    pio run -d "$REPO" -e "$PIO_ENV" -t upload --upload-port "$SERIAL_PORT"
+if confirm "Build and upload ${REPO_RELEASE:-firmware} BUILD ${REPO_BUILD:-?}?"; then
+    pio run -d "$REPO" -e "$PIO_ENV" -t upload
 else
     echo "Upload skipped."
 fi
 
+FIRMWARE="$REPO/.pio/build/$PIO_ENV/firmware.bin"
+FIRMWARE_ELF="$REPO/.pio/build/$PIO_ENV/firmware.elf"
+if [[ -f "$FIRMWARE" ]]; then
+    echo
+    echo "Generated firmware artifact:"
+    ls -lh "$FIRMWARE"
+fi
+
+# Re-read the synchronized identifiers after PlatformIO completes.  This is
+# informational only: the upload target has already built and programmed the
+# image, so signature checking must not gate the transition into programming.
+VERIFY_RELEASE="$(extract_fw_release "$REPO/src/IDotMatrix.ino")"
+VERIFY_BUILD="$(extract_fw_build "$REPO/src/IDotMatrix.ino")"
+EXPECTED_SIGNATURE="IDOTMATRIX_FW=${VERIFY_RELEASE}-B${VERIFY_BUILD}"
+if [[ -f "$FIRMWARE_ELF" ]] && grep -aFq "$EXPECTED_SIGNATURE" "$FIRMWARE_ELF"; then
+    echo "Post-upload ELF signature: $EXPECTED_SIGNATURE [MATCH]"
+else
+    echo "Post-upload ELF signature: not verified (non-blocking)."
+fi
+REPO_RELEASE="$VERIFY_RELEASE"
+REPO_BUILD="$VERIFY_BUILD"
+
 # -----------------------------------------------------------------------------
-# STEP 9 - Force post-upload USB detach/reattach, then open monitor
+# STEP 6 - Wait for runtime serial endpoint, then optionally monitor
 # -----------------------------------------------------------------------------
 echo
-echo "==> [9] Reattach MatrixPortal runtime serial and open monitor"
-echo "    Persistent port: $SERIAL_PORT"
-echo "    After upload this board can remain on the programming USB endpoint."
-echo "    A detach/reattach cycle is therefore required before the runtime monitor."
-
-if confirm "Start the mandatory post-upload USB detach/reattach check?"; then
-    wait_for_serial_detach
-    echo
-    echo "Reattach the MatrixPortal USB device from Windows to Linux/WSL."
+echo "==> [6] Wait for MatrixPortal runtime monitor endpoint"
+echo "    Runtime pattern: $MONITOR_SERIAL_PATTERN"
+echo "    If WSL/Linux lost the USB device during programming, re-attach/re-bind it"
+echo "    now so the Adafruit MatrixPortal runtime serial endpoint becomes visible."
+select_serial_role monitor
+if confirm "Wait for the runtime serial endpoint and optionally open the monitor?"; then
     wait_for_serial_port
     if confirm "Open the runtime serial monitor now?"; then
         open_serial_monitor
@@ -442,7 +422,7 @@ if confirm "Start the mandatory post-upload USB detach/reattach check?"; then
         echo "Serial monitor skipped."
     fi
 else
-    echo "Post-upload serial check and monitor skipped."
+    echo "Runtime serial check and monitor skipped."
 fi
 
 echo
@@ -451,4 +431,4 @@ echo "Repository : $REPO"
 echo "Release    : ${REPO_RELEASE:-UNKNOWN}"
 echo "Build      : ${REPO_BUILD:-UNKNOWN}"
 echo "Firmware   : $FIRMWARE"
-echo "Serial     : ${SERIAL_PORT:-not attached}"
+echo "Monitor    : ${SERIAL_PORT:-not attached}"

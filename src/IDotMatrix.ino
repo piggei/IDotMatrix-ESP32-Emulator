@@ -11,7 +11,7 @@
 #define FW_RELEASE "0.5.0-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 141
+#define FW_BUILD 159
 
 // Temporary hardware-test aid: when the official app changes screen power
 // from OFF to ON, briefly overlay the release/build identifier without
@@ -20,6 +20,7 @@
 #define VERSION_SPLASH_MS 1800UL
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
+static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_RELEASE "-B" IDOT_STRINGIFY(FW_BUILD);
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
@@ -395,6 +396,8 @@ bool clock24h = false;
 bool clockShowDate = false;
 CRGB clockColor = CRGB::White;
 uint32_t clockCycleStartedAt = 0;
+uint32_t clockEntryProtectUntil = 0;
+bool clockDatePreference = false;
 
 // ======================================================
 // ECO
@@ -1292,6 +1295,9 @@ int8_t presetActiveSlot = -1;
 uint32_t presetSlotStartedAt = 0;
 uint32_t presetSlotHoldMs = PRESET_DWELL_MS;
 bool gifPresetPlaybackFileActive = false;
+bool presetTransferIndicatorActive = false;
+uint32_t presetTransferLastActivityAt = 0;
+constexpr uint32_t PRESET_TRANSFER_TIMEOUT_MS = 5000UL;
 
 // ======================================================
 // PACKET / BULK
@@ -1301,6 +1307,25 @@ size_t packetReceived = 0;
 size_t packetExpected = 0;
 uint32_t packetLastRxMs = 0;
 uint32_t bulkLastRxMs = 0;
+
+// Audio/Rhythm FA02 is a byte stream, not a normal LE16-length packet stream.
+// LEVEL frames are exactly 6 bytes. FFT frames are exactly 21 bytes and carry
+// 16 wire bands. ATT writes may end in the middle of the next audio frame.
+constexpr size_t AUDIO_LEVEL_FRAME_SIZE = 6U;
+constexpr size_t AUDIO_FFT_FRAME_SIZE = 21U;
+constexpr uint32_t AUDIO_REASSEMBLY_TIMEOUT_MS = 1000UL;
+uint8_t audioRxBuffer[AUDIO_FFT_FRAME_SIZE];
+size_t audioRxReceived = 0;
+size_t audioRxExpected = 0;
+uint32_t audioRxLastMs = 0;
+bool audioStreamActive = false;
+
+static void resetAudioReassembly() {
+  audioRxReceived = 0;
+  audioRxExpected = 0;
+  audioRxLastMs = 0;
+  audioStreamActive = false;
+}
 
 struct BulkTransferState {
   bool active = false;
@@ -1723,62 +1748,128 @@ void renderCarouselTransferIndicator(uint32_t now) {
   clearFramebuffer();
 
   const uint8_t w=MATRIX_WIDTH, h=MATRIX_HEIGHT;
-  const uint8_t unit=w>=64 ? 3U : (w>=32 ? 2U : 1U);
-  const int16_t cx=(int16_t)(w/2U);
-  const int16_t iconW=(int16_t)(10U*unit);
-  const int16_t iconH=(int16_t)(6U*unit);
-  const int16_t iconX=cx-iconW/2;
-  const int16_t iconY=(int16_t)h-iconH-(int16_t)(3U*unit);
+  if(w==0 || h==0) return;
 
-  auto px=[&](int16_t x,int16_t y,const CRGB &c){
-    if(x>=0&&y>=0&&x<w&&y<h) putPixel((uint8_t)x,(uint8_t)y,c);
-  };
-  auto block=[&](int16_t x,int16_t y,uint8_t bw,uint8_t bh,const CRGB &c){
-    for(uint8_t yy=0;yy<bh;yy++) for(uint8_t xx=0;xx<bw;xx++) px(x+xx,y+yy,c);
+  auto px=[&](int16_t x,int16_t y,uint8_t r,uint8_t g,uint8_t b){
+    if(x>=0 && y>=0 && x<w && y<h) putPixel((uint8_t)x,(uint8_t)y,CRGB(r,g,b));
   };
 
-  const CRGB outline(55,160,235), cells(80,215,255);
-  for(int16_t x=0;x<iconW;x++){
-    block(iconX+x,iconY,1,unit,outline);
-    block(iconX+x,iconY+iconH-unit,1,unit,outline);
-  }
-  for(int16_t y=0;y<iconH;y++){
-    block(iconX,iconY+y,unit,1,outline);
-    block(iconX+iconW-unit,iconY+y,unit,1,outline);
-  }
-  for(uint8_t iy=0;iy<2;iy++) for(uint8_t ix=0;ix<4;ix++)
-    block(iconX+(int16_t)((2+ix*2)*unit),iconY+(int16_t)((2+iy*2)*unit),unit,unit,cells);
+  // BUILD 143: port the current WLED Usermod Carousel transfer artwork.
+  // 16x16/32x32 retain the validated compact icon; 64x64 uses a dedicated
+  // native drawing rather than a blocky 4x enlargement.  The activity bar is
+  // intentionally indeterminate: the app does not announce the size/count of
+  // future assets, so a determinate whole-session percentage would be false.
+  if(w>=64 && h>=64){
+    auto fillRect=[&](int16_t x0,int16_t y0,int16_t x1,int16_t y1,
+                      uint8_t r,uint8_t g,uint8_t b){
+      for(int16_t y=y0;y<=y1;y++) for(int16_t x=x0;x<=x1;x++) px(x,y,r,g,b);
+    };
+    auto hLine=[&](int16_t x0,int16_t x1,int16_t y,
+                   uint8_t r,uint8_t g,uint8_t b){
+      for(int16_t x=x0;x<=x1;x++) px(x,y,r,g,b);
+    };
 
-  const uint8_t phase=(uint8_t)((now/120U)%4U);
-  const int16_t packetSize=(int16_t)(2U*unit);
-  const int16_t packetTop=iconY-(int16_t)((6U-phase)*unit);
-  const int16_t packetX=cx-packetSize/2;
-  block(packetX,packetTop,(uint8_t)packetSize,(uint8_t)packetSize,CRGB(245,245,255));
-  if(packetSize>=3) block(packetX+unit/2U,packetTop+unit/2U,unit,unit,cells);
-  px(cx,packetTop-(int16_t)(2U*unit),CRGB(60,120,155));
-  px(cx,packetTop-(int16_t)(4U*unit),CRGB(30,65,85));
+    constexpr uint8_t blueDkR=10, blueDkG=62, blueDkB=150;
+    constexpr uint8_t blueR=25, blueG=112, blueB=235;
+    constexpr uint8_t blueHiR=64, blueHiG=176, blueHiB=255;
+    fillRect(11,42,14,49,blueDkR,blueDkG,blueDkB);
+    fillRect(49,42,52,49,blueDkR,blueDkG,blueDkB);
+    fillRect(14,48,49,51,blueDkR,blueDkG,blueDkB);
+    fillRect(12,40,15,47,blueR,blueG,blueB);
+    fillRect(48,40,51,47,blueR,blueG,blueB);
+    fillRect(15,47,48,50,blueR,blueG,blueB);
+    fillRect(13,39,15,41,blueR,blueG,blueB);
+    fillRect(48,39,50,41,blueR,blueG,blueB);
+    hLine(16,47,47,blueHiR,blueHiG,blueHiB);
+    px(12,41,blueHiR,blueHiG,blueHiB);
+    px(51,41,blueHiR,blueHiG,blueHiB);
 
-  const int16_t barX=(int16_t)(2U*unit);
-  const int16_t barY=(int16_t)h-(int16_t)unit;
-  const int16_t barW=(int16_t)w-(int16_t)(4U*unit);
-  if(barW>0){
-    for(int16_t x=0;x<barW;x++) px(barX+x,barY,CRGB(18,42,55));
-    int16_t filled=0;
-    const uint8_t totalUnits=carouselOrderCount;
-    const uint8_t activeSlot=(bulk.carouselLocalSlot>=0)?(uint8_t)bulk.carouselLocalSlot:0xFF;
-    const uint8_t done=carouselCompletedUploadCountExcluding(activeSlot);
-    if(totalUnits&&carouselTransferExpectedBytes){
-      const uint32_t current=carouselTransferReceivedBytes>carouselTransferExpectedBytes ? carouselTransferExpectedBytes : carouselTransferReceivedBytes;
-      const uint64_t numerator=(uint64_t(done)*carouselTransferExpectedBytes+current)*(uint64_t)barW;
-      const uint64_t denominator=(uint64_t)totalUnits*carouselTransferExpectedBytes;
-      filled=denominator?(int16_t)(numerator/denominator):0;
-    }else if(carouselTransferExpectedBytes){
-      const uint32_t current=carouselTransferReceivedBytes>carouselTransferExpectedBytes ? carouselTransferExpectedBytes : carouselTransferReceivedBytes;
-      filled=(int16_t)(((uint64_t)current*(uint64_t)barW)/carouselTransferExpectedBytes);
+    constexpr uint8_t redDkR=150, redDkG=8, redDkB=18;
+    constexpr uint8_t redR=238, redG=30, redB=42;
+    constexpr uint8_t redHiR=255, redHiG=92, redHiB=88;
+    const uint8_t phase=(uint8_t)((now/80U)%12U);
+    const int16_t top=(int16_t)(4+phase);
+    fillRect(29,top,34,top+13,redDkR,redDkG,redDkB);
+    fillRect(30,top,33,top+13,redR,redG,redB);
+    hLine(31,32,top,redHiR,redHiG,redHiB);
+    hLine(23,40,top+13,redDkR,redDkG,redDkB);
+    hLine(24,39,top+14,redR,redG,redB);
+    hLine(25,38,top+15,redR,redG,redB);
+    hLine(26,37,top+16,redR,redG,redB);
+    hLine(27,36,top+17,redR,redG,redB);
+    hLine(28,35,top+18,redR,redG,redB);
+    hLine(29,34,top+19,redR,redG,redB);
+    hLine(30,33,top+20,redR,redG,redB);
+    hLine(31,32,top+21,redHiR,redHiG,redHiB);
+
+    constexpr uint8_t barR=60, barG=220, barB=150;
+    constexpr uint8_t dimR=12, dimG=36, dimB=28;
+    constexpr int16_t barX0=8, barX1=55, sweepW=12;
+    for(int16_t x=barX0;x<=barX1;x++){
+      px(x,59,dimR,dimG,dimB);
+      px(x,60,dimR,dimG,dimB);
     }
-    if(filled>barW) filled=barW;
-    for(int16_t x=0;x<filled;x++) px(barX+x,barY,CRGB(90,230,170));
+    constexpr int16_t travel=(barX1-barX0+1)-sweepW;
+    constexpr uint16_t stepMs=45U;
+    const uint16_t cycle=(uint16_t)(travel*2);
+    const uint16_t raw=cycle ? (uint16_t)((now/stepMs)%cycle) : 0U;
+    const int16_t pos=raw<=travel ? (int16_t)raw : (int16_t)(cycle-raw);
+    for(int16_t x=0;x<sweepW;x++){
+      px((int16_t)(barX0+pos+x),59,barR,barG,barB);
+      px((int16_t)(barX0+pos+x),60,barR,barG,barB);
+    }
+  }else{
+    const uint8_t scale=(w>=32 && h>=32)?2U:1U;
+    const int16_t artW=(int16_t)(16U*scale);
+    const int16_t artH=(int16_t)(16U*scale);
+    const int16_t ox=((int16_t)w-artW)/2;
+    const int16_t oy=((int16_t)h-artH)/2;
+
+    auto logicalPixel=[&](uint8_t x,uint8_t y,uint8_t r,uint8_t g,uint8_t b){
+      for(uint8_t yy=0;yy<scale;yy++) for(uint8_t xx=0;xx<scale;xx++)
+        px(ox+(int16_t)(x*scale+xx),oy+(int16_t)(y*scale+yy),r,g,b);
+    };
+
+    constexpr uint8_t trayR=35, trayG=125, trayB=235;
+    for(uint8_t y=9;y<=11;y++){
+      logicalPixel(2,y,trayR,trayG,trayB);
+      logicalPixel(3,y,trayR,trayG,trayB);
+      logicalPixel(12,y,trayR,trayG,trayB);
+      logicalPixel(13,y,trayR,trayG,trayB);
+    }
+    for(uint8_t x=2;x<=13;x++) logicalPixel(x,12,trayR,trayG,trayB);
+    for(uint8_t x=3;x<=12;x++) logicalPixel(x,13,trayR,trayG,trayB);
+
+    constexpr uint8_t arrowR=236, arrowG=28, arrowB=36;
+    const uint8_t phase=(uint8_t)((now/100U)%8U);
+    const int8_t top=(int8_t)(-4+phase);
+    auto arrowRow=[&](int8_t localY,uint8_t x0,uint8_t x1){
+      const int8_t y=(int8_t)(top+localY);
+      if(y<0 || y>=15) return;
+      for(uint8_t x=x0;x<=x1;x++) logicalPixel(x,(uint8_t)y,arrowR,arrowG,arrowB);
+    };
+    arrowRow(0,7,9);
+    arrowRow(1,7,9);
+    arrowRow(2,7,9);
+    arrowRow(3,7,9);
+    arrowRow(4,5,11);
+    arrowRow(5,6,10);
+    arrowRow(6,7,9);
+    arrowRow(7,8,8);
+
+    constexpr uint8_t barY=15, barX=1, barW=14, sweepW=4;
+    constexpr uint8_t barR=60, barG=220, barB=150;
+    constexpr uint8_t dimR=12, dimG=36, dimB=28;
+    for(uint8_t x=0;x<barW;x++) logicalPixel((uint8_t)(barX+x),barY,dimR,dimG,dimB);
+    constexpr uint8_t travel=barW-sweepW;
+    constexpr uint16_t stepMs=90U;
+    const uint8_t cycle=(uint8_t)(travel*2U);
+    const uint8_t raw=cycle ? (uint8_t)((now/stepMs)%cycle) : 0U;
+    const uint8_t pos=raw<=travel ? raw : (uint8_t)(cycle-raw);
+    for(uint8_t x=0;x<sweepW;x++)
+      logicalPixel((uint8_t)(barX+pos+x),barY,barR,barG,barB);
   }
+
   refreshMatrix();
 }
 
@@ -2001,6 +2092,83 @@ void drawHourglassIcon() {
   putPixel(0,13,sand); putPixel(1,13,sand); putPixel(2,13,sand); putPixel(3,13,sand); putPixel(4,13,sand);
 }
 
+
+void drawDigit3x5NativeScaled(uint8_t d, int16_t x, int16_t y, uint8_t scale, const CRGB &c) {
+  if (d > 9) return;
+  for (uint8_t row=0; row<5; row++) {
+    for (uint8_t col=0; col<3; col++) {
+      if (!(digits3x5[d][row] & (1 << (2-col)))) continue;
+      for (uint8_t yy=0; yy<scale; yy++)
+        for (uint8_t xx=0; xx<scale; xx++)
+          putPixel(x + col*scale + xx, y + row*scale + yy, c);
+    }
+  }
+}
+
+void drawNative64ClockRow(uint8_t a, uint8_t b, uint8_t c, uint8_t d,
+                          int16_t y, const CRGB &color, bool slash) {
+  constexpr uint8_t scale=3;
+  constexpr int16_t width=51;
+  const int16_t x0=(64-width)/2;
+  drawDigit3x5NativeScaled(a,x0,y,scale,color);
+  drawDigit3x5NativeScaled(b,x0+12,y,scale,color);
+  const int16_t sx=x0+24;
+  if(slash){
+    for(uint8_t i=0;i<3;i++){
+      putPixel(sx+2-i,y+3+i,color);
+      putPixel(sx+2-i,y+6+i,color);
+      putPixel(sx+1-i,y+9+i,color);
+    }
+  } else if(clockColonVisible) {
+    for(uint8_t yy=0;yy<3;yy++){
+      for(uint8_t xx=0;xx<3;xx++){
+        putPixel(sx+xx,y+3+yy,color);
+        putPixel(sx+xx,y+9+yy,color);
+      }
+    }
+  }
+  drawDigit3x5NativeScaled(c,x0+30,y,scale,color);
+  drawDigit3x5NativeScaled(d,x0+42,y,scale,color);
+}
+
+void drawNative64RainbowBorder() {
+  const uint8_t hue=(uint8_t)((millis()/20U)&0xFFU);
+  for(uint8_t x=0;x<64;x++){
+    putPixel(x,0,CHSV((uint8_t)(hue+x*3),255,255));
+    putPixel(63-x,63,CHSV((uint8_t)(hue+128+x*3),255,255));
+  }
+  for(uint8_t y=1;y<63;y++){
+    putPixel(0,y,CHSV((uint8_t)(hue+32+y*3),255,255));
+    putPixel(63,63-y,CHSV((uint8_t)(hue+160+y*3),255,255));
+  }
+}
+
+void renderClock64Combined(uint8_t h, uint8_t m, uint8_t d, uint8_t mo, uint8_t style) {
+  clearFramebuffer(style==3 ? clockColor : CRGB::Black);
+  if(style==0) drawNative64RainbowBorder();
+  const CRGB c=(style==3) ? CRGB::Black : clockColor;
+  // WLED RC parity: the time row received the final +4 physical-pixel adjustment.
+  drawNative64ClockRow(h/10,h%10,m/10,m%10,12,c,false);
+  drawNative64ClockRow(d/10,d%10,mo/10,mo%10,38,c,true);
+  refreshMatrix();
+}
+
+void adjustClockStyle2ColonAfterScale() {
+  const uint8_t style=(uint8_t)(clockStyle & 0x07);
+  if(style!=2 || clockRenderingDate || !clockColonVisible || MATRIX_WIDTH<=16) return;
+  const uint8_t scale=(uint8_t)(MATRIX_WIDTH/16U);
+  const int16_t shift=(MATRIX_WIDTH>=64) ? 2 : 1;
+  const int16_t oldX=8*scale;
+  const int16_t newX=oldX-shift;
+  for(uint8_t dot=0; dot<2; dot++){
+    const int16_t y=(dot==0 ? 6 : 8)*scale;
+    for(uint8_t yy=0; yy<scale; yy++)
+      for(uint8_t xx=0; xx<scale; xx++) putPixel(oldX+xx,y+yy,CRGB::Black);
+    for(uint8_t yy=0; yy<scale; yy++)
+      for(uint8_t xx=0; xx<scale; xx++) putPixel(newX+xx,y+yy,CRGB::White);
+  }
+}
+
 void renderClockValues(uint8_t h, uint8_t m) {
   clearFramebuffer();
 
@@ -2066,6 +2234,7 @@ void renderClockValues(uint8_t h, uint8_t m) {
   }
 
   scaleLegacy16CanvasToLogical();
+  adjustClockStyle2ColonAfterScale();
   refreshMatrix();
 }
 
@@ -2081,15 +2250,24 @@ void renderDateDDMM() {
 }
 
 void renderClock() {
-  // If the app enables date display, show 30 s of time followed by 5 s DD/MM.
+  uint8_t h,m,s;
+  getCurrentTime(h,m,s);
+  clockColonVisible = ((millis()/500UL)&1U)==0U;
+  if (!clock24h) { if (h==0) h=12; else if (h>12) h-=12; }
+
+  const uint8_t style=(uint8_t)(clockStyle & 0x07);
+  if (MATRIX_WIDTH==64 && clockShowDate && (style==0 || style==3)) {
+    uint16_t y; uint8_t mo,d,ah,ami,ase;
+    getAlarmDateTime(y,mo,d,ah,ami,ase);
+    renderClock64Combined(h,m,d,mo,style);
+    return;
+  }
+
+  // 16x16 and 32x32 retain the validated alternating date behavior.
   if (clockShowDate) {
     const uint32_t phase = (millis() - clockCycleStartedAt) % 35000UL;
     if (phase >= 30000UL) { renderDateDDMM(); return; }
   }
-  uint8_t h,m,s;
-  getCurrentTime(h,m,s);
-  clockColonVisible = ((s & 0x01) == 0);
-  if (!clock24h) { if (h==0) h=12; else if (h>12) h-=12; }
   renderClockValues(h,m);
 }
 
@@ -2111,7 +2289,8 @@ void drawCountdownTimerIcon(uint8_t phase) {
   const CRGB center(255,220,120);
   const int8_t cx=7, cy=4;
 
-  // 9x9 pixel-art timer in the upper half of the 16x16 canvas.
+  // Legacy stopwatch timer icon retained for Stopwatch only. Countdown now
+  // reproduces the original-device hourglass artwork below.
   putPixel(6,0,rim); putPixel(7,0,rim); putPixel(8,0,rim);
   putPixel(7,1,rim);
   putPixel(4,1,rim); putPixel(10,1,rim);
@@ -2126,58 +2305,200 @@ void drawCountdownTimerIcon(uint8_t phase) {
   static const int8_t hx[8]={ 7,10,11,10,7,4,3,4 };
   static const int8_t hy[8]={ 1, 2, 4, 6,7,6,4,2 };
   int8_t ex=hx[phase&7], ey=hy[phase&7];
-  // One intermediate pixel keeps diagonal hands visually connected.
   putPixel(cx,cy,center);
   putPixel((cx+ex)/2,(cy+ey)/2,hand);
   putPixel(ex,ey,hand);
 }
 
+// Original 16x16 countdown artwork captured from the manufacturer device.
+// Palette indexes: 0=black, 1=white glass/frame, 2=orange sand, 3=brown bases.
+// Only the 7x10 hourglass area is stored; MM/SS are rendered dynamically.
+static const uint8_t countdownHourglassFrames[10][70] PROGMEM = {
+  {3,3,3,3,3,3,3, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,0,1,0,0, 0,1,0,0,0,1,0, 1,0,0,0,0,0,1, 1,0,0,0,0,0,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,0,0,0,1,0, 1,0,0,0,0,0,1, 1,0,0,0,0,0,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,0,2,0,1,0, 1,0,0,0,0,0,1, 1,0,0,0,0,0,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,0,2,0,1,0, 1,0,0,2,0,0,1, 1,0,0,2,0,0,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,0,2,0,1,0, 1,0,0,2,0,0,1, 1,0,2,2,2,0,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,0,0,0,0,0,1, 1,2,2,2,2,2,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,0,2,0,1,0, 1,0,0,2,0,0,1, 1,2,2,2,2,2,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,0,0,0,0,0,1, 1,2,2,2,2,2,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,0,2,0,1,0, 1,0,2,2,2,0,1, 1,2,2,2,2,2,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,0,0,0,0,0,1, 1,0,0,0,0,0,1, 0,1,2,2,2,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,0,2,0,1,0, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,0,0,0,0,0,1, 1,0,0,0,0,0,1, 0,1,0,0,0,1,0, 0,0,1,2,1,0,0, 0,0,1,2,1,0,0, 0,1,2,2,2,1,0, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 3,3,3,3,3,3,3},
+  {3,3,3,3,3,3,3, 1,0,0,0,0,0,1, 1,0,0,0,0,0,1, 0,1,0,0,0,1,0, 0,0,1,0,1,0,0, 0,0,1,2,1,0,0, 0,1,2,2,2,1,0, 1,2,2,2,2,2,1, 1,2,2,2,2,2,1, 3,3,3,3,3,3,3}
+};
+
+void fillCountdownBlock(int16_t x, int16_t y, uint8_t scale, const CRGB &c) {
+  for (uint8_t yy=0; yy<scale; yy++)
+    for (uint8_t xx=0; xx<scale; xx++)
+      putPixel(x+xx,y+yy,c);
+}
+
+void drawDigit3x5Scaled(uint8_t d, int16_t x, int16_t y, uint8_t scale, const CRGB &c) {
+  if (d>9) return;
+  for (uint8_t row=0; row<5; row++)
+    for (uint8_t col=0; col<3; col++)
+      if (digits3x5[d][row] & (1 << (2-col)))
+        fillCountdownBlock(x + col*scale, y + row*scale, scale, c);
+}
+
+void drawOriginalCountdownHourglass(uint8_t frame, uint8_t scale) {
+  const CRGB colors[4] = { CRGB::Black, CRGB::White, CRGB(242,119,6), CRGB(146,86,61) };
+  frame %= 10;
+  for (uint8_t sy=0; sy<10; sy++) {
+    for (uint8_t sx=0; sx<7; sx++) {
+      const uint8_t pi = pgm_read_byte(&countdownHourglassFrames[frame][sy*7+sx]);
+      if (!pi) continue;
+      fillCountdownBlock(sx*scale, (4+sy)*scale, scale, colors[pi]);
+    }
+  }
+}
+
 void renderCountdown(uint32_t remainMs) {
   const uint32_t remainSec=(remainMs+999UL)/1000UL;
-  const CRGB digits = remainSec<=5 ? CRGB::Red : CRGB::White;
   const uint8_t mm=(remainSec/60UL)%100UL, ss=remainSec%60UL;
+  const uint8_t scale=(uint8_t)(MATRIX_WIDTH/16U);
+  const CRGB minuteColor=CRGB::White;
+  const CRGB normalSecondColor(242,119,6);
+  const CRGB secondColor = remainSec<=10UL ? CRGB::Red : normalSecondColor;
+  const CRGB colonColor(242,119,6);
+
   clearFramebuffer();
 
-  // Countdown decreases, so invert the phase to keep the hand rotating clockwise.
-  const uint8_t phase=(uint8_t)((8U-((remainMs/125UL)&7U))&7U);
-  drawCountdownTimerIcon(phase);
+  // Manufacturer 16x16 animation: ten frames at 200 ms each.  On larger
+  // logical matrices the same pixel artwork is enlarged cleanly rather than
+  // being produced on a 16x16 framebuffer and post-scaled.
+  const uint8_t frame = (remainSec == 0UL) ? 9U : (uint8_t)((millis()/200UL)%10UL);
+  drawOriginalCountdownHourglass(frame,scale);
 
-  // Full-width MM:SS below the timer, rows 10..14.
-  drawDigit3x5(mm/10,0,10,digits); drawDigit3x5(mm%10,3,10,digits);
-  drawColon(7,10,digits);
-  drawDigit3x5(ss/10,9,10,digits); drawDigit3x5(ss%10,12,10,digits);
-  scaleLegacy16CanvasToLogical();
+  // Original device layout: minutes above seconds on the right side.
+  drawDigit3x5Scaled(mm/10,9*scale,3*scale,scale,minuteColor);
+  drawDigit3x5Scaled(mm%10,13*scale,3*scale,scale,minuteColor);
+  drawDigit3x5Scaled(ss/10,9*scale,9*scale,scale,secondColor);
+  drawDigit3x5Scaled(ss%10,13*scale,9*scale,scale,secondColor);
+
+  // The original 16x16 separator is squeezed against the hourglass at x=7.
+  // Preserve it exactly at 16x16, but center each dot in the wider 2*scale
+  // gap available on 32x32 and 64x64.  The separator itself does not turn red;
+  // only the seconds do during the final ten seconds.
+  const int16_t colonShift = (MATRIX_WIDTH>=64) ? 2 : ((MATRIX_WIDTH>=32) ? 1 : 0);
+  const int16_t colonX = 7*scale + (scale>1 ? scale/2 : 0) + colonShift;
+  if (((millis()/500UL)&1U)==0U) {
+    fillCountdownBlock(colonX,10*scale,scale,colonColor);
+    fillCountdownBlock(colonX,12*scale,scale,colonColor);
+  }
+
   refreshMatrix();
+}
+
+// Original 16x16 stopwatch artwork captured from the manufacturer device.
+// Palette indexes: 0=black, 1=white face, 2=orange button, 3=gray/lilac case,
+// 4=red hand.  Only the 7x9 stopwatch icon area is stored; MM/SS are dynamic.
+static const uint8_t stopwatchFrames[8][63] PROGMEM = {
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,4,1,1,3, 3,1,1,4,1,1,3, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,1,4,1,3, 3,1,1,4,1,1,3, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 3,1,1,4,4,1,3, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 3,1,1,4,1,1,3, 3,1,1,1,4,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 3,1,1,4,1,1,3, 3,1,1,4,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 3,1,1,4,1,1,3, 3,1,4,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 3,1,4,4,1,1,3, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
+  {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,4,1,1,1,3, 3,1,1,4,1,1,3, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0}
+};
+
+void drawOriginalStopwatch(uint8_t frame, uint8_t scale) {
+  const CRGB colors[5] = {
+    CRGB::Black,
+    CRGB::White,
+    CRGB(242,119,6),
+    CRGB(164,158,165),
+    CRGB(220,5,39)
+  };
+  frame &= 7U;
+  for (uint8_t sy=0; sy<9; sy++) {
+    for (uint8_t sx=0; sx<7; sx++) {
+      const uint8_t pi=pgm_read_byte(&stopwatchFrames[frame][sy*7+sx]);
+      if (!pi) continue;
+      fillCountdownBlock(sx*scale,(4+sy)*scale,scale,colors[pi]);
+    }
+  }
 }
 
 void renderStopwatch(uint32_t elapsedMs) {
   const uint32_t elapsedSec=elapsedMs/1000UL;
   const uint8_t mm=(elapsedSec/60UL)%100UL, ss=elapsedSec%60UL;
+  const uint8_t scale=(uint8_t)(MATRIX_WIDTH/16U);
+  const CRGB minuteColor=CRGB::White;
+  const CRGB secondColor(242,119,6);
+  const CRGB colonColor(242,119,6);
+
   clearFramebuffer();
 
-  // Same timer face as countdown, but the hand advances with elapsed time.
-  const uint8_t phase=(uint8_t)((elapsedMs/125UL)&7U);
-  drawCountdownTimerIcon(phase);
+  // Manufacturer artwork: eight hand positions at 100 ms per frame.  Using
+  // elapsed time rather than wall-clock time naturally freezes the hand when
+  // the stopwatch is paused and resumes from the same phase afterwards.
+  const uint8_t frame=(uint8_t)((elapsedMs/100UL)&7U);
+  drawOriginalStopwatch(frame,scale);
 
-  const CRGB digits=CRGB::White;
-  drawDigit3x5(mm/10,0,10,digits); drawDigit3x5(mm%10,3,10,digits);
-  drawColon(7,10,digits);
-  drawDigit3x5(ss/10,9,10,digits); drawDigit3x5(ss%10,12,10,digits);
-  scaleLegacy16CanvasToLogical();
+  // Original-device layout: minutes above seconds on the right.  On 32x32
+  // and 64x64 the separator is centered in the enlarged gap rather than
+  // inheriting the cramped 16x16 placement.
+  drawDigit3x5Scaled(mm/10,9*scale,3*scale,scale,minuteColor);
+  drawDigit3x5Scaled(mm%10,13*scale,3*scale,scale,minuteColor);
+  drawDigit3x5Scaled(ss/10,9*scale,9*scale,scale,secondColor);
+  drawDigit3x5Scaled(ss%10,13*scale,9*scale,scale,secondColor);
+  const int16_t colonShift=(MATRIX_WIDTH>=64) ? 2 : ((MATRIX_WIDTH>=32) ? 1 : 0);
+  const int16_t colonX=7*scale+(scale>1 ? scale/2 : 0)+colonShift;
+  if (((millis()/500UL)&1U)==0U) {
+    fillCountdownBlock(colonX,10*scale,scale,colonColor);
+    fillCountdownBlock(colonX,12*scale,scale,colonColor);
+  }
+
   refreshMatrix();
 }
 
-void drawScore2Digit(uint16_t score, int16_t x, int16_t y, const CRGB &c) {
-  score%=100;
-  if (score>=10) drawDigit3x5(score/10,x,y,c);
-  drawDigit3x5(score%10,x+3,y,c);
+// Original-device Scoreboard artwork (16x16 reference supplied from hardware).
+// The real display uses two full-width 3-digit rows: blue player A above red
+// player B.  Each glyph is a 4x7 pixel-outline digit, with one blank column
+// between digits and one blank pixel at each horizontal edge.
+static const uint8_t SCORE_DIGITS_4X7[10][7] = {
+  {0xF,0x9,0x9,0x9,0x9,0x9,0xF}, // 0
+  {0x2,0x6,0x2,0x2,0x2,0x2,0x7}, // 1
+  {0xF,0x1,0x1,0xF,0x8,0x8,0xF}, // 2
+  {0xF,0x1,0x1,0xF,0x1,0x1,0xF}, // 3
+  {0x9,0x9,0x9,0xF,0x1,0x1,0x1}, // 4
+  {0xF,0x8,0x8,0xF,0x1,0x1,0xF}, // 5
+  {0xF,0x8,0x8,0xF,0x9,0x9,0xF}, // 6
+  {0xF,0x1,0x1,0x2,0x2,0x4,0x4}, // 7
+  {0xF,0x9,0x9,0xF,0x9,0x9,0xF}, // 8
+  {0xF,0x9,0x9,0xF,0x1,0x1,0xF}  // 9
+};
+
+void drawScoreDigit4x7(uint8_t digit, int16_t x, int16_t y, const CRGB &c) {
+  if(digit>9) return;
+  for(uint8_t row=0; row<7; ++row){
+    const uint8_t bits=SCORE_DIGITS_4X7[digit][row];
+    for(uint8_t col=0; col<4; ++col){
+      if(bits & (1U << (3-col))) putPixel(x+col,y+row,c);
+    }
+  }
+}
+
+void drawScore3Digit(uint16_t score, int16_t y, const CRGB &c) {
+  score%=1000;
+  drawScoreDigit4x7((score/100)%10,1,y,c);
+  drawScoreDigit4x7((score/10)%10,6,y,c);
+  drawScoreDigit4x7(score%10,11,y,c);
 }
 
 void renderScoreboard() {
   clearFramebuffer();
-  drawScore2Digit(scoreA,0,5,CRGB::Blue);
-  drawColon(7,5,CRGB::White);
-  drawScore2Digit(scoreB,9,5,CRGB::Red);
+  // Captured original-device palette.
+  const CRGB playerAColor(120,88,248);   // #7858F8, sampled from the official app UI
+  const CRGB playerBColor(248,32,120);    // #F82078, sampled from the official app UI
+
+  // Exact 16x16 manufacturer composition: rows 0..6 and 9..15, leaving
+  // two blank scanlines between players.  Larger logical profiles preserve
+  // this pixel-art composition by scaling the legacy 16x16 canvas.
+  drawScore3Digit(scoreA,0,playerAColor);
+  drawScore3Digit(scoreB,9,playerBColor);
   scaleLegacy16CanvasToLogical();
   refreshMatrix();
 }
@@ -2202,9 +2523,34 @@ bool isTextPixel(uint8_t glyph,uint8_t row,uint8_t col) {
   return textState.bitmap[glyph][off] & (1U << (col & 7)); // LSB = leftmost pixel in each byte
 }
 
-uint8_t textVisibleGlyphCapacity() {
+uint8_t textGlyphsPerLine() {
   if (textState.glyphAdvance == 0) return 1;
   uint16_t capacity = MATRIX_WIDTH / textState.glyphAdvance;
+  if (capacity == 0) capacity = 1;
+  if (capacity > textState.glyphCount) capacity = textState.glyphCount;
+  return (uint8_t)capacity;
+}
+
+uint8_t textMaximumRows() {
+  if (textState.glyphHeight == 0) return 1;
+  uint16_t rows = MATRIX_HEIGHT / textState.glyphHeight;
+  if (rows == 0) rows = 1;
+  // The current protocol profiles top out at 64 px and therefore at four
+  // 16-pixel rows. Keep the calculation generic for future logical sizes.
+  if (rows > MAX_TEXT_GLYPHS) rows = MAX_TEXT_GLYPHS;
+  return (uint8_t)rows;
+}
+
+bool textUsesMultilineLayout() {
+  // Original hardware uses all available vertical rows only for effects that
+  // do not move the text through the display. LEFT/RIGHT and UP/DOWN remain
+  // single-line scrolling presentations.
+  return textState.motionEffect == 0 || textState.motionEffect >= 5;
+}
+
+uint8_t textVisibleGlyphCapacity() {
+  uint16_t capacity = textGlyphsPerLine();
+  if (textUsesMultilineLayout()) capacity *= textMaximumRows();
   if (capacity == 0) capacity = 1;
   if (capacity > textState.glyphCount) capacity = textState.glyphCount;
   return (uint8_t)capacity;
@@ -2213,7 +2559,8 @@ uint8_t textVisibleGlyphCapacity() {
 bool textUsesPagedViewport() {
   // LEFT/RIGHT (1/2) already traverse the complete line continuously.
   // Every other text effect uses a viewport when the full glyph stream does
-  // not fit the matrix.
+  // not fit the current page. Non-scrolling effects may use several rows in
+  // that page; UP/DOWN keep the historical one-row vertical tape.
   return textState.motionEffect != 1 && textState.motionEffect != 2;
 }
 
@@ -2240,6 +2587,35 @@ void drawTextPage(uint8_t firstGlyph, int16_t pageX, int16_t pageY,
   const uint8_t capacity = textVisibleGlyphCapacity();
   const uint8_t glyphsToDraw =
       min(capacity, (uint8_t)(textState.glyphCount - firstGlyph));
+
+  if (textUsesMultilineLayout()) {
+    const uint8_t perLine=textGlyphsPerLine();
+    const uint8_t lineCount=(uint8_t)((glyphsToDraw + perLine - 1U) / perLine);
+    const int16_t blockHeight=(int16_t)lineCount * textState.glyphHeight;
+    const int16_t startY=(MATRIX_HEIGHT>blockHeight)
+        ? (int16_t)((MATRIX_HEIGHT-blockHeight)/2) + pageY
+        : pageY;
+
+    // Keep the historical horizontal origin. The original-device behavior
+    // observed here changes vertical packing only: glyphs wrap sequentially
+    // into the available rows and the used row block is centered vertically.
+    for (uint8_t local=0; local<glyphsToDraw; local++) {
+      const uint8_t g=firstGlyph+local;
+      const uint8_t line=(uint8_t)(local/perLine);
+      const uint8_t column=(uint8_t)(local%perLine);
+      const int16_t gx=pageX+(int16_t)column*textState.glyphAdvance;
+      const int16_t gy=startY+(int16_t)line*textState.glyphHeight;
+      for (uint8_t row=0;row<textState.glyphHeight;row++) for (uint8_t col=0;col<textState.glyphWidth;col++) {
+        if (!isTextPixel(g,row,col)) continue;
+        const int16_t px=gx+col, py=gy+row;
+        CRGB c=getTextPixelColor(px,py);
+        if (scale<255) c.nscale8_video(scale);
+        if (laserRow>=0 && py==laserRow) c=CRGB::White;
+        putPixel(px,py,c);
+      }
+    }
+    return;
+  }
 
   for (uint8_t local=0; local<glyphsToDraw; local++) {
     const uint8_t g = firstGlyph + local;
@@ -2352,7 +2728,10 @@ void resetTextPosition() {
     case 2:textState.offsetX=-tw;textState.offsetY=centeredY;break;
     case 3:textState.offsetX=0;textState.offsetY=MATRIX_HEIGHT;break;
     case 4:textState.offsetX=0;textState.offsetY=-textState.glyphHeight;break;
-    default:textState.offsetX=0;textState.offsetY=centeredY;break;
+    default:
+      textState.offsetX=0;
+      textState.offsetY=textUsesMultilineLayout() ? 0 : centeredY;
+      break;
   }
   textState.animationStart=millis();
   textState.lastFrame=0;
@@ -3472,6 +3851,10 @@ bool handlePresetCommand(const uint8_t *data, size_t len) {
   Serial.println();
 #endif
 
+  if(presetTransferIndicatorActive){
+    presetTransferIndicatorActive=false;
+    endCarouselTransferIndicator();
+  }
   stopPresetPlayback();
   presetOrderCount=count;
   for(uint8_t i=0;i<count;i++) presetOrder[i]=localOrder[i];
@@ -3523,6 +3906,12 @@ void expireStalledTransfers(uint32_t now){
     packetReceived=packetExpected=0;
     packetLastRxMs=0;
     resetBulkTransfer(true);
+  }
+  if(audioRxReceived && audioRxLastMs && (uint32_t)(now-audioRxLastMs)>AUDIO_REASSEMBLY_TIMEOUT_MS){
+#if DEBUG_SERIAL
+    Serial.println("AUDIO RX timeout; dropping partial audio frame");
+#endif
+    resetAudioReassembly();
   }
   if(bulk.active && bulkLastRxMs && (uint32_t)(now-bulkLastRxMs)>BULK_TRANSFER_TIMEOUT_MS){
 #if DEBUG_SERIAL
@@ -3603,6 +3992,9 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       gifBulkFile=LittleFS.open(tmp,"w");
       if(!gifBulkFile){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
       gifRxWriteOffset=0;
+      presetTransferIndicatorActive=true;
+      presetTransferLastActivityAt=millis();
+      beginCarouselTransferIndicator(total,localSlot);
 #if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
       Serial.print("PRESET RX BEGIN slot="); Serial.print(imageIndex);
       Serial.print(" type="); Serial.print(type);
@@ -3729,7 +4121,10 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     if(off<MAX_TEXT_PAYLOAD){ size_t cp=min(useful,(size_t)MAX_TEXT_PAYLOAD-off); ::memcpy(textPayload+off,payload,cp); textPayloadReceived=off+cp; }
   }
   bulk.receivedSize+=useful; bulk.chunkCount++;
-  if(bulk.carouselToFS) updateCarouselTransferIndicatorProgress(bulk.receivedSize,bulk.expectedSize);
+  if(bulk.carouselToFS || bulk.presetToFS) {
+    updateCarouselTransferIndicatorProgress(bulk.receivedSize,bulk.expectedSize);
+    if(bulk.presetToFS) presetTransferLastActivityAt=millis();
+  }
   if(bulk.receivedSize>=bulk.expectedSize){
     bool ok=((bulk.runningCRC^0xFFFFFFFF)==bulk.expectedCRC);
 #if DEBUG_SERIAL && TEXT_PROTOCOL_DEBUG
@@ -3928,6 +4323,76 @@ static void renderAudioPurpleFace(uint8_t level) {
   if(open>=6) for(int x=cx-halfW+2;x<=cx+halfW-2;x++) audioPixel(x,12,CRGB(35,0,25));
 }
 
+// LEVEL 5 - manufacturer face reconstructed from the supplied hardware video.
+// Eyes and mouth are independent 4-state components rather than four coupled
+// animation frames.  The global LEVEL controls cadence; FFT bands are unused.
+struct ObservedFaceState {
+  uint8_t eyes=1, mouth=0;
+  uint32_t rng=0xA341316Cu;
+  uint32_t nextEyesMs=0, nextMouthMs=0;
+  bool initialized=false;
+};
+static ObservedFaceState observedFaceState;
+
+static uint32_t observedFaceRand() {
+  uint32_t x=observedFaceState.rng;
+  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+  observedFaceState.rng=x ? x : 0xA341316Cu;
+  return observedFaceState.rng;
+}
+static uint8_t observedFaceDifferent(uint8_t current) {
+  uint8_t next=(uint8_t)(observedFaceRand()&3U);
+  if(next==current) next=(uint8_t)((next+1U+(observedFaceRand()%3U))&3U);
+  return next;
+}
+static void drawObservedFaceRows(const uint16_t rows[16], const CRGB &c) {
+  for(uint8_t y=0;y<16;y++) for(uint8_t x=0;x<16;x++) if(rows[y]&(1U<<x)) audioPixel(x,y,c);
+}
+static void renderAudioObservedFace(uint8_t level) {
+  static const uint16_t eyeRed[4][16] = {
+    {0,0,0,0,0x381C,0x4422,0x381C,0,0,0,0,0,0,0,0,0},
+    {0,0x381C,0x4422,0x4422,0x4422,0x4422,0x381C,0,0,0,0,0,0,0,0,0},
+    {0,0x381C,0x4422,0x4422,0x4422,0x4422,0x381C,0,0,0,0,0,0,0,0,0},
+    {0,0x381C,0x4422,0x4422,0x4422,0x4422,0x381C,0,0,0,0,0,0,0,0,0}
+  };
+  static const uint16_t eyeWhite[4][16] = {
+    {0,0,0,0,0,0x381C,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0x381C,0x2814,0x2814,0x381C,0,0,0,0,0,0,0,0,0},
+    {0,0,0x381C,0x381C,0x381C,0x2010,0,0,0,0,0,0,0,0,0},
+    {0,0,0x381C,0x3018,0x3018,0x381C,0,0,0,0,0,0,0,0,0}
+  };
+  static const uint16_t mouthBlue[4][16] = {
+    {0,0,0,0,0,0,0,0,0,0x3FFC,0x7FFE,0,0x7FFE,0x3FFC,0,0},
+    {0,0,0,0,0,0,0,0,0x3FFC,0x7FFE,0,0,0,0x7FFE,0x3FFC,0},
+    {0,0,0,0,0,0,0,0,0,0,0x3FFC,0x7FFE,0x7FFE,0x3FFC,0,0},
+    {0,0,0,0,0,0,0,0,0x3FFC,0x7FFE,0,0,0,0x7FFE,0x3FFC,0}
+  };
+  static const uint16_t mouthRed[4][16] = {
+    {0},{0},{0},{0,0,0,0,0,0,0,0,0,0,0x0180,0x0240,0,0,0,0}
+  };
+  const uint32_t now=millis();
+  if(!observedFaceState.initialized){
+    observedFaceState.initialized=true;
+    observedFaceState.nextEyesMs=now+420;
+    observedFaceState.nextMouthMs=now+520;
+  }
+  const uint16_t eyeBase=(uint16_t)max(180,520-(int)level*22);
+  const uint16_t mouthBase=(uint16_t)max(220,640-(int)level*24);
+  if((int32_t)(now-observedFaceState.nextEyesMs)>=0){
+    observedFaceState.eyes=observedFaceDifferent(observedFaceState.eyes);
+    observedFaceState.nextEyesMs=now+eyeBase+(observedFaceRand()%180U);
+  }
+  if((int32_t)(now-observedFaceState.nextMouthMs)>=0){
+    observedFaceState.mouth=observedFaceDifferent(observedFaceState.mouth);
+    observedFaceState.nextMouthMs=now+mouthBase+(observedFaceRand()%220U);
+  }
+  clearFramebuffer();
+  drawObservedFaceRows(eyeRed[observedFaceState.eyes],CRGB(232,0,11));
+  drawObservedFaceRows(eyeWhite[observedFaceState.eyes],CRGB(255,255,252));
+  drawObservedFaceRows(mouthBlue[observedFaceState.mouth],CRGB(8,69,247));
+  drawObservedFaceRows(mouthRed[observedFaceState.mouth],CRGB(232,0,11));
+}
+
 // LEVEL 2 - retained because it was visually accepted.
 static void renderAudioHeartLevel(uint8_t level) {
   clearFramebuffer();
@@ -3936,40 +4401,81 @@ static void renderAudioHeartLevel(uint8_t level) {
   if(level>=6) { audioPixel(1,7,CRGB(255,0,30)); audioPixel(14,7,CRGB(255,0,30)); }
 }
 
-// LEVEL 1 - multi-pose breakdance sprite: head, hands and feet all move.
+// LEVEL 1 - manufacturer-style breakdancer.  The captured reference frames
+// are an atlas of independent body-part alternatives, not a frame sequence.
+// State changes are considered ONLY when a new LEVEL packet arrives.  Stale
+// audio and silence therefore freeze the exact current composition.
+struct BreakdancerState {
+  uint8_t head=0, leftArm=0, rightArm=0, leftLeg=0, rightLeg=0, bg=0;
+  uint32_t rng=0x6D2B79F5u;
+  uint32_t lastProcessedPacket=0;
+  bool initialized=false;
+};
+static BreakdancerState breakdancerState;
+
+static uint32_t breakdancerRand() {
+  uint32_t x=breakdancerState.rng;
+  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+  breakdancerState.rng=x ? x : 0x6D2B79F5u;
+  return breakdancerState.rng;
+}
+
+static void drawAudioPixels(const int8_t (*pts)[2], uint8_t count, const CRGB &c) {
+  for(uint8_t i=0;i<count;i++) audioPixel(pts[i][0],pts[i][1],c);
+}
+
 static void renderAudioBreakdancer(uint8_t level) {
   clearFramebuffer();
   const CRGB white=CRGB::White;
-  uint8_t pose=(uint8_t)((millis()/150 + level) % 6);
 
-  // Top checker strip from the original preview, shifted with the pose.
-  const CRGB green(45,255,25), green2(15,150,15);
-  for(int x=0;x<16;x++) if(((x+pose)&1)==0){ audioPixel(x,0,green); audioPixel(x,1,green2); }
+  if(!breakdancerState.initialized) {
+    breakdancerState.initialized=true;
+    breakdancerState.rng ^= millis() ^ (audioState.packetCounter*0x9E3779B9u);
+    breakdancerState.lastProcessedPacket=audioState.packetCounter;
+  }
 
-  // Pose definitions: head, shoulder, hip, two hands, two feet.
-  struct P { int hx,hy,sx,sy,px,py,lx,ly,rx,ry,lfx,lfy,rfx,rfy; };
-  static const P p[6]={
-    {8,3,8,6,8,10, 4,7,12,8, 5,14,11,14},
-    {7,3,8,6,8,10, 3,9,12,5, 4,13,12,14},
-    {9,4,8,7,7,10, 3,5,13,10, 2,14,10,13},
-    {5,7,7,8,9,10, 3,11,10,5, 4,14,13,12},
-    {8,11,8,9,8,7, 4,12,12,12, 5,4,11,4}, // inverted/headstand-like pose
-    {10,3,9,6,8,10, 5,5,13,7, 4,14,10,13}
-  };
-  const P &q=p[pose];
+  const bool newPacket = audioState.packetCounter != breakdancerState.lastProcessedPacket;
+  if(newPacket) {
+    breakdancerState.lastProcessedPacket=audioState.packetCounter;
+    // Silence freezes.  Louder packets make each independent component more
+    // likely to choose a different valid alternative.
+    if(level>1U) {
+      const uint8_t chance=(uint8_t)constrain(18 + (int)level*6, 24, 92);
+      if((breakdancerRand()%100)<chance) breakdancerState.head=(uint8_t)(breakdancerRand()%3);
+      if((breakdancerRand()%100)<chance) breakdancerState.leftArm=(uint8_t)(breakdancerRand()%2);
+      if((breakdancerRand()%100)<chance) breakdancerState.rightArm=(uint8_t)(breakdancerRand()%2);
+      if((breakdancerRand()%100)<chance) breakdancerState.leftLeg=(uint8_t)(breakdancerRand()%2);
+      if((breakdancerRand()%100)<chance) breakdancerState.rightLeg=(uint8_t)(breakdancerRand()%2);
+      if((breakdancerRand()%100)<chance) breakdancerState.bg=(uint8_t)(breakdancerRand()%3);
+    }
+  }
 
-  // 3x3 head with pose-dependent tilt.
-  for(int yy=-1;yy<=1;yy++) for(int xx=-1;xx<=1;xx++) audioPixel(q.hx+xx,q.hy+yy,white);
-  // torso, arms and legs.
-  drawLineAudio(q.sx,q.sy,q.px,q.py,white);
-  drawLineAudio(q.sx,q.sy,q.lx,q.ly,white);
-  drawLineAudio(q.sx,q.sy,q.rx,q.ry,white);
-  drawLineAudio(q.px,q.py,q.lfx,q.lfy,white);
-  drawLineAudio(q.px,q.py,q.rfx,q.rfy,white);
+  static const CRGB bgColours[3]={ CRGB(90,215,70), CRGB(247,255,100), CRGB(46,228,222) };
+  const CRGB bg=bgColours[breakdancerState.bg%3];
+  for(int y=0;y<3;y++) for(int x=0;x<16;x++) if(((x+y)&1)==1) audioPixel(x,y,bg);
 
-  // hands/feet are emphasized because the original breakdance frames read through extremities.
-  audioPixel(q.lx,q.ly,white); audioPixel(q.rx,q.ry,white);
-  audioPixel(q.lfx,q.lfy,white); audioPixel(q.rfx,q.rfy,white);
+  static const int8_t torso[][2]={{7,5},{8,5},{7,6},{8,6},{7,7},{8,7},{7,8},{8,8},{7,9},{8,9},{7,10},{8,10}};
+  drawAudioPixels(torso,sizeof(torso)/sizeof(torso[0]),white);
+  static const int8_t head0[][2]={{6,1},{7,1},{8,1},{9,1},{6,2},{7,2},{8,2},{9,2},{6,3},{7,3},{8,3},{9,3},{10,3},{6,4},{7,4},{8,4},{9,4}};
+  static const int8_t head1[][2]={{7,1},{8,1},{9,1},{10,1},{7,2},{8,2},{9,2},{10,2},{7,3},{8,3},{9,3},{10,3},{7,4},{8,4},{9,4},{10,4}};
+  static const int8_t head2[][2]={{5,1},{6,1},{7,1},{8,1},{5,2},{6,2},{7,2},{8,2},{5,3},{6,3},{7,3},{8,3},{5,4},{6,4},{7,4},{8,4}};
+  if(breakdancerState.head==1) drawAudioPixels(head1,sizeof(head1)/sizeof(head1[0]),white);
+  else if(breakdancerState.head==2) drawAudioPixels(head2,sizeof(head2)/sizeof(head2[0]),white);
+  else drawAudioPixels(head0,sizeof(head0)/sizeof(head0[0]),white);
+
+  static const int8_t leftArm0[][2]={{6,6},{5,7},{4,8},{3,9}};
+  static const int8_t leftArm1[][2]={{6,7},{5,7},{4,7},{3,7},{2,8}};
+  static const int8_t rightArm0[][2]={{9,6},{10,7},{11,8},{12,9}};
+  static const int8_t rightArm1[][2]={{9,7},{10,7},{11,7},{12,7},{13,8}};
+  drawAudioPixels(breakdancerState.leftArm?leftArm1:leftArm0, breakdancerState.leftArm?5:4, white);
+  drawAudioPixels(breakdancerState.rightArm?rightArm1:rightArm0, breakdancerState.rightArm?5:4, white);
+
+  static const int8_t leftLeg0[][2]={{7,11},{6,12},{5,12},{5,13},{5,14},{6,12}};
+  static const int8_t leftLeg1[][2]={{6,11},{7,11},{6,12},{6,13},{6,14},{5,15},{6,15}};
+  static const int8_t rightLeg0[][2]={{9,11},{9,12},{9,13},{9,14},{9,15},{10,15}};
+  static const int8_t rightLeg1[][2]={{8,11},{9,11},{9,12},{9,13},{9,14},{9,15},{10,15}};
+  drawAudioPixels(breakdancerState.leftLeg?leftLeg1:leftLeg0, breakdancerState.leftLeg?7:6, white);
+  drawAudioPixels(breakdancerState.rightLeg?rightLeg1:rightLeg0, breakdancerState.rightLeg?7:6, white);
 }
 
 static uint8_t bandHeight(uint8_t v) { return constrain((int)v, 0, 12); }
@@ -4036,20 +4542,28 @@ static uint8_t audioProtocolIndex(bool fft, uint8_t mode) {
   return mode;
 }
 
-// LEVEL 3 - dotted cyan frame + taller, colourful pseudo-spectrum.
+// LEVEL 3 - existing internal visualization plus WLED-RC moving perimeter.
+// Perimeter: one cyan pixel ON followed by two OFF, advancing one logical
+// perimeter pixel counter-clockwise approximately every 95 ms.
 static void renderAudioFakeSpectrum(uint8_t level) {
   clearFramebuffer();
   const CRGB frame(0,235,255);
-
-  // Dotted border, not a continuous rectangle.
-  for(int x=1;x<15;x+=2){ audioPixel(x,0,frame); audioPixel(x,15,frame); }
-  for(int y=1;y<15;y+=2){ audioPixel(0,y,frame); audioPixel(15,y,frame); }
+  const uint8_t phase=(uint8_t)((millis()/95UL)%60UL);
+  for(uint8_t i=0;i<60;i++) {
+    if(((uint8_t)(i+phase)%3U)!=0U) continue;
+    int16_t x=0,y=0;
+    // Counter-clockwise perimeter order: top L->R, right T->B,
+    // bottom R->L, left B->T.
+    if(i<16){ x=i; y=0; }
+    else if(i<31){ x=15; y=i-15; }
+    else if(i<46){ x=45-i; y=15; }
+    else { x=0; y=60-i; }
+    audioPixel(x,y,frame);
+  }
 
   uint8_t base=constrain((int)level,1,7);
   uint32_t t=millis()/95;
   for(int x=2;x<=13;x++) {
-    // Central bars are intentionally taller; the original firmware synthesises
-    // a spectrum from the single LEVEL value.
     int centreBoost=6-abs(x-7);
     uint8_t wobble=(uint8_t)((x*7+t*3+(x&1)*5)%5);
     uint8_t h=constrain((int)base+centreBoost/2+(int)wobble-1,2,13);
@@ -4123,7 +4637,7 @@ void renderAudio() {
       case 1: renderAudioHeartLevel(audioState.level); break;   // LEVEL 2
       case 2: renderAudioFakeSpectrum(audioState.level); break; // LEVEL 3
       case 3: renderAudioPurpleFace(audioState.level); break; // LEVEL 4
-      default: renderAudioRobotFace(audioState.level); break;   // LEVEL 5
+      default: renderAudioObservedFace(audioState.level); break; // LEVEL 5
     }
   } else {
     switch(audioState.mode) {
@@ -4164,16 +4678,22 @@ bool processAudioPacket(const uint8_t *data, size_t len) {
     return true;
   }
 
-  // FFT family. A complete logical frame is 21 bytes. In the captures a
-  // 33-byte BLE write contains one full 21-byte frame plus the first 12
-  // bytes of the following frame, therefore only bytes 0..20 are consumed.
-  if (len >= 21 && data[0] == 0x21 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x02) {
+  // FFT family. A complete wire frame is exactly 21 bytes:
+  //   21 00 01 02 <mode> <16 GEQ bands>
+  // The legacy iDotMatrix visualizers consume 8 logical bands, produced by
+  // averaging adjacent wire-band pairs. The transport layer below guarantees
+  // that only one complete 21-byte frame reaches this function.
+  if (len == AUDIO_FFT_FRAME_SIZE && data[0] == 0x21 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x02) {
     uint8_t mode=data[4];
     if(mode>4) return false;
     audioState.valid=true;
     audioState.fft=true;
     audioState.mode=mode;
-    for(uint8_t i=0;i<8;i++) audioState.bands[i]=(uint8_t)min(12,(int)data[5+i]);
+    for(uint8_t i=0;i<8;i++) {
+      const uint16_t a=data[5U+(uint16_t)i*2U];
+      const uint16_t b=data[6U+(uint16_t)i*2U];
+      audioState.bands[i]=(uint8_t)min(12U,(unsigned)((a+b+1U)/2U));
+    }
     audioState.lastPacketMs=millis();
     audioState.packetCounter++;
     switchDisplayMode(DISPLAY_AUDIO);
@@ -4297,7 +4817,24 @@ void processFA02Packet(const uint8_t *data,size_t len){
   if(len==7 && cmd==0x02 && sub==0x02){ switchDisplayMode(DISPLAY_SOLID); clearFramebuffer(CRGB(data[4],data[5],data[6])); refreshMatrix(); sendCommandAck(cmd,sub); return; }
 
   if(len==8 && cmd==0x06 && sub==0x01){
-    uint8_t flags=data[4]; clockStyle=flags&0x3F; clock24h=(flags&0x40)!=0; clockShowDate=(flags&0x80)!=0; clockColor=CRGB(data[5],data[6],data[7]);
+    uint8_t flags=data[4];
+    const bool incomingShowDate=(flags&0x80)!=0;
+    const uint8_t incomingStyle=(uint8_t)(flags&0x3F);
+    const uint32_t nowClock=millis();
+    const bool enteringClock=(displayMode!=DISPLAY_CLOCK);
+    const bool styleChanged=(incomingStyle!=clockStyle);
+    if((enteringClock || styleChanged) && clockDatePreference) clockEntryProtectUntil=nowClock+1000UL;
+    const bool protectDateOff=clockDatePreference &&
+      (enteringClock || styleChanged || (int32_t)(clockEntryProtectUntil-nowClock)>0);
+    clockStyle=incomingStyle;
+    clock24h=(flags&0x40)!=0;
+    if(incomingShowDate || !protectDateOff){
+      clockShowDate=incomingShowDate;
+      clockDatePreference=incomingShowDate;
+    } else {
+      clockShowDate=true;
+    }
+    clockColor=CRGB(data[5],data[6],data[7]);
 #if DEBUG_SERIAL
     Serial.print("CLOCK RAW ["); Serial.print(len); Serial.print("]: "); dumpHex(data,len);
     Serial.print("CLOCK style raw="); Serial.print(clockStyle);
@@ -4359,16 +4896,54 @@ void processFA02Packet(const uint8_t *data,size_t len){
 // ======================================================
 // BLE CALLBACKS
 // ======================================================
-// Caller must hold runtimeStateMutex: this function mutates reassembly, Bulk and renderer state.
-void processFA02Write(const uint8_t *data, size_t len) {
-  if(!data || !len) return;
-  const uint32_t now=millis();
-  expireStalledTransfers(now);
-  if(bulk.active) bulkLastRxMs=now;
 
-  // A single ATT write can complete one logical packet and already contain
-  // bytes from the next one. Consume the write in bounded slices instead of
-  // discarding trailing bytes. Also preserve a split two-byte length header.
+static bool startsAudioFrame(const uint8_t *data, size_t len) {
+  if(!data || len<4) return false;
+  return (data[0]==0x06 && data[1]==0x00 && data[2]==0x00 && data[3]==0x02) ||
+         (data[0]==0x21 && data[1]==0x00 && data[2]==0x01 && data[3]==0x02);
+}
+
+static size_t audioFrameSizeFromHeader(const uint8_t *data, size_t len) {
+  if(!data || len<4) return 0;
+  if(data[0]==0x06 && data[1]==0x00 && data[2]==0x00 && data[3]==0x02) return AUDIO_LEVEL_FRAME_SIZE;
+  if(data[0]==0x21 && data[1]==0x00 && data[2]==0x01 && data[3]==0x02) return AUDIO_FFT_FRAME_SIZE;
+  return 0;
+}
+
+// Mirrors the WLED framing guard: when an Audio/Rhythm frame is incomplete,
+// a known normal FA02 command must be allowed to take ownership immediately
+// instead of being swallowed as audio continuation bytes.
+static bool startsKnownNonAudioFrame(const uint8_t *data, size_t len) {
+  if(!data || len<4) return false;
+  const uint16_t declared=(uint16_t)data[0]|((uint16_t)data[1]<<8);
+  if(declared<4 || declared>MAX_PACKET_SIZE) return false;
+  const uint8_t command=data[2], subcommand=data[3];
+
+  // Bulk begin/chunk/end envelopes and compact inline media.
+  if(subcommand==0x00 && (command==0x01 || command==0x02 || command==0x03)) return true;
+  if(command==0x00 && subcommand==0x00) return true;
+
+  // Captured normal FA02 families. Keep this list explicit so an arbitrary
+  // FFT continuation is not misclassified just because its first two values
+  // happen to form a plausible little-endian length.
+  return (command==0x01 && subcommand==0x80) ||
+         (command==0x03 && subcommand==0x80) ||
+         (command==0x02 && subcommand==0x01) ||
+         (command==0x0A && subcommand==0x01) ||
+         (command==0x00 && subcommand==0x80) ||
+         (command==0x07 && (subcommand==0x80 || subcommand==0x01)) ||
+         (command==0x05 && (subcommand==0x80 || subcommand==0x01)) ||
+         (command==0x04 && (subcommand==0x80 || subcommand==0x01)) ||
+         (command==0x02 && (subcommand==0x80 || subcommand==0x02)) ||
+         (command==0x03 && subcommand==0x02) ||
+         (command==0x06 && (subcommand==0x80 || subcommand==0x01 || subcommand==0x02)) ||
+         (command==0x08 && subcommand==0x80) ||
+         (command==0x09 && subcommand==0x80) ||
+         (command==0x0A && subcommand==0x80);
+}
+
+// Normal LE16-length FA02 assembler. Audio/Rhythm never enters this path.
+static void processNormalFA02Bytes(const uint8_t *data, size_t len, uint32_t now) {
   size_t offset=0;
   while(offset<len){
     if(packetReceived<2){
@@ -4417,8 +4992,129 @@ void processFA02Write(const uint8_t *data, size_t len) {
     processFA02Packet(packetBuffer,packetExpected);
     packetReceived=packetExpected=0;
     packetLastRxMs=0;
-    // Continue if this ATT write already contains the next logical packet.
   }
+}
+
+// Consume an Audio/Rhythm byte stream. ATT writes do not define audio-frame
+// boundaries: for example, a 33-byte write is one complete 21-byte FFT frame
+// plus the first 12 bytes of the next frame. Remainders are therefore retained
+// until exactly 6 (LEVEL) or 21 (FFT) bytes are available.
+static void processAudioStreamBytes(const uint8_t *data, size_t len, uint32_t now) {
+  size_t offset=0;
+  audioStreamActive=true;
+
+  while(offset<len){
+    // At a clean frame boundary the next bytes must identify a new audio frame.
+    if(audioRxReceived==0){
+      const size_t remaining=len-offset;
+      if(remaining<4){
+        ::memcpy(audioRxBuffer,data+offset,remaining);
+        audioRxReceived=remaining;
+        audioRxExpected=0;
+        audioRxLastMs=now;
+        return;
+      }
+
+      audioRxExpected=audioFrameSizeFromHeader(data+offset,remaining);
+      if(!audioRxExpected){
+        // A normal command may immediately follow an audio session. Route it
+        // back to the normal assembler instead of creating sticky audio state.
+        if(startsKnownNonAudioFrame(data+offset,remaining)){
+          resetAudioReassembly();
+          processNormalFA02Bytes(data+offset,remaining,now);
+        } else {
+#if DEBUG_SERIAL
+          Serial.print("AUDIO RX lost sync at frame boundary, dropping ");
+          Serial.print(remaining); Serial.println(" byte(s)");
+#endif
+          resetAudioReassembly();
+        }
+        return;
+      }
+    }
+
+    // If a frame header was split across writes, finish the four-byte prefix
+    // first and only then decide whether it is LEVEL or FFT.
+    if(audioRxExpected==0){
+      const size_t headerNeed=4U-audioRxReceived;
+      const size_t available=len-offset;
+      const size_t take=headerNeed<available?headerNeed:available;
+      ::memcpy(audioRxBuffer+audioRxReceived,data+offset,take);
+      audioRxReceived+=take;
+      offset+=take;
+      audioRxLastMs=now;
+      if(audioRxReceived<4) return;
+      audioRxExpected=audioFrameSizeFromHeader(audioRxBuffer,audioRxReceived);
+      if(!audioRxExpected){
+#if DEBUG_SERIAL
+        Serial.println("AUDIO RX invalid split frame header; resync");
+#endif
+        resetAudioReassembly();
+        return;
+      }
+    }
+
+    const size_t needed=audioRxExpected-audioRxReceived;
+    const size_t available=len-offset;
+    const size_t take=needed<available?needed:available;
+    if(take){
+      ::memcpy(audioRxBuffer+audioRxReceived,data+offset,take);
+      audioRxReceived+=take;
+      offset+=take;
+      audioRxLastMs=now;
+    }
+    if(audioRxReceived<audioRxExpected) return;
+
+    const size_t completed=audioRxExpected;
+    const bool accepted=processAudioPacket(audioRxBuffer,completed);
+#if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
+    if(!accepted){
+      Serial.print("AUDIO RX rejected complete frame size="); Serial.println(completed);
+    }
+#endif
+    audioRxReceived=0;
+    audioRxExpected=0;
+    audioRxLastMs=0;
+    // Continue: the same ATT write may already contain the next audio frame.
+  }
+}
+
+// Caller must hold runtimeStateMutex: this function mutates reassembly, Bulk and renderer state.
+void processFA02Write(const uint8_t *data, size_t len) {
+  if(!data || !len) return;
+  const uint32_t now=millis();
+  expireStalledTransfers(now);
+  if(bulk.active) bulkLastRxMs=now;
+
+  // If a normal logical packet is already being reassembled, preserve its
+  // ownership. This avoids changing multipart media semantics.
+  if(packetReceived){
+    processNormalFA02Bytes(data,len,now);
+    return;
+  }
+
+  const bool audioStart=startsAudioFrame(data,len);
+  const bool normalStart=startsKnownNonAudioFrame(data,len);
+
+  // A complete normal command is allowed to break an incomplete audio frame.
+  // This is the key recovery path for Audio -> Clock/GIF/Carousel/Reset/etc.
+  if(audioRxReceived && normalStart && !audioStart){
+#if DEBUG_SERIAL
+    Serial.println("AUDIO RX -> normal FA02; dropping partial audio frame");
+#endif
+    resetAudioReassembly();
+    processNormalFA02Bytes(data,len,now);
+    return;
+  }
+
+  if(audioRxReceived || audioStart){
+    processAudioStreamBytes(data,len,now);
+    return;
+  }
+
+  // At an audio frame boundary any non-audio write belongs to normal FA02.
+  audioStreamActive=false;
+  processNormalFA02Bytes(data,len,now);
 }
 
 class FA02Callbacks : public BLECharacteristicCallbacks {
@@ -4461,6 +5157,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     deviceConnected=false;
     packetReceived=packetExpected=0;
     packetLastRxMs=0;
+    resetAudioReassembly();
     resetBulkTransfer(true);
     // Do not sleep inside the BLE callback. Preserve the historical 300 ms
     // restart delay by deferring advertising restart to the Arduino loop.
@@ -4490,6 +5187,7 @@ void resetRuntimeState(){
   alarmActive=false; activeAlarmSlot=0xFF; alarmEndsAt=0;
   scheduleActiveIndex=-1; scheduleFailedIndex=-1;
   diyMode=false; effectState.valid=false; textState.valid=false; audioState.valid=false;
+  resetAudioReassembly();
   cancelCountdownFinishBuzzer(); cancelScheduleStartBuzzer(); cancelConnectionBuzzer(); countdownRunning=false; countdownPaused=false; countdownRemainingMs=0; countdownFinishSent=false;
   stopwatchRunning=false; stopwatchElapsedMs=0; scoreA=scoreB=0;
   displayMode=DISPLAY_NONE;
@@ -5634,9 +6332,11 @@ void setup(){
 #endif
 
   delay(300);
+  // Keep the complete release/build signature as one compile-time literal.
+  // update_idotmatrix_emulator.sh verifies this exact string inside firmware.bin
+  // before allowing upload, preventing stale PlatformIO objects from being flashed.
+  DBG_PRINTLN(FW_SIGNATURE);
 #if PNG_DIAG_SERIAL
-  Serial.print("IDOTMATRIX_FW="); Serial.print(FW_RELEASE);
-  Serial.print("-B"); Serial.println(FW_BUILD);
   Serial.print("BOOT rr="); Serial.print((int)esp_reset_reason());
   Serial.print(" heap="); Serial.println(ESP.getFreeHeap());
 #endif
@@ -5922,6 +6622,10 @@ void loop(){
     }
   }
 
+  if(presetTransferIndicatorActive && (uint32_t)(now-presetTransferLastActivityAt)>=PRESET_TRANSFER_TIMEOUT_MS){
+    presetTransferIndicatorActive=false;
+    endCarouselTransferIndicator();
+  }
   if(carouselTransferIndicatorActive) renderCarouselTransferIndicator(now);
 
 #if APP_POWER_VERSION_SPLASH
@@ -5950,7 +6654,7 @@ void loop(){
   }
 
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_STOPWATCH){
-    static uint32_t last=0; if(now-last>=200){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderStopwatch(e);}
+    static uint32_t last=0; if(now-last>=100){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderStopwatch(e);}
   }
 
 #if DEBUG_SERIAL

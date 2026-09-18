@@ -4,14 +4,13 @@
 
 PlatformIO support was introduced in `v0.5.0-dev / BUILD 125`.
 
-The recommended development target is currently:
+The repository now carries three explicit PlatformIO targets:
 
-- Adafruit MatrixPortal S3;
-- ESP32-S3;
-- 8 MB flash;
-- 2 MB PSRAM;
-- 64x64 HUB75 physical panel;
-- iDotMatrix logical profile `0x04` (64x64).
+- `matrixportal_s3_hub75_64`: Adafruit MatrixPortal S3, logical/physical 64x64 HUB75;
+- `ios_dev_esp32_ws2812_32`: classic ESP32 iOS diagnostic target, logical 32x32 on a physical 16x16 WS2812 matrix;
+- `esp32c3_ws2812_16`: ESP32-C3, native logical/physical 16x16 WS2812.
+
+The MatrixPortal S3 remains the main large-panel development target. The checked-in `platformio.ini` is the user-supplied multi-target baseline and may select a diagnostic environment as `default_envs`; use `-e` explicitly for reproducible target selection.
 
 Arduino IDE remains supported. PlatformIO is recommended for iterative development because it provides reproducible toolchain/library versions, incremental builds and project-local partition configuration.
 
@@ -37,16 +36,17 @@ Open the repository root in VS Code with PlatformIO/pioarduino installed, or use
 pio run
 ```
 
-The default environment is:
-
-```text
-matrixportal_s3_hub75_64
-```
-
-An explicit build is equivalent:
+For the main MatrixPortal target, build explicitly with:
 
 ```text
 pio run -e matrixportal_s3_hub75_64
+```
+
+For the other checked-in targets use:
+
+```text
+pio run -e ios_dev_esp32_ws2812_32
+pio run -e esp32c3_ws2812_16
 ```
 
 The first build is expected to take longer because PlatformIO must download the platform, framework and libraries. Subsequent incremental builds should reuse those packages and only rebuild changed translation units/dependencies.
@@ -79,7 +79,7 @@ For MatrixPortal S3 development under Linux/WSL, prefer the persistent `/dev/ser
 /dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3*-if00
 ```
 
-Set `SERIAL_PORT=/dev/serial/by-id/...` when an explicit override is needed. The helper performs serial discovery before compilation, compiles without uploading, verifies the generated firmware signature, then performs a **second mandatory serial check before upload**. This is intentional for WSL/usbip workflows where the MatrixPortal may move between runtime/data and programming/JTAG USB endpoints. After upload, the helper also requires the normal detach/reattach cycle before opening the runtime monitor.
+Set `SERIAL_PORT=/dev/serial/by-id/...` when an explicit override is needed. The helper does not perform a pre-upload JTAG-endpoint check. PlatformIO is invoked directly with the upload target so it can trigger the board's transition into programming/JTAG mode itself. After upload, the helper waits for the normal Adafruit runtime endpoint before opening the monitor.
 
 ## LittleFS and partition layout
 
@@ -158,3 +158,17 @@ PlatformIO is recommended because these project-critical choices are encoded in 
 The MatrixPortal S3 environment uses the same HUB75 driver family as WLED: `ESP32-HUB75-MatrixPanel-DMA`. The dependency is pinned to the same upstream commit used by WLED at the time BUILD 130 was prepared. The 64x64 MatrixPortal path uses the exact board pinout, 8-bit color depth, single DMA buffering, `clkphase=false`, `NO_CIE1931`, and the S3 LCD divider flag used by WLED.
 
 Brightness is applied through the HUB75 driver's output-enable timing (`setBrightness8`) rather than by reducing framebuffer RGB values. This preserves gradient resolution at low panel brightness.
+
+## MatrixPortal S3 USB identities (BUILD 145+)
+
+The current hardware exposes two different persistent `/dev/serial/by-id` identities depending on the USB mode. They must not be treated as one interchangeable serial port.
+
+```text
+Upload / JTAG:
+/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00
+
+Runtime monitor:
+/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3_*-if00
+```
+
+`update_idotmatrix_emulator.sh` therefore invokes the selected PlatformIO upload target directly and lets PlatformIO handle the transient Espressif JTAG/programming identity. The helper resolves only the Adafruit runtime endpoint used after flashing for the serial monitor. `MONITOR_SERIAL_PORT` (or legacy `SERIAL_PORT`) can override runtime detection.

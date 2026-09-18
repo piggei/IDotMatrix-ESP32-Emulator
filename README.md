@@ -1,8 +1,14 @@
 # iDotMatrix ESP32 Emulator
 
-Current development build: **v0.5.0-dev / BUILD 141**. BUILD 141 is the consolidation baseline after hardware validation of the official app's **Preset / Default** section. Mixed GIF/image and TEXT media addressed to volatile device slots `14..19` are staged separately from the persistent Carousel bank, and `06/02 <count> <slots...>` activates up to six items in the supplied order. Images/GIFs use the observed ~3-second dwell; Preset TEXT timing follows the text presentation mode (scroll until the final glyph exits, or all required pages plus an approximately 3-second final hold). Captured Preset objects consistently carry `timeSign=5`; that field is retained as opaque metadata rather than interpreted as seconds.
+> **BUILD 159 transport fix:** Audio/Rhythm FA02 now uses a dedicated byte-stream reassembler instead of the normal LE16 logical-packet assembler. LEVEL frames are 6 bytes, FFT frames are 21 bytes, and ATT-write remainders are preserved across writes. This removes the sticky FFT lock that could freeze animation and swallow subsequent commands. BUILD 158 renderer/state alignment is otherwise preserved.
 
-> Development branch: **v0.5.0-dev / BUILD 141** uses the WLED-family `ESP32-HUB75-MatrixPanel-I2S-DMA` output path on MatrixPortal S3, preserves the hardware-validated MTU, Alarm and Program/Schedule fixes, and includes the hardware-validated volatile Preset/Default playback bank. PlatformIO remains the recommended development path and Arduino IDE compatibility is retained where practical.
+Current development build: **v0.5.0-dev / BUILD 159**. BUILD 141 is the consolidation baseline after hardware validation of the official app's **Preset / Default** section. Mixed GIF/image and TEXT media addressed to volatile device slots `14..19` are staged separately from the persistent Carousel bank, and `06/02 <count> <slots...>` activates up to six items in the supplied order. Images/GIFs use the observed ~3-second dwell; Preset TEXT timing follows the text presentation mode (scroll until the final glyph exits, or all required pages plus an approximately 3-second final hold). Captured Preset objects consistently carry `timeSign=5`; that field is retained as opaque metadata rather than interpreted as seconds.
+
+BUILD 158/159 parity highlights: LEVEL 1 recomposes the dancer only on fresh non-silent LEVEL packets; LEVEL 3 uses the moving cyan 1-on/2-off counter-clockwise perimeter; LEVEL 5 uses independent four-state eyes and mouth. On 64x64, Clock styles 0 and 3 show `HH:MM` and `DD/MM` simultaneously when date display is enabled, and transient `showDate=0` packets are protected for approximately one second on Clock entry. Countdown and Stopwatch colons blink at 1 Hz and receive the validated 32x32/64x64 alignment offsets. Preset uploads share the indeterminate transfer artwork and remain visible across multiple assets until `06/02` activation or a 5-second safety timeout.
+
+BUILD 159 fixes the FFT transport boundary without changing those renderers. The official app can place one 21-byte FFT frame plus part of the next frame in the same BLE write; the emulator now preserves that remainder and reconstructs exact 21-byte frames before rendering. The 16 transmitted FFT bands are reduced to the renderer's eight logical bands by averaging adjacent pairs. Normal FA02 commands immediately reclaim routing after Audio/Rhythm traffic.
+
+> Development branch: **v0.5.0-dev / BUILD 159** uses the WLED-family `ESP32-HUB75-MatrixPanel-I2S-DMA` output path on MatrixPortal S3, preserves the hardware-validated MTU, Alarm and Program/Schedule fixes, and includes the hardware-validated volatile Preset/Default playback bank. PlatformIO remains the recommended development path and Arduino IDE compatibility is retained where practical.
 
 
 Experimental ESP32 firmware that emulates iDotMatrix BLE displays and communicates directly with the official iDotMatrix app.
@@ -53,6 +59,11 @@ The project deliberately uses two different identifiers:
 
 Current mapping:
 
+- `v0.5.0-dev / BUILD 148` = original-device multiline TEXT layout plus Scoreboard palette refinement. Non-scrolling text now fills the vertical capacity of the logical display (16 px font: 1/2/4 rows on 16/32/64; 32 px font: 1/2 rows on 32/64; 64 px font: one row on 64) and vertically centers the rows actually used. Scrolling modes remain single-line. Scoreboard colors are refined to the softer official-app palette `#7858F8` / `#F82078`; BUILD 147 geometry is unchanged.
+- `v0.5.0-dev / BUILD 147` = original-device Scoreboard geometry: three fixed-width digits for player A above three digits for player B (`000..999`). BUILD 148 refines only the palette.
+- `v0.5.0-dev / BUILD 146` = original-device Stopwatch artwork reconstructed from the supplied GIF/video, including white face, lilac/gray shading, orange button/seconds and red elapsed-time-driven hand.
+- `v0.5.0-dev / BUILD 145` = Countdown color/final-frame fidelity plus MatrixPortal dual-USB updater handling. The 16x16 Countdown uses the original-device ten-frame hourglass with the video-confirmed palette (white glass/frame, brown bases, orange sand/drop); 32x32 and 64x64 render the same artwork natively with a better-centered separator. Only the seconds turn red from 00:10 onward, and `00:00` freezes on the final animation frame. The updater now distinguishes the Espressif JTAG upload endpoint from the Adafruit runtime monitor endpoint. The complete `IDOTMATRIX_FW=<release>-B<build>` literal remains embedded for stale-build verification.
+- `v0.5.0-dev / BUILD 143` = graphical refinement of the Device Assets Carousel upload indicator. The standalone emulator now uses the current WLED Usermod artwork: a red downward transfer arrow, blue receiving tray and indeterminate activity bar, with a dedicated native 64x64 rendering instead of scaling the compact 16x16 artwork. Upload protocol, 250 ms visibility threshold and Carousel storage/playback behavior are unchanged.
 - `v0.5.0-dev / BUILD 141` = Preset/Default consolidation baseline after successful hardware validation of BUILD 140. Preset verbose diagnostics are disabled by default while remaining available through `PRESET_PROTOCOL_DEBUG`. Documentation is aligned to the observed content-aware timing: GIF/image items use ~3000 ms; LEFT/RIGHT scrolling TEXT runs until the final glyph exits; PIN/page/viewport modes show all required pages and retain the final view for ~3000 ms. No intended protocol/runtime change from the hardware-tested BUILD 140 behavior.
 - `v0.5.0-dev / BUILD 140` = first hardware-validated Preset/Default implementation. Bulk GIF/image and TEXT objects using device indices `0x0E..0x13` (14..19) are stored in a separate volatile LittleFS bank, never in the persistent Carousel bank. `06/02 <count> <slots...>` activates up to six items in the supplied order. Captures validate mixed TEXT/GIF playlists, five-image playlists, large multi-packet media, and clean replacement of an active Preset. `timeSign=5` is retained as opaque metadata. Preset media is deleted on reboot/reset by emulator policy.
 - `v0.5.0-dev / BUILD 139` = first Preset/Default runtime implementation, superseded before hardware use because it did not compile (`presetActive` declaration-order error). BUILD 140 is the corrected and hardware-validated baseline.
@@ -151,7 +162,7 @@ BUILD 85 tightens emulator runtime behavior without claiming new original-device
 
 - ECO/power-saving brightness is re-evaluated once per second, so a static framebuffer now changes brightness when the configured interval begins or ends even when no renderer requests a refresh;
 - malformed power-saving records (invalid hour/minute/reduction fields) are ignored while the existing compatibility ACK is preserved because an original-device error ACK is still unknown;
-- BUILD 99 changes `03/80` into a destructive emulator reset; current BUILD 141 also clears the volatile Preset/Default bank. Carousel, Preset, Alarm, Schedule, brightness, ECO and rotation return to defaults, while the live-reset policy preserves the synchronized software clock and BLE session;
+- BUILD 99 changes `03/80` into a destructive emulator reset; current BUILD 144 also clears the volatile Preset/Default bank. Carousel, Preset, Alarm, Schedule, brightness, ECO and rotation return to defaults, while the live-reset policy preserves the synchronized software clock and BLE session;
 - when RTC support is compiled in, `rtc.lostPower()` now marks the RTC time as invalid. Alarm, Schedule and ECO do not use that RTC value until a valid BLE time synchronization updates it.
 
 The soft-reset and ECO policies above are emulator implementation behavior. Exact original-device behavior remains only partially reverse-engineered.
@@ -233,8 +244,8 @@ BUILD 125 adds PlatformIO as the recommended iterative development path. The def
 - matching vertical stopwatch/countdown UI with animated timer hand
 - one-shot three-pulse active-buzzer notification when Countdown reaches zero
 - single short BLE-connection buzzer feedback, skipped when a higher-priority buzzer event is active
-- stopwatch remains white; countdown changes to red for the final five seconds
-- scoreboard, effects, graffiti/drawing and text, including resolution-independent long-text paging for non-horizontal effects
+- stopwatch remains white; countdown seconds change to red for the final ten seconds
+- scoreboard, effects, graffiti/drawing and text, including original-device multiline packing for non-scrolling effects and resolution-independent paging when a complete multi-row page is exceeded
 - 8x16 (`0x02`) and 16x32 (`0x05`) text glyph records
 - SimSun/SimHei observed as app-side rasterization: the ESP32 receives glyph bitmaps
 - GIF/cloud animation reception and playback
@@ -377,4 +388,12 @@ See [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) for the
 
 ## Development update helper
 
-`update_idotmatrix_emulator.sh` is shipped in the repository root. It updates the Git working tree from the newest source ZIP, preserves `.git/` and `.pio/`, checks the MatrixPortal serial device, compiles without uploading, verifies the generated firmware signature, performs a second mandatory serial check, and only then offers the upload step. The second check is intentional for MatrixPortal S3 + WSL/usbip setups where the board can switch USB endpoint/mode and must be re-bound/re-attached before flashing. Every operational stage asks for confirmation and the script never uploads firmware automatically.
+`update_idotmatrix_emulator.sh` is shipped in the repository root. It updates the Git working tree from the newest source ZIP, preserves `.git/` and `.pio/`, verifies the runtime MatrixPortal serial endpoint, compiles without uploading, and verifies the generated firmware signature. Before upload it explicitly waits for the Espressif USB JTAG/serial-debug endpoint (`/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00`). After flashing it waits for that endpoint to disappear and for the Adafruit MatrixPortal runtime serial endpoint (`/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3_*-if00`) before opening the monitor. This matches the observed MatrixPortal S3 + WSL/usbip USB-mode transition. Every operational stage asks for confirmation and the script never uploads firmware automatically.
+
+### Original-device Stopwatch artwork
+
+Build 146 replaces the legacy stopwatch face with the animation reconstructed from the original 16x16 iDotMatrix display. The stopwatch uses a white face with gray/lilac case shading, an orange top button, a red animated hand, white minutes, and orange seconds. The eight hand positions advance every 100 ms while running. Pausing freezes the animation because the frame is derived from elapsed stopwatch time. Larger 32x32 and 64x64 logical profiles use clean integer scaling with improved separator centering.
+
+### Build verification note
+
+The updater validates the current release/build signature in the linked `firmware.elf` and also requires `firmware.bin` to have been regenerated by the current compile run. A raw searchable signature inside the ESP32 `.bin` is treated as an optional diagnostic because binary image layout can make `strings`/plain-text scanning unreliable.
