@@ -6,18 +6,13 @@
 // ======================================================
 // FIRMWARE RELEASE / BUILD ID
 // FW_RELEASE identifies the public project release.
-// FW_BUILD is the internal incremental development identifier.
+// FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.0-dev"
+#define FW_RELEASE "0.5.0"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 159
+#define FW_BUILD 162
 
-// Temporary hardware-test aid: when the official app changes screen power
-// from OFF to ON, briefly overlay the release/build identifier without
-// modifying the logical framebuffer or the active display mode.
-#define APP_POWER_VERSION_SPLASH 1
-#define VERSION_SPLASH_MS 1800UL
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
 static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_RELEASE "-B" IDOT_STRINGIFY(FW_BUILD);
@@ -147,8 +142,8 @@ bool littleFsReady = false;
 #define DISPLAY_BACKEND_WS2812  0
 #define DISPLAY_BACKEND_HUB75   1
 
-// BUILD 125: these defaults remain Arduino-IDE friendly, while PlatformIO
-// environments can override them with build_flags without editing this file.
+// These defaults remain Arduino-IDE friendly, while PlatformIO environments
+// can override them with build_flags without editing this file.
 #ifndef DISPLAY_BACKEND
 #define DISPLAY_BACKEND DISPLAY_BACKEND_HUB75
 #endif
@@ -188,8 +183,8 @@ bool littleFsReady = false;
 #define COLOR_ORDER    GRB
 #define MATRIX_MIRROR_X 1
 
-// MatrixPortal S3 / HUB75 backend. BUILD 130 deliberately mirrors the
-// native WLED MatrixPortal path: ESP32-HUB75-MatrixPanel-I2S-DMA, 8-bit
+// MatrixPortal S3 / HUB75 backend. This mirrors the validated WLED-family
+// MatrixPortal path: ESP32-HUB75-MatrixPanel-I2S-DMA, 8-bit
 // color depth, single buffering and the exact MatrixPortal S3 HUB75 pinout.
 // Keeping brightness in the HUB75 OE/PWM path preserves the full RGB values
 // instead of pre-scaling the framebuffer to the local brightness ceiling.
@@ -209,7 +204,7 @@ bool littleFsReady = false;
 // MatrixPanel_I2S_DMA output-enable timing so framebuffer RGB values stay 8-bit.
 #define MAX_LED_BRIGHTNESS 50
 
-// Persistenza luminosita
+// Brightness persistence
 #define BRIGHTNESS_NVS_NAMESPACE "idotmatrix"
 #define BRIGHTNESS_NVS_KEY       "brightness"
 #define BRIGHTNESS_SAVE_DELAY_MS 1000UL
@@ -338,7 +333,7 @@ BLECharacteristic *ae01 = nullptr;
 BLECharacteristic *ae02 = nullptr;
 bool deviceConnected = false;
 
-// BUILD 86: BLE callbacks and Arduino loop() run on different FreeRTOS tasks
+// BLE callbacks and Arduino loop() run on different FreeRTOS tasks
 // (and typically different ESP32 cores). Protect shared protocol/runtime state
 // with a task mutex instead of relying on volatile flags. This is a scheduler
 // mutex, not a spinlock: filesystem and renderer work must never run inside an
@@ -377,8 +372,6 @@ enum DisplayMode {
 
 DisplayMode displayMode = DISPLAY_NONE;
 bool screenOn = false;
-bool versionSplashActive = false;
-uint32_t versionSplashUntil = 0;
 bool diyMode = false;
 bool flipped180 = false;
 uint8_t brightnessPercent = 100;
@@ -487,9 +480,9 @@ struct AudioState {
 // ======================================================
 // FORWARD DECLARATIONS USED BY ALARM SUPPORT
 //
-// Le routine delle sveglie sono definite prima del blocco GIF.
-// Dichiarare qui simboli e funzioni evita di dipendere dalla
-// generazione automatica dei prototipi dell'IDE Arduino.
+// Alarm routines are defined before the GIF section.
+// Keep the required declarations here instead of relying on Arduino IDE
+// automatic prototype generation.
 // ======================================================
 void freeGIF();
 bool startGIF();
@@ -556,7 +549,7 @@ String alarmFileName(uint8_t slot) { return String("/alarm") + slot + ".bin"; }
 String alarmTempFileName(uint8_t slot) { return String("/alarm") + slot + ".tmp"; }
 String alarmBackupFileName(uint8_t slot) { return String("/alarm") + slot + ".bak"; }
 
-// BUILD 132: 64x64 Alarm media can span multiple complete FA02 logical
+// 64x64 Alarm media can span multiple complete FA02 logical
 // packets. Each packet repeats the same 24-byte Alarm header; mediaSize and
 // mediaCRC describe the complete media object, not the payload bytes carried
 // by the current packet. Stage chunks in LittleFS and publish atomically only
@@ -1221,7 +1214,7 @@ CRGB *gifFrame = nullptr;
 
 // ======================================================
 // DEVICE-ASSET CAROUSEL
-// BUILD 97 consolidates the hardware-tested 12-slot Device Assets model. The official
+// Hardware-tested 12-slot Device Assets model. The official
 // app may keep multiple 12-slot pages in its UI, but a pushed page addresses
 // device slots 0..11. Command 02/01 carries a slot-setup descriptor; current
 // official-app captures use count=12 followed by 0..11 even when only a subset
@@ -1229,7 +1222,7 @@ CRGB *gifFrame = nullptr;
 // (timeSign, LE seconds) and byte 15 is the device asset slot/imageIndex.
 // Command 0A/01 enters/starts the asset view, but current official-app captures
 // show it may arrive before a later page push and is not necessarily repeated
-// afterwards. BUILD 95 established Assets-view intent across 02/01,
+// afterwards. Assets-view intent is preserved across 02/01,
 // stores GIF and observed TEXT slots without rendering them during the push,
 // then starts the completed bank after a short upload-idle settle interval.
 // Empty positions are skipped.
@@ -1318,13 +1311,11 @@ uint8_t audioRxBuffer[AUDIO_FFT_FRAME_SIZE];
 size_t audioRxReceived = 0;
 size_t audioRxExpected = 0;
 uint32_t audioRxLastMs = 0;
-bool audioStreamActive = false;
 
 static void resetAudioReassembly() {
   audioRxReceived = 0;
   audioRxExpected = 0;
   audioRxLastMs = 0;
-  audioStreamActive = false;
 }
 
 struct BulkTransferState {
@@ -1425,73 +1416,10 @@ uint16_t physicalXY(uint8_t x, uint8_t y) {
   return (uint16_t)y * PHYSICAL_MATRIX_WIDTH + PHYSICAL_MATRIX_WIDTH - 1 - x;
 }
 
-// Small 3x5 diagnostic font used only by the temporary release/build overlay.
-// Bits are stored row-major, three bits per row, LSB = leftmost pixel.
-static uint16_t versionGlyphBits(char c) {
-#define VG(r0,r1,r2,r3,r4) ((uint16_t)(r0) | ((uint16_t)(r1)<<3) | ((uint16_t)(r2)<<6) | ((uint16_t)(r3)<<9) | ((uint16_t)(r4)<<12))
-  switch (c) {
-    case '0': return VG(0x7,0x5,0x5,0x5,0x7);
-    case '1': return VG(0x2,0x6,0x2,0x2,0x7);
-    case '2': return VG(0x7,0x1,0x7,0x4,0x7);
-    case '3': return VG(0x7,0x1,0x7,0x1,0x7);
-    case '4': return VG(0x5,0x5,0x7,0x1,0x1);
-    case '5': return VG(0x7,0x4,0x7,0x1,0x7);
-    case '6': return VG(0x7,0x4,0x7,0x5,0x7);
-    case '7': return VG(0x7,0x1,0x2,0x2,0x2);
-    case '8': return VG(0x7,0x5,0x7,0x5,0x7);
-    case '9': return VG(0x7,0x5,0x7,0x1,0x7);
-    case 'B': return VG(0x6,0x5,0x6,0x5,0x6);
-    case 'R': return VG(0x6,0x5,0x6,0x5,0x5);
-    case '.': return VG(0x0,0x0,0x0,0x0,0x2);
-    default:  return 0;
-  }
-#undef VG
-}
-
-static bool versionLinePixel(const char *text, uint16_t x, uint16_t y,
-                             uint16_t originX, uint16_t originY, uint8_t scale) {
-  if (!text || !scale || x < originX || y < originY) return false;
-  const uint16_t ux=(x-originX)/scale;
-  const uint16_t uy=(y-originY)/scale;
-  if (uy>=5) return false;
-  const size_t len=strlen(text);
-  const uint16_t textUnits=len ? (uint16_t)(len*4U-1U) : 0U;
-  if (ux>=textUnits) return false;
-  const uint16_t ci=ux/4U;
-  const uint8_t col=(uint8_t)(ux%4U);
-  if (ci>=len || col>=3) return false;
-  const uint16_t bits=versionGlyphBits(text[ci]);
-  return (bits & ((uint16_t)1U << (uy*3U+col))) != 0;
-}
-
-static CRGB versionSplashPhysicalPixel(uint16_t px, uint16_t py) {
-  static const char line1[] = "R" IDOT_STRINGIFY(FW_RELEASE_MAJOR) "." IDOT_STRINGIFY(FW_RELEASE_MINOR);
-  static const char line2[] = "B" IDOT_STRINGIFY(FW_BUILD);
-  const uint16_t width1=(uint16_t)(strlen(line1)*4U-1U);
-  const uint16_t width2=(uint16_t)(strlen(line2)*4U-1U);
-  const uint16_t widthUnits=max(width1,width2);
-  const uint16_t heightUnits=12U; // 5 rows + 2-row gap + 5 rows.
-  uint8_t scale=(uint8_t)min((uint16_t)(PHYSICAL_MATRIX_WIDTH/widthUnits),
-                             (uint16_t)(PHYSICAL_MATRIX_HEIGHT/heightUnits));
-  if (scale<1) scale=1;
-  if (scale>4) scale=4;
-  const uint16_t totalHeight=heightUnits*scale;
-  const uint16_t y0=(PHYSICAL_MATRIX_HEIGHT>totalHeight) ? (PHYSICAL_MATRIX_HEIGHT-totalHeight)/2U : 0U;
-  const uint16_t w1=width1*scale, w2=width2*scale;
-  const uint16_t x1=(PHYSICAL_MATRIX_WIDTH>w1) ? (PHYSICAL_MATRIX_WIDTH-w1)/2U : 0U;
-  const uint16_t x2=(PHYSICAL_MATRIX_WIDTH>w2) ? (PHYSICAL_MATRIX_WIDTH-w2)/2U : 0U;
-  if (versionLinePixel(line1,px,py,x1,y0,scale)) return CRGB(80,180,255);
-  if (versionLinePixel(line2,px,py,x2,(uint16_t)(y0+7U*scale),scale)) return CRGB(255,190,40);
-  return CRGB::Black;
-}
-
 // Scale the final logical framebuffer to one physical pixel. Upscaling uses
 // nearest-neighbour replication; downscaling uses a box average, matching the
 // independently hardware-tested WLED Usermod policy.
 CRGB logicalToPhysicalPixel(uint16_t px, uint16_t py) {
-#if APP_POWER_VERSION_SPLASH
-  if (versionSplashActive) return versionSplashPhysicalPixel(px,py);
-#endif
   const uint16_t sourceWidth = MATRIX_WIDTH;
   const uint16_t sourceHeight = MATRIX_HEIGHT;
   const uint16_t targetWidth = PHYSICAL_MATRIX_WIDTH;
@@ -1754,7 +1682,7 @@ void renderCarouselTransferIndicator(uint32_t now) {
     if(x>=0 && y>=0 && x<w && y<h) putPixel((uint8_t)x,(uint8_t)y,CRGB(r,g,b));
   };
 
-  // BUILD 143: port the current WLED Usermod Carousel transfer artwork.
+  // Current WLED-aligned Carousel transfer artwork.
   // 16x16/32x32 retain the validated compact icon; 64x64 uses a dedicated
   // native drawing rather than a blocky 4x enlargement.  The activity bar is
   // intentionally indeterminate: the app does not announce the size/count of
@@ -2172,9 +2100,6 @@ void adjustClockStyle2ColonAfterScale() {
 void renderClockValues(uint8_t h, uint8_t m) {
   clearFramebuffer();
 
-#if DEBUG_SERIAL
-#endif
-
   switch (clockStyle & 0x07) {
     case 0: { // rainbow frame, selected digits
       drawRainbowBorder();
@@ -2390,8 +2315,10 @@ void renderCountdown(uint32_t remainMs) {
 }
 
 // Original 16x16 stopwatch artwork captured from the manufacturer device.
+// Revalidated frame-by-frame against the supplied native 16x16 reference video.
 // Palette indexes: 0=black, 1=white face, 2=orange button, 3=gray/lilac case,
-// 4=red hand.  Only the 7x9 stopwatch icon area is stored; MM/SS are dynamic.
+// 4=red hand. Only the 7x9 stopwatch icon area is stored; MM/SS and the
+// blinking orange separator are rendered dynamically.
 static const uint8_t stopwatchFrames[8][63] PROGMEM = {
   {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,4,1,1,3, 3,1,1,4,1,1,3, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
   {0,2,2,2,2,2,0, 0,0,2,2,2,0,0, 0,3,3,3,3,3,0, 3,1,1,1,1,1,3, 3,1,1,1,4,1,3, 3,1,1,4,1,1,3, 3,1,1,1,1,1,3, 3,1,1,1,1,1,3, 0,3,3,3,3,3,0},
@@ -3121,7 +3048,7 @@ void freeGIF(){
   gifStoredOnFS=false;
 }
 
-// AnimatedGIF file callbacks. BUILD 89 keeps all compressed GIF playback
+// AnimatedGIF file callbacks. All compressed GIF playback remains
 // file-backed, so no GIF requires one large contiguous DRAM allocation.
 void *GIFOpenFile(const char *fname, int32_t *pSize){
   if(!littleFsReady) return nullptr;
@@ -3403,7 +3330,7 @@ void loadCarousel() {
       if(carouselPrefs.getBytesLength(key)==sizeof(CarouselSlotMeta))
         carouselPrefs.getBytes(key,&carouselSlots[i],sizeof(CarouselSlotMeta));
       else if(carouselPrefs.isKey(key))
-        carouselPrefs.remove(key); // discard metadata written by superseded dev layouts
+        carouselPrefs.remove(key); // discard metadata written by superseded pre-release layouts
     }
     recoverCarouselSlot(i);
 #if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
@@ -3418,8 +3345,8 @@ void loadCarousel() {
 #endif
   }
 
-  // BUILD 92 temporarily allowed slots 12..35. Remove leftovers from that
-  // superseded development build so they cannot waste LittleFS/NVS space.
+  // An early pre-release format temporarily allowed slots 12..35. Remove
+  // those leftovers so they cannot waste LittleFS/NVS space.
   if(littleFsReady){
     for(uint8_t i=12;i<36;i++){
       LittleFS.remove(String("/car")+i+".gif");
@@ -3446,7 +3373,7 @@ void stopCarouselPlayback() {
     gifSize=0;
   }
   // Preserve the last logical carousel frame while a replacement bank is uploaded.
-  // BUILD 96 added the physical-output blackout used during replacement.
+  // Preserve the physical-output blackout used during replacement.
   // Direct assignment is intentional: switchDisplayMode() would clear the
   // still-open Device Assets upload context.
   if(displayMode==DISPLAY_GIF || displayMode==DISPLAY_TEXT) displayMode=DISPLAY_RAW;
@@ -3511,7 +3438,7 @@ void updateCarousel(uint32_t now) {
   // Official-app captures show 0A/01 can establish the Assets view before a
   // later page push, with no second 0A/01 after the Bulk transfers.  Therefore
   // 02/01 preserves that view intent.  Because no explicit end-of-push frame
-  // has been observed, BUILD 96 uses a conservative idle-settle boundary only
+  // has been observed, use a conservative idle-settle boundary only
   // after at least one carousel asset has committed.  This is emulator policy,
   // not a claimed original-device protocol timing.
   if(carouselUploadOpen && carouselLastAssetCommitAt && !bulk.active &&
@@ -4757,20 +4684,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
   }
 
   if(len==5 && cmd==0x07 && sub==0x01){
-    const bool wasOn=screenOn;
     screenOn=data[4]!=0;
-#if APP_POWER_VERSION_SPLASH
-    if(screenOn && !wasOn){
-      versionSplashActive=true;
-      versionSplashUntil=millis()+VERSION_SPLASH_MS;
-#if DEBUG_SERIAL
-      Serial.print("VERSION SPLASH R"); Serial.print(FW_RELEASE_MAJOR); Serial.print('.'); Serial.print(FW_RELEASE_MINOR);
-      Serial.print(" B"); Serial.println(FW_BUILD);
-#endif
-    } else if(!screenOn){
-      versionSplashActive=false;
-    }
-#endif
     setStatusLed(screenOn); refreshMatrix(); sendCommandAck(cmd,sub); return;
   }
   if(len==5 && cmd==0x06 && sub==0x80){ flipped180=data[4]!=0; refreshMatrix(); sendCommandAck(cmd,sub); return; }
@@ -5001,7 +4915,6 @@ static void processNormalFA02Bytes(const uint8_t *data, size_t len, uint32_t now
 // until exactly 6 (LEVEL) or 21 (FFT) bytes are available.
 static void processAudioStreamBytes(const uint8_t *data, size_t len, uint32_t now) {
   size_t offset=0;
-  audioStreamActive=true;
 
   while(offset<len){
     // At a clean frame boundary the next bytes must identify a new audio frame.
@@ -5113,7 +5026,6 @@ void processFA02Write(const uint8_t *data, size_t len) {
   }
 
   // At an audio frame boundary any non-audio write belongs to normal FA02.
-  audioStreamActive=false;
   processNormalFA02Bytes(data,len,now);
 }
 
@@ -5238,13 +5150,13 @@ bool scheduleUploadDirty = false;
 uint32_t scheduleLastRxMs = 0;
 uint32_t scheduleReceivedMask = 0;
 int8_t scheduleActiveIndex = -1;
-int8_t scheduleFailedIndex = -1;  // evita retry continuo se un media non viene decodificato
+int8_t scheduleFailedIndex = -1;  // Prevent continuous retries when media cannot be decoded.
 DisplayMode schedulePreviousMode = DISPLAY_CLOCK;
 bool schedulePreviousCarousel = false;
 int8_t schedulePreviousCarouselSlot = -1;
 CRGB *scheduleSavedFrame = nullptr;
 
-// BUILD 136: hardware logs decoded the byte that appeared to change the
+// Hardware logs decoded the byte that appeared to change the
 // Schedule media type from 1 to 513. The field at offset 10 is the one-byte
 // content type. Offset 11 is a per-chunk marker: observed 0x00 on the first
 // chunk and 0x02 on continuation chunks. It is framing metadata, not part of
@@ -5262,7 +5174,7 @@ ScheduleMediaUploadState scheduleMediaUploads[SCHEDULE_MAX_ACTIVITIES];
 
 bool scheduleMediaObjectMatches(const ScheduleActivity &a, const ScheduleActivity &b) {
   // For a multi-packet activity the media object itself is identified by type,
-  // declared complete size and complete-object CRC. BUILD 134 proved that one
+  // declared complete size and complete-object CRC. Hardware captures proved that one
   // or more ancillary header fields can change between chunks, so they must
   // not be used to decide whether the payload is a continuation.
   return a.contentType == b.contentType &&
@@ -5662,10 +5574,10 @@ bool decodeSchedulePNG(File &f, uint32_t fileSize) {
   Serial.println("P3 inflate");
   Serial.flush();
 #endif
-  // IMPORTANT: non usare tinfl_decompress_mem_to_mem() qui. Quel wrapper
-  // crea un tinfl_decompressor locale molto grande sullo stack del loopTask
-  // e sull'ESP32 provoca lo stack-canary visto nei log. Manteniamo invece
-  // keep the inflater state on the heap and call the low-level API.
+  // IMPORTANT: do not use tinfl_decompress_mem_to_mem() here. That wrapper
+  // creates a large local tinfl_decompressor on the loopTask stack and can
+  // trigger the ESP32 stack-canary failure seen during testing. Keep the
+  // inflater state on the heap and call the low-level API instead.
   tinfl_decompressor *infl = (tinfl_decompressor*)malloc(sizeof(tinfl_decompressor));
   if (!infl) { free(idat); free(raw); PDBGLN("PF10A"); return false; }
   tinfl_init(infl);
@@ -5824,8 +5736,8 @@ void startScheduleActivity(uint8_t idx) {
     Serial.print("S+"); Serial.println(idx);
 #endif
   } else {
-    // Importante: senza questo latch updateSchedule() ritenterebbe il decode
-    // ad ogni giro di loop, saturando CPU/heap e facendo sembrare la scheda bloccata.
+    // Without this latch updateSchedule() would retry the decode on every loop
+    // iteration, which can saturate CPU/heap and make the device appear locked.
     scheduleFailedIndex = (int8_t)idx;
 #if DEBUG_SERIAL
     Serial.print("SCH START FAIL i="); Serial.print(idx);
@@ -5905,7 +5817,7 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
   // Activity media. Small/legacy activities still complete in one logical
   // packet. Large 64x64 activities repeat a 23-byte header for each logical
   // packet; mediaSize/mediaCRC describe the complete object and bytes from
-  // offset 23 onward are the current chunk. BUILD 134 hardware validation
+  // offset 23 onward are the current chunk. Hardware validation
   // established ACK 01 as the continuation request for an incomplete object
   // and ACK 03 as the terminal ACK for the final CRC-valid chunk.
   if (len >= 23 && data[2] == 0x05 && data[3] == 0x80) {
@@ -6054,7 +5966,7 @@ bool handleScheduleCommand(const uint8_t *data, size_t len) {
     }
 #endif
 
-    // BUILD 134 hardware validation established the large-activity flow:
+    // Hardware validation established the large-activity flow:
     // 0x01 requests the next chunk while the declared media object is incomplete,
     // and 0x03 terminates the CRC-valid final chunk. One-packet/small activities
     // therefore still receive the historically required 0x03 immediately.
@@ -6246,7 +6158,7 @@ void updateStatusOLED() {
                       countdownRunning != lastCountdownRunning ||
                       countdownPaused != lastCountdownPaused;
 
-  // BUILD 62: no periodic refresh. SW-I2C blocks the loop during
+  // No periodic refresh: SW-I2C blocks the loop during
   // sendBuffer(), so the OLED is redrawn only after a real state change.
   if (!stateChanged) return;
 
@@ -6531,7 +6443,7 @@ void setup(){
 void loop(){
   bool restartAdvertisingNow=false;
   if(!lockRuntimeState()){ delay(1); return; }
-  // BUILD 88: take the time snapshot only after the runtime mutex is held.
+  // Take the time snapshot only after the runtime mutex is held.
   // If loop() captures millis() before blocking on the mutex, a BLE callback
   // can update packetLastRxMs/bulkLastRxMs to a newer value while loop() waits.
   // Unsigned subtraction would then wrap and falsely look like a huge timeout.
@@ -6627,13 +6539,6 @@ void loop(){
     endCarouselTransferIndicator();
   }
   if(carouselTransferIndicatorActive) renderCarouselTransferIndicator(now);
-
-#if APP_POWER_VERSION_SPLASH
-  if(versionSplashActive && (int32_t)(now-versionSplashUntil)>=0){
-    versionSplashActive=false;
-    refreshMatrix();
-  }
-#endif
 
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_EFFECT) updateEffect();
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_AUDIO){ static uint32_t lastAudioRender=0; if(now-lastAudioRender>=80){ lastAudioRender=now; renderAudio(); } }

@@ -1,4 +1,4 @@
-Build 64 32x32-profile cloud GIF transfer summary
+32x32-profile cloud GIF transfer summary
 
 GIF A:
   total = 30321 bytes

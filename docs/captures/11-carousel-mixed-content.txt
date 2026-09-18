@@ -1,13 +1,13 @@
-# Device Assets / carousel - BUILD 94 mixed-content evidence
+# Device Assets / carousel - mixed-content evidence
 #
 # Source: official iDotMatrix app -> emulator serial log.
 # This is emulator diagnostic output, not a raw HCI capture.
 # The relevant observation is that a 12-position page contains a TEXT Bulk
-# between GIF imageIndex 4 and GIF imageIndex 6. BUILD 94 parsed that TEXT as
+# between GIF imageIndex 4 and GIF imageIndex 6. The diagnostic firmware parsed that TEXT as
 # live content, which closed carouselUploadOpen; subsequent GIFs therefore fell
 # back to the normal live LittleFS RX path.
 #
-# The BUILD 94 logger did not print timeSign/imageIndex for TEXT, so the exact
+# The logger did not print timeSign/imageIndex for TEXT, so the exact
 # slot number of the TEXT asset is intentionally NOT asserted in this capture.
 
 CAROUSEL SLOT SETUP count=12 slots=0,1,2,3,4,5,6,7,8,9,10,11 playback=SUSPENDED until 0A/01
@@ -49,7 +49,7 @@ TEXT glyphs=2 size=8x16 marker=0x2
 BULK END type=3 total=54 chunks=1 crc=OK
 TX FA03 [5]: 05 00 03 00 03
 
-# From this point BUILD 94 has already lost carousel upload state.
+# From this point the diagnostic implementation has already lost carousel upload state.
 BULK BEGIN type=1 total=1398 firstPayload=1398 timeSign=5 imageIndex=6 format=GIF
 BULK GIF STORAGE: LittleFS RX slot=0 imageIndex=6
 GIF RX COMPLETE queued slot=0 bytes=1398

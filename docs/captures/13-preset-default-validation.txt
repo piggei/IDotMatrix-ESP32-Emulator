@@ -1,4 +1,4 @@
-Preset / Default playback validation - BUILD 140
+Preset / Default playback validation
 Hardware/app profile: MatrixPortal ESP32-S3 + 64x64 HUB75, official 64x64 app profile
 
 Mixed preset: TEXT "PJ" -> GIF/image -> scrolling TEXT

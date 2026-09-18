@@ -1,4 +1,4 @@
-# Audio protocol - BUILD 32 diagnostics
+# Audio protocol diagnostics
 
 AUDIO LEVEL level=1 sensitivity=5
 TX FA03 [5]: 05 00 00 02 01

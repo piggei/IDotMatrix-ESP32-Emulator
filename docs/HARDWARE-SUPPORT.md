@@ -1,78 +1,86 @@
 # Hardware Support Status
 
-This document defines the hardware-support status for release `v0.4.0 / BUILD 118`.
-
-## Supported
-
-### Classic ESP32
-
-The classic ESP32 is the reference and hardware-validated target for v0.4.0.
-
-The validated development setup uses:
-
-- classic ESP32 DollaTek/TTGO-style board;
-- 16x16 WS2812B matrix;
-- onboard SSD1306 OLED;
-- active buzzer;
-- LittleFS-backed media storage;
-- official iDotMatrix app over BLE.
-
-All v0.4.0 runtime behavior and release-candidate regression testing were performed against this target.
-
-## Experimental / unsupported
-
-### ESP32-C3
-
-ESP32-C3 is **not officially supported in v0.4.0**.
-
-Direct testing showed that, with the classic-board OLED disabled and pins remapped to C3-safe GPIOs, the firmware can:
-
-- boot successfully;
-- allocate the logical frame buffers;
-- mount LittleFS;
-- load Alarm/Schedule state;
-- restore brightness state;
-- continue well into normal initialization.
-
-However, current FastLED output produced repeated channel/driver timeout messages during matrix refresh. The exact FastLED/C3 backend issue was not pursued because C3 support is not required for the v0.4.0 release.
-
-The classic ESP32 default pin mapping must also not be copied directly to ESP32-C3. Board-specific GPIO restrictions differ.
-
-Therefore:
-
-- compilation alone does not imply support;
-- successful boot alone does not imply support;
-- no ESP32-C3 compatibility guarantee is provided for v0.4.0.
-
-## Current development target
-
-### ESP32-S3
-
-ESP32-S3 is the active v0.5 development target. The MatrixPortal S3 + native 64x64 HUB75 path is now the primary hardware-under-test.
-
-Completed work includes native HUB75 64x64 output, large-media transfer validation, 64x64 TEXT/GIF/Carousel/Alarm/Schedule/Preset protocol testing, and direct comparison against an original 64x64 iDotMatrix. Remaining hardware work is focused on PSRAM policy, alternate logical/physical resolution combinations, optional RTC integration, and visual-quality follow-up.
+This document describes the hardware targets currently qualified for the v0.5.x emulator line.
 
 ## Support policy
 
-For this project, a hardware target is considered **supported** only after end-to-end physical validation of the relevant display output, BLE protocol paths, storage, timers/events and persistence behavior.
+A target is considered **supported** only after end-to-end physical validation of the relevant display output, BLE protocol paths, storage and representative runtime behavior. Compilation or successful boot alone is not sufficient.
 
-A target that merely compiles or boots is considered experimental until that validation is complete.
+## Supported and hardware validated
 
-## ESP32-S3 / MatrixPortal S3 / HUB75 (v0.5 development)
+### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
-BUILD 123 introduces the first native HUB75 backend. Reference hardware:
+Primary reference target:
 
-- Adafruit MatrixPortal S3
-- ESP32-S3, 8 MB flash, 2 MB PSRAM
-- 64x64 RGB HUB75 panel, 1/32 scan
-- ESP32-HUB75-MatrixPanel-DMA (WLED-native driver family)
+- Adafruit MatrixPortal ESP32-S3;
+- ESP32-S3 with 8 MB flash and 2 MB PSRAM;
+- 64x64 RGB HUB75 panel, 1/32 scan;
+- `ESP32-HUB75-MatrixPanel-DMA` backend;
+- logical 64x64 iDotMatrix profile;
+- LittleFS-backed media storage;
+- BLE MTU 517.
 
-The physical MatrixPortal/panel combination is now end-to-end validated as the active v0.5 development platform. Subsequent BUILD 125+ testing validated PlatformIO/LittleFS, BLE MTU 517, 64x64 TEXT/GIF/Carousel, large Alarm and Program/Schedule media, and the volatile Preset/Default bank on this target. Alternate logical/physical scaling combinations remain separate validation items.
+The current MatrixPortal S3 path has been validated with the official app across Clock, TEXT, images/GIFs, Carousel, Preset/Default, Alarm, Program/Schedule, timers, Audio/Rhythm, brightness, power and rotation.
 
-Logical iDotMatrix profile and physical panel dimensions are independent. The output scaler is intended to support all 16x16, 32x32 and 64x64 source/destination combinations.
+The checked-in PlatformIO environment is:
 
-## PlatformIO reference environment (BUILD 125)
+```text
+matrixportal_s3_hub75_64
+```
 
-The MatrixPortal S3 development target now has a repository-controlled PlatformIO environment named `matrixportal_s3_hub75_64`. It pins Arduino-ESP32 3.3.11 through pioarduino and uses a project-local 8 MB partition table with a LittleFS-compatible data partition. This prevents the FAT-only Arduino IDE default from silently disabling GIF/media storage.
+### ESP32-C3 + 16x16 WS2812
 
-PlatformIO support does not change the hardware-support policy: a build environment is considered validated only after the firmware has been compiled, uploaded and exercised on the physical target. Arduino IDE remains an alternate supported build path during the transition.
+The native 16x16 ESP32-C3 target is also hardware validated.
+
+Reference PlatformIO environment:
+
+```text
+esp32c3_ws2812_16
+```
+
+The environment deliberately overrides `lib_deps` so the HUB75 library is not built on this WS2812-only target.
+
+Current reference settings:
+
+- board: `esp32-c3-devkitm-1`;
+- logical 16x16 profile (`screenType=0x01`);
+- physical 16x16 WS2812;
+- matrix data GPIO 4;
+- LittleFS using `min_spiffs.csv`.
+
+### Classic ESP32 + WS2812
+
+Classic ESP32 remains compatible with the standalone emulator architecture and was the original standalone platform. It continues to be useful for WS2812 deployments and protocol experiments.
+
+A dedicated environment is retained for the iOS research branch:
+
+```text
+ios_compat_esp32_ws2812_32
+```
+
+That environment is a diagnostic configuration: logical 32x32, physical 16x16, GPIO17, with iOS handshake experiments enabled. Its iOS compatibility work is not part of the main release gate.
+
+## Logical and physical resolutions
+
+Logical profile and physical panel dimensions are independent. Supported logical sizes are 16x16, 32x32 and 64x64.
+
+The output stage supports:
+
+- 1:1 copy;
+- nearest-neighbor upscaling;
+- box-average downscaling.
+
+The strongest hardware qualification currently covers the native 64x64 HUB75 target and native 16x16 WS2812 target. Other logical/physical combinations remain useful test configurations but are not all separately hardware-qualified.
+
+## Reference toolchain
+
+The repository PlatformIO baseline uses:
+
+- Arduino-ESP32 3.3.11;
+- ESP-IDF 5.5.5;
+- pioarduino `platform-espressif32` 55.03.311;
+- FastLED 3.10.3;
+- AnimatedGIF 2.2.3;
+- a pinned `ESP32-HUB75-MatrixPanel-DMA` commit for the HUB75 environment.
+
+See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.

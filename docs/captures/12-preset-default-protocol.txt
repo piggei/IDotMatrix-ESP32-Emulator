@@ -1,4 +1,4 @@
-Preset / Default protocol capture - BUILD 138 diagnostics
+Preset / Default protocol capture
 Hardware/app profile: official app controlling 64x64 profile
 
 Mixed three-item preset: TEXT "PJ" -> image -> TEXT "Ciao"
@@ -34,9 +34,9 @@ The complete-object size/CRC, timeSign and imageIndex remain stable.
 
 Direct original-hardware observation: items advance at approximately 3 seconds.
 The app exposes no Preset dwell control. Since timeSign is consistently 5,
-BUILD 140/141 preserve it as opaque metadata. GIF/image items use the observed ~3000 ms dwell; TEXT timing follows the renderer mode rather than a fixed Preset dwell.
+The implementation preserves it as opaque metadata. GIF/image items use the observed ~3000 ms dwell; TEXT timing follows the renderer mode rather than a fixed Preset dwell.
 
-BUILD 140 hardware validation:
+Hardware validation:
 - mixed TEXT "PJ" -> GIF -> scrolling TEXT played in slots 14,15,16;
 - static/PIN-style TEXT used a ~3000 ms final hold;
 - scrolling TEXT advanced after the final glyph left the display (example holdMs=14154 for 17 glyphs at 16x32);

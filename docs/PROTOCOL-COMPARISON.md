@@ -6,7 +6,7 @@ This document cross-checks the protocol independently derived by this project ag
 
 | Project | BLE role | Main purpose | Hardware evidence |
 |---|---|---|---|
-| This project | **Peripheral / server emulator** | Emulates an iDotMatrix device for the official app | 16x16 ESP32 emulator plus direct comparison with an original 64x64 device |
+| This project | **Peripheral / server emulator** | Emulates an iDotMatrix device for the official app | Hardware-validated 64x64 MatrixPortal S3/HUB75 and 16x16 ESP32-C3/WS2812 targets plus direct comparison with an original 64x64 device |
 | derkalle4/python3-idotmatrix-client | Client / central | Controls original displays | 16x16 and 32x32 community use |
 | 8none1/idotmatrix | Client / research | Controls and reverse-engineers original displays | Original display captures documented |
 | dallanwagz/idotmatrix-ha | Client / central | Home Assistant control of original display | 32x32 hardware validated |
@@ -40,7 +40,7 @@ Legend: **Confirmed** = independently corroborated; **Local** = currently strong
 | Music LEVEL modes | Yes | No comparable implementation found during review | **Local** |
 | Music FFT modes | Yes | No comparable implementation found during review | **Local** |
 | Scheduled PNG/GIF/Text | Yes | No comparable public implementation found during review | **Local** |
-| Device Assets carousel | Hardware-tested in BUILD 95; upload blackout added and hardware-tested in BUILD 96; consolidated in BUILD 97 | Hardware-validated public RE documents one 12-slot device bank, `timeSign`, `imageIndex`, material wipe/setup and `0A/01`; local app captures corroborate 12-slot pushes and dwell/index fields | **Strong cross-corroboration; core emulator sequencing hardware-tested** |
+| Device Assets carousel | Hardware-tested with mixed-content slot handling and upload blackout | Hardware-validated public RE documents one 12-slot device bank, `timeSign`, `imageIndex`, material wipe/setup and `0A/01`; local app captures corroborate 12-slot pushes and dwell/index fields | **Strong cross-corroboration; core emulator sequencing hardware-tested** |
 
 ## Device Assets carousel cross-check
 
@@ -48,10 +48,10 @@ Cross-source agreement is strong for a single 12-slot device bank, `imageIndex` 
 
 Local official-app captures add two sequencing/content observations that matter to the emulator implementation:
 
-- `0A/01` can be observed before a later page push and is not necessarily repeated after that push. BUILD 94 incorrectly treated it as a mandatory post-upload transaction terminator.
-- A full 12-position push contains a `DataType.TEXT` Bulk between GIF indices 4 and 6. BUILD 94 parsed it as live TEXT, which cleared the carousel upload context and caused subsequent GIF indices 6..11 to be handled as live GIFs. BUILD 95 stores carousel-range TEXT as a slot and preserves the replacement transaction; mixed GIF/TEXT playback was subsequently hardware-tested successfully.
+- `0A/01` can be observed before a later page push and is not necessarily repeated after that push. An earlier implementation incorrectly treated it as a mandatory post-upload transaction terminator.
+- A full 12-position push contains a `DataType.TEXT` Bulk between GIF indices 4 and 6. An earlier implementation parsed it as live TEXT, which cleared the carousel upload context and caused subsequent GIF indices 6..11 to be handled as live GIFs. The final implementation stores carousel-range TEXT as a slot and preserves the replacement transaction; mixed GIF/TEXT playback was hardware-tested successfully.
 
-The public RE currently documents persistent carousel slots as GIF-only. Mixed TEXT slot persistence/playback is therefore a **project-observed and emulator-hardware-tested extension**. Equivalent TEXT persistence/playback on original iDotMatrix hardware remains unverified and is not generalized into a universal protocol claim. BUILD 95 uses a 3-second upload-idle settle only because no explicit post-push frame has been observed in the local short-page captures; that timer is emulator policy rather than protocol evidence. BUILD 96 additionally forces the physical matrix black during replacement as an emulator UX policy, without altering `screenOn`; this blackout was hardware-tested successfully and the same behavior is retained in BUILD 97.
+The public RE currently documents persistent carousel slots as GIF-only. Mixed TEXT slot persistence/playback is therefore a **project-observed and emulator-hardware-tested extension**. Equivalent TEXT persistence/playback on original iDotMatrix hardware remains unverified and is not generalized into a universal protocol claim. The implementation uses a 3-second upload-idle settle only because no explicit post-push frame has been observed in the local short-page captures; that timer is emulator policy rather than protocol evidence. It also forces the physical matrix black during replacement as an emulator UX policy, without altering `screenOn`; this blackout was hardware-tested successfully.
 
 ## ACK semantics
 
@@ -73,7 +73,7 @@ Public clients support or discuss 16x16, 32x32 and 64x64 displays, but this does
 - firmware-specific features;
 - clock/text rendering behavior.
 
-The emulator now defaults to native 16x16 (`0x01`) while also supporting tested app profiles `0x03` (32x32) and `0x04` (64x64). The larger profiles were exercised against the official app using an optional 64/32-to-16 diagnostic preview; that preview is disabled by default. 64x64 cloud GIF transfer and playback were verified on the classic ESP32 using LittleFS-backed media handling.
+The emulator supports app profiles `0x01` (16x16), `0x03` (32x32) and `0x04` (64x64). Logical profile and physical panel dimensions are independent. Native 64x64 operation is hardware validated on MatrixPortal ESP32-S3 + HUB75, while native 16x16 operation is hardware validated on ESP32-C3 + WS2812. Other logical/physical scaling combinations remain useful test configurations but are not all separately hardware-qualified.
 
 ## Research policy
 
@@ -89,7 +89,7 @@ Raw captures take precedence over interpretation. When an external implementatio
 
 ## Direct original-hardware observations (64×64)
 
-A physical 64×64 iDotMatrix is now available as a protocol oracle. Direct observations take precedence over third-party inference for the tested behavior. Confirmed: persistent Device Assets boot resume; no persistent RTC; volatile timekeeping after app synchronization; Alarm works after BLE disconnect but not after reboot without re-sync; repeating Alarm trill; roughly 30-second repeating Program trill; silent Countdown completion; Power Saving brightness reduction; 180-degree Flip; reset removes Device Assets and the stored password association; Device Information shows MCU `5.11`. BUILD 108 established that advertising/manufacturer-data changes alone do not control the app-displayed MCU value; BUILD 109 confirmed the 9-byte Device Info response as the controlling path, with emulator bytes `00 04` displayed as MCU `0.04`.
+A physical 64×64 iDotMatrix is now available as a protocol oracle. Direct observations take precedence over third-party inference for the tested behavior. Confirmed: persistent Device Assets boot resume; no persistent RTC; volatile timekeeping after app synchronization; Alarm works after BLE disconnect but not after reboot without re-sync; repeating Alarm trill; roughly 30-second repeating Program trill; silent Countdown completion; Power Saving brightness reduction; 180-degree Flip; reset removes Device Assets and the stored password association; Device Information shows MCU `5.11`. Testing established that advertising/manufacturer-data changes alone do not control the app-displayed MCU value; the 9-byte Device Info response is the controlling path, with emulator bytes `00 04` displayed as MCU `0.04`.
 
 The emulator intentionally differs in several UX choices: no boot animation, a single connection beep instead of the original connection logo/animation, persistent Cloud/Graffiti display, one-shot Program trill, one-shot Countdown completion trill, and custom Snowflake/Laser text effects.
 
@@ -98,4 +98,4 @@ The emulator intentionally differs in several UX choices: no boot animation, a s
 
 Official-app Android logcat shows the app restoring a cached password (`pwdByMac`) for the connected device. Two user password submissions correspond to 7-byte GATT writes followed by 5-byte FA03 notifications, matching the strongly indicated `05/02` VERIFY transaction shape. Direct app captures also establish the `04/02` SET frame and decimal-pair encoding.
 
-BUILD 101-103 attempted emulator SET/VERIFY support and different ACK timing strategies, but the official app remained on the Set Password screen. BUILD 104 removes the unverified runtime implementation. Password protocol findings remain documented, while complete SET completion semantics and enforcement behavior remain open.
+Several SET/VERIFY and ACK-timing strategies were tested, but the official app remained on the Set Password screen. The unverified runtime implementation was therefore removed. Password protocol findings remain documented, while complete SET completion semantics and enforcement behavior remain open.

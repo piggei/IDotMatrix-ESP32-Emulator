@@ -1,4 +1,4 @@
-Build 64 focused capture summary
+Focused TEXT capture summary
 
 Text: "ptova"
 

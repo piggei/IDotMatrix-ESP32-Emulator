@@ -1,4 +1,4 @@
-# Timer protocol sniffer - BUILD 54
+# Timer protocol sniffer
 
 # STOPWATCH
 RX FA02 RAW [5]: 05 00 09 80 01

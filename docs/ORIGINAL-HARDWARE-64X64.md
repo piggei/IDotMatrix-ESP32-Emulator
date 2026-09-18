@@ -63,7 +63,7 @@ Direct visual comparison currently shows:
 - Laser: the original constructs the text from the right with a beam-like reveal. The emulator intentionally keeps its preferred scan-line laser effect.
 - Long text: the original consumes the complete phrase rather than clipping to the first visible glyphs. The emulator now implements resolution-independent paging/continuous vertical tape accordingly.
 
-The official app exposes three text sizes for the 64×64 profile and two for the 16×16 profile. The exact third 64×64 glyph record format is still pending capture; no marker or geometry should be claimed until observed.
+The official app exposes three text sizes for the 64×64 profile and two for the 16×16 profile. The emulator now handles the 16-, 32- and 64-pixel glyph families used by the current app workflow. A dedicated original-device capture of every possible 64-pixel marker variant would still strengthen the protocol evidence, but this is no longer a renderer blocker.
 
 ## Intentional emulator differences
 

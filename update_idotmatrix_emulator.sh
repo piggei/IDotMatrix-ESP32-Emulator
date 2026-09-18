@@ -51,28 +51,6 @@ confirm() {
     esac
 }
 
-print_command() {
-    printf '    '
-    printf '%q ' "$@"
-    echo
-}
-
-run_step() {
-    local description="$1"
-    shift
-
-    echo
-    echo "==> $description"
-    print_command "$@"
-
-    if confirm "Continue?"; then
-        "$@"
-    else
-        echo "Skipped."
-        return 2
-    fi
-}
-
 die() {
     echo "ERROR: $*" >&2
     exit 1
@@ -130,34 +108,6 @@ resolve_serial_port() {
         return 2
     fi
     return 1
-}
-
-any_serial_present() {
-    local -a matches=()
-    mapfile -t matches < <(serial_matches)
-    [[ ${#matches[@]} -gt 0 ]]
-}
-
-wait_for_serial_detach() {
-    while any_serial_present; do
-        echo
-        echo "A MatrixPortal $SERIAL_ROLE device is still attached to Linux/WSL."
-        if [[ -n "$SERIAL_PORT" ]]; then
-            echo "  Current port: $SERIAL_PORT"
-        else
-            echo "  Pattern: $SERIAL_PATTERN"
-        fi
-        echo
-        echo "Detach the MatrixPortal USB device from Linux/WSL, then retry."
-        if ! confirm "Retry after detaching the MatrixPortal?"; then
-            echo "Aborted while waiting for the post-upload USB detach."
-            exit 0
-        fi
-    done
-
-    SERIAL_PORT=""
-    echo
-    echo "MatrixPortal $SERIAL_ROLE device detached."
 }
 
 wait_for_serial_port() {
@@ -223,8 +173,6 @@ command -v unzip >/dev/null 2>&1 || die "unzip not found"
 command -v rsync >/dev/null 2>&1 || die "rsync not found"
 command -v pio >/dev/null 2>&1 || die "PlatformIO CLI (pio) not found"
 command -v git >/dev/null 2>&1 || die "git not found"
-command -v realpath >/dev/null 2>&1 || die "realpath not found"
-command -v strings >/dev/null 2>&1 || die "strings not found (install binutils)"
 
 [[ -d "$ARCHIVE_DIR" ]] || die "Archive directory not found: $ARCHIVE_DIR"
 [[ -d "$REPO/.git" ]] || die "Not a Git repository: $REPO"
