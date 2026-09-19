@@ -2,16 +2,20 @@
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include "IDotMatrixHardwareConfig.h"
+#if IDOTMATRIX_ORIENTATION_SENSOR
+  #include "IDotMatrixOrientation.h"
+#endif
 
 // ======================================================
 // FIRMWARE RELEASE / BUILD ID
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.0"
+#define FW_RELEASE "0.6.0-dev"
 #define FW_RELEASE_MAJOR 0
-#define FW_RELEASE_MINOR 5
-#define FW_BUILD 162
+#define FW_RELEASE_MINOR 6
+#define FW_BUILD 165
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -98,8 +102,10 @@ uint8_t unknownCommandStored = 0;
 #else
   #error "miniz header not found: required for Schedule PNG decoding"
 #endif
-#if RTC_ENABLED
+#if IDOTMATRIX_ORIENTATION_SENSOR || RTC_ENABLED
   #include <Wire.h>
+#endif
+#if RTC_ENABLED
   #include <RTClib.h>
   RTC_DS3231 rtc;
   bool rtcReady = false;
@@ -1420,6 +1426,16 @@ uint16_t physicalXY(uint8_t x, uint8_t y) {
 // nearest-neighbour replication; downscaling uses a box average, matching the
 // independently hardware-tested WLED Usermod policy.
 CRGB logicalToPhysicalPixel(uint16_t px, uint16_t py) {
+#if IDOTMATRIX_ORIENTATION_SENSOR
+  // Orientation is applied after logical rendering and before physical output,
+  // so every display mode rotates consistently without renderer-specific code.
+  uint16_t rotatedX=px, rotatedY=py;
+  idotOrientationMapOutputToSource(
+    px, py, PHYSICAL_MATRIX_WIDTH, PHYSICAL_MATRIX_HEIGHT, rotatedX, rotatedY);
+  px=rotatedX;
+  py=rotatedY;
+#endif
+
   const uint16_t sourceWidth = MATRIX_WIDTH;
   const uint16_t sourceHeight = MATRIX_HEIGHT;
   const uint16_t targetWidth = PHYSICAL_MATRIX_WIDTH;
@@ -6306,8 +6322,13 @@ void setup(){
 #endif
 #endif
 
-#if RTC_ENABLED
+#if IDOTMATRIX_ORIENTATION_SENSOR || RTC_ENABLED
   Wire.begin();
+#endif
+#if IDOTMATRIX_ORIENTATION_SENSOR
+  idotOrientationBegin();
+#endif
+#if RTC_ENABLED
   rtcReady=rtc.begin();
   rtcTimeValid=rtcReady && !rtc.lostPower();
 #if DEBUG_SERIAL
@@ -6448,6 +6469,11 @@ void loop(){
   // can update packetLastRxMs/bulkLastRxMs to a newer value while loop() waits.
   // Unsigned subtraction would then wrap and falsely look like a huge timeout.
   uint32_t now=millis();
+#if IDOTMATRIX_ORIENTATION_SENSOR
+  // A static framebuffer must be redrawn immediately when the panel orientation
+  // changes; animated modes will continue to use the same final-output mapping.
+  if (idotOrientationUpdate(now)) refreshMatrix();
+#endif
   expireStalledTransfers(now);
   flushBrightnessSaveIfNeeded();
 #if OLED_STATUS_ENABLED

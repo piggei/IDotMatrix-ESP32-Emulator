@@ -84,3 +84,9 @@ The repository PlatformIO baseline uses:
 - a pinned `ESP32-HUB75-MatrixPanel-DMA` commit for the HUB75 environment.
 
 See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.
+
+## Orientation sensor support
+
+The `0.6.0-dev` line adds an optional accelerometer abstraction. Build 165 consolidates the MatrixPortal S3 LIS3DH backend on the `matrixportal_s3_hub75_64` profile. Automatic display rotation is hardware-qualified, and the common orientation layer now supports a compile-time planar mounting offset (`IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`) so the same sensor driver can be reused on custom boards or external modules.
+
+The feature is backend-driven rather than board-driven, so future external accelerometers can be enabled on ESP32-C3 or classic ESP32 targets without changing the common orientation logic. Targets without a selected accelerometer backend do not compile or link the orientation subsystem.

@@ -10,13 +10,13 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.5.0`
-- **Build:** `162`
+- **Release:** `0.6.0-dev`
+- **Build:** `165`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.0-B162
+IDOTMATRIX_FW=0.6.0-dev-B165
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
@@ -106,6 +106,12 @@ The FFT transport is treated as a byte stream because one BLE ATT write may cont
 
 LEVEL and FFT rendering and transport have been hardware validated on the MatrixPortal S3 reference target.
 
+## Automatic orientation support
+
+The `0.6.0-dev` line introduces a compile-time-gated orientation-sensor architecture. Build 165 consolidates the LIS3DH orientation backend and the common orientation support layer. Automatic display rotation is enabled on the MatrixPortal S3 using its on-board LIS3DH. The validated normalized mapping is `+Y`=0 deg, `+X`=90 deg, `-Y`=180 deg and `-X`=270 deg. External or custom-mounted sensors can compensate their planar mounting orientation at compile time with `IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`.
+
+Rotation is applied only in the final logical-to-physical output mapping, so the qualified TEXT, media, Clock, timer, scoreboard, Audio/Rhythm and automation renderers remain unchanged. Sensor-specific backends automatically enable the common orientation engine; targets without an `IDOTMATRIX_ACCEL_DRIVER_*` selection compile without accelerometer code or dependencies. See [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md).
+
 ## Build with PlatformIO
 
 The repository contains three explicit environments:
@@ -175,6 +181,7 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`HISTORY.md`](HISTORY.md) — public release history
 - [`FUTURE-WORK.md`](FUTURE-WORK.md) — non-blocking research and possible extensions
 - [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) — supported hardware and qualification policy
+- [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md) — accelerometer driver abstraction and orientation diagnostics
 - [`docs/PLATFORMIO.md`](docs/PLATFORMIO.md) — reproducible PlatformIO build/upload guide
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations

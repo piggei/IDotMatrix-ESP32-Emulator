@@ -185,3 +185,18 @@ Arduino IDE builds use the defaults in `src/IDotMatrix.ino`. For the MatrixPorta
 - compatible graphics dependencies when required by the selected driver version.
 
 PlatformIO remains preferred because those choices are encoded in the repository rather than selected manually from IDE menus.
+
+## Optional accelerometer backends
+
+Orientation support is selected by the sensor backend, not by the ESP32 family.
+
+The MatrixPortal S3 environment currently enables:
+
+```ini
+-DIDOTMATRIX_ACCEL_DRIVER_LIS3DH
+-DIDOTMATRIX_ACCEL_I2C_ADDRESS=0x19
+```
+
+This automatically enables the common `IDOTMATRIX_ORIENTATION_SENSOR` subsystem.
+
+An ESP32-C3 or classic ESP32 can use the same feature in the future by attaching a supported external sensor and enabling its `IDOTMATRIX_ACCEL_DRIVER_*` backend. Targets without a selected backend do not compile the orientation code or sensor library.

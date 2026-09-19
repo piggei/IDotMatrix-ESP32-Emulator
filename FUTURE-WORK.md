@@ -27,7 +27,9 @@ Password support remains intentionally disabled because the complete transaction
 
 ## Possible platform extensions
 
-- Evaluate MatrixPortal S3 accelerometer-based automatic display rotation.
+- MatrixPortal S3 LIS3DH automatic orientation is hardware-qualified; Build 165 also adds generic planar mount compensation for custom/external sensor installations.
+- Add and qualify the MPU-6050 / GY-521 backend using the same common orientation engine.
+- Add the external GY-521 / MPU-6050 backend using the same common orientation engine.
 - Revisit optional DS3231 RTC integration on the MatrixPortal S3 platform.
 - Hardware-qualify additional logical/physical scaling combinations beyond native 64x64 and native 16x16.
 - Revisit PSRAM placement only if future media sizes or features demonstrate a real need.

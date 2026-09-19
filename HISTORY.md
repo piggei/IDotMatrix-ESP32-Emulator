@@ -1,4 +1,41 @@
+# Development history
+
+## 0.6.0-dev / Build 165
+
+- Consolidated the LIS3DH backend and common orientation support layer.
+- Added `IDOTMATRIX_ACCEL_MOUNT_ROTATION` with compile-time validation for `0`, `90`, `180` and `270` degrees clockwise.
+- Mount compensation is sensor/board agnostic, allowing the same accelerometer backend to be reused on custom boards or as an external module without changing the orientation engine.
+- MatrixPortal S3 explicitly uses a `0` degree mount offset, preserving the hardware-qualified Build 164 behavior.
+- No renderer, BLE protocol, media, audio, automation or display-mode behavior changed.
+
 # Release History
+
+## 0.6.0-dev / Build 164
+
+First automatic-orientation build.
+
+- qualified the MatrixPortal S3 physical axis map from Build 163 measurements: `+Y`=0 deg, `+X`=90 deg clockwise, `-Y`=180 deg and `-X`=270 deg clockwise;
+- enabled automatic display rotation through the common orientation engine;
+- applied rotation only at the final logical-to-physical output stage so all existing renderers remain unchanged;
+- static framebuffers are refreshed immediately when a stable orientation changes;
+- retained the existing app-controlled 180-degree flip as a separate output transform;
+- reduced normal orientation logging to initialization and actual rotation changes;
+- kept detailed X/Y/Z sample diagnostics available behind a separate compile-time define;
+- ESP32-C3 and classic ESP32 remain free of accelerometer code unless an `IDOTMATRIX_ACCEL_DRIVER_*` backend is selected.
+
+## 0.6.0-dev / Build 163
+
+First orientation-sensor development build.
+
+- added compile-time accelerometer backend selection;
+- selecting a supported `IDOTMATRIX_ACCEL_DRIVER_*` automatically enables the common orientation subsystem;
+- added the MatrixPortal S3 LIS3DH backend at I2C address `0x19`;
+- added normalized X/Y/Z sampling, dominant-axis classification, hysteresis and stable-direction timing;
+- added Serial diagnostics for the four physical panel orientations;
+- display rotation is intentionally not applied yet;
+- ESP32-C3 and classic ESP32 targets remain free of accelerometer dependencies unless a driver is explicitly enabled.
+
+The runtime behavior outside the new diagnostic orientation subsystem is unchanged from the 0.5.0 baseline.
 
 ## 0.5.0 / Build 162
 
