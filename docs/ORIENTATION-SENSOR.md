@@ -2,7 +2,7 @@
 
 ## Status
 
-The `0.6.0-dev` line adds an optional accelerometer-backed display orientation subsystem.
+Release 0.5.1 includes an optional accelerometer-backed display orientation subsystem.
 
 Build 164 was the first build to apply automatic framebuffer rotation after the MatrixPortal S3 axis mapping was measured on hardware. Build 165 closes the LIS3DH support work by adding generic compile-time mounting compensation for custom boards and external sensor modules.
 

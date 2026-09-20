@@ -1,0 +1,48 @@
+Original 64x64 iDotMatrix - Android Bluetooth HCI snoop cross-check
+Capture date: 2026-09-20
+Channel: FA02 write command / FA03 notification
+
+Time sync
+TX 0B 00 01 80 1A 09 14 07 0F 13 16
+RX 05 00 01 80 01
+
+DIY / Graffiti mode
+TX 05 00 04 01 01
+RX 05 00 04 01 01
+TX 05 00 04 01 00
+RX 05 00 04 01 01
+
+Clock
+TX 08 00 06 01 C0 61 18 D6
+RX 05 00 06 01 01
+
+Device Assets
+TX 04 00 0A 01
+RX 05 00 0A 01 01
+TX 11 00 02 01 0C 00 01 02 03 04 05 06 07 08 09 0A 0B
+RX 05 00 02 01 01
+
+Countdown
+TX 07 00 08 80 01 00 0F
+RX 05 00 08 80 01
+TX 07 00 08 80 00 00 00
+RX 05 00 08 80 01
+
+Preset / Default activation
+TX 0A 00 06 02 05 0E 0F 10 11 12
+RX 05 00 06 02 01
+
+Program global state
+TX 05 00 07 80 02
+RX 05 00 07 80 01
+TX 05 00 07 80 03
+RX 05 00 07 80 01
+
+Display power
+TX 05 00 07 01 00
+RX 05 00 07 01 01
+TX 05 00 07 01 01
+RX 05 00 07 01 01
+
+Graffiti full-raster evidence is kept separately in 14-graffiti-original-hardware.txt.
+Large media payload writes are intentionally omitted here because ATT/HCI transport fragments are not standalone iDotMatrix commands.

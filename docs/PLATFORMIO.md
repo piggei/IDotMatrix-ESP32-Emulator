@@ -41,7 +41,7 @@ This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-
 
 This is a diagnostic environment and is not part of the main release qualification.
 
-The checked-in `default_envs` value may point at a diagnostic target. For reproducible work, always pass `-e <environment>` explicitly.
+The checked-in `default_envs` value points at the primary qualified MatrixPortal S3 / 64x64 HUB75 target. For reproducible work on another profile, pass `-e <environment>` explicitly.
 
 ## Reference toolchain
 

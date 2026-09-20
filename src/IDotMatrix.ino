@@ -12,10 +12,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.6.0-dev"
+#define FW_RELEASE "0.5.1"
 #define FW_RELEASE_MAJOR 0
-#define FW_RELEASE_MINOR 6
-#define FW_BUILD 165
+#define FW_RELEASE_MINOR 5
+#define FW_BUILD 172
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -23,6 +23,7 @@ static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_REL
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
+#define GRAFFITI_PROTOCOL_DEBUG 0  // Release default: protocol tracing disabled; enable only for targeted Graffiti diagnostics.
 #define PRESET_PROTOCOL_DEBUG 0  // Set to 1 only for Preset/Default protocol tracing (volatile slots 14..19).
 #define CAROUSEL_PROTOCOL_DEBUG 0  // Set to 1 only for Device Assets protocol tracing.
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
@@ -1353,6 +1354,23 @@ uint32_t textPageChangedAt = 0;
 
 uint8_t *rawRgbData = nullptr;
 size_t rawRgbWriteOffset = 0;
+
+// Graffiti full-raster transfer used by the official 64x64 Android app.
+// This is NOT the normal 16-byte Bulk protocol. Captured original hardware
+// uses a 9-byte header followed by up to 4096 RGB bytes per logical packet.
+struct GraffitiRasterState {
+  bool active = false;
+  uint32_t expectedSize = 0;
+  uint32_t receivedSize = 0;
+  uint32_t chunkCount = 0;
+  uint32_t lastRxMs = 0;
+  uint8_t *data = nullptr;
+} graffitiRaster;
+
+static void resetGraffitiRaster(){
+  if(graffitiRaster.data){ free(graffitiRaster.data); graffitiRaster.data=nullptr; }
+  graffitiRaster=GraffitiRasterState();
+}
 
 bool pendingDeviceInfoPush = false;
 uint32_t deviceInfoPushAt = 0;
@@ -3862,10 +3880,99 @@ void expireStalledTransfers(uint32_t now){
 #endif
     resetBulkTransfer(true);
   }
+  if(graffitiRaster.active && graffitiRaster.lastRxMs && (uint32_t)(now-graffitiRaster.lastRxMs)>BULK_TRANSFER_TIMEOUT_MS){
+#if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
+    Serial.println("GRAFFITI timeout; aborting stalled raster transfer");
+#endif
+    resetGraffitiRaster();
+  }
 }
 
 bool processBulkPacket(const uint8_t *data,size_t len){
-  if(len<16 || data[3]!=0x00 || data[2]>0x03) return false;
+  // Protocol captured from an original 64x64 iDotMatrix and retained in 0.5.1.
+  // Graffiti full-raster packets use their own 9-byte framing:
+  //   0..1 LE logical packet length
+  //   2    type 0x00
+  //   3    0x00
+  //   4    marker: 0x00 first, 0x02 continuation
+  //   5..8 total raster size LE (12288 for 64x64 RGB)
+  //   9..  RGB payload (4096 bytes in the captured 64x64 transfer)
+  // Original hardware ACKs status 0x02 while more raster data is required,
+  // then status 0x01 after the complete raster has been accepted. There is no
+  // CRC field in this 9-byte Graffiti header. Keep this path completely
+  // separate from the normal 16-byte GIF/RAW/TEXT Bulk state machine.
+  if(len>=9 && data[2]==0x00 && data[3]==0x00 && (data[4]==0x00 || data[4]==0x02)){
+    const uint8_t marker=data[4];
+    const uint32_t total=(uint32_t)data[5]|((uint32_t)data[6]<<8)|((uint32_t)data[7]<<16)|((uint32_t)data[8]<<24);
+    const uint32_t expected=(uint32_t)NUM_LEDS*3UL;
+    if(total==expected){
+      const uint8_t *payload=data+9;
+      const size_t payloadSize=len-9;
+      if(marker==0x00){
+        resetGraffitiRaster();
+        graffitiRaster.data=(uint8_t*)malloc(total);
+        if(!graffitiRaster.data){
+#if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
+          Serial.println("GRAFFITI BEGIN allocation failed");
+#endif
+          return true;
+        }
+        graffitiRaster.active=true;
+        graffitiRaster.expectedSize=total;
+#if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
+        Serial.print("GRAFFITI BEGIN total="); Serial.print(total);
+        Serial.print(" firstPayload="); Serial.println(payloadSize);
+#endif
+      } else if(!graffitiRaster.active || !graffitiRaster.data || graffitiRaster.expectedSize!=total){
+#if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
+        Serial.println("GRAFFITI CONT without matching active transfer; ignored");
+#endif
+        return true;
+      }
+
+      graffitiRaster.lastRxMs=millis();
+      const uint32_t remain=graffitiRaster.expectedSize-graffitiRaster.receivedSize;
+      const size_t useful=min((size_t)remain,payloadSize);
+      if(useful){
+        ::memcpy(graffitiRaster.data+graffitiRaster.receivedSize,payload,useful);
+        graffitiRaster.receivedSize+=useful;
+      }
+      graffitiRaster.chunkCount++;
+
+      const bool complete=graffitiRaster.receivedSize>=graffitiRaster.expectedSize;
+#if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
+      Serial.print("GRAFFITI RX marker=0x"); Serial.print(marker,HEX);
+      Serial.print(" chunk="); Serial.print(graffitiRaster.chunkCount);
+      Serial.print(" payload="); Serial.print(useful);
+      Serial.print(" total="); Serial.print(graffitiRaster.receivedSize);
+      Serial.print('/'); Serial.println(graffitiRaster.expectedSize);
+#endif
+      if(complete){
+        switchDisplayMode(DISPLAY_GRAFFITI);
+        for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
+          const uint16_t pix=(uint16_t)y*MATRIX_WIDTH+x;
+          const uint32_t o=(uint32_t)pix*3UL;
+          framebuffer[logicalIndex(x,y)]=CRGB(graffitiRaster.data[o],graffitiRaster.data[o+1],graffitiRaster.data[o+2]);
+        }
+        refreshMatrix();
+        // Captured original hardware final ACK.
+        sendTransferAck(0x00,0x01);
+#if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
+        Serial.print("GRAFFITI END chunks="); Serial.print(graffitiRaster.chunkCount);
+        Serial.println(" ACK=01");
+#endif
+        resetGraffitiRaster();
+      } else {
+        // Captured original hardware continuation ACK.
+        sendTransferAck(0x00,0x02);
+#if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
+        Serial.println("GRAFFITI ACK=02");
+#endif
+      }
+      return true;
+    }
+  }
+  if(len<16 || data[3]!=0x00 || data[2]<0x01 || data[2]>0x03) return false;
   uint8_t type=data[2];
   uint32_t total=(uint32_t)data[5]|((uint32_t)data[6]<<8)|((uint32_t)data[7]<<16)|((uint32_t)data[8]<<24);
   uint32_t crc=(uint32_t)data[9]|((uint32_t)data[10]<<8)|((uint32_t)data[11]<<16)|((uint32_t)data[12]<<24);
@@ -3897,7 +4004,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     resetBulkTransfer(); bulk.active=true; bulk.dataType=type; bulk.expectedSize=total; bulk.expectedCRC=crc; bulk.runningCRC=0xFFFFFFFF;
     bulk.timeSign=timeSign; bulk.imageIndex=imageIndex;
     if(startsWithGIF(payload,payloadSize)) bulk.format="GIF";
-    else if(type==2&&total==(uint32_t)NUM_LEDS*3UL) bulk.format="RAW RGB";
+    else if(type==2 && total==(uint32_t)NUM_LEDS*3UL) bulk.format="RAW RGB";
     else if(type==3) bulk.format="TEXT";
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
     Serial.print("BULK BEGIN type="); Serial.print(type);
@@ -5087,6 +5194,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     packetLastRxMs=0;
     resetAudioReassembly();
     resetBulkTransfer(true);
+    resetGraffitiRaster();
     // Do not sleep inside the BLE callback. Preserve the historical 300 ms
     // restart delay by deferring advertising restart to the Arduino loop.
     pendingAdvertisingRestart=true;
@@ -5116,6 +5224,7 @@ void resetRuntimeState(){
   scheduleActiveIndex=-1; scheduleFailedIndex=-1;
   diyMode=false; effectState.valid=false; textState.valid=false; audioState.valid=false;
   resetAudioReassembly();
+  resetGraffitiRaster();
   cancelCountdownFinishBuzzer(); cancelScheduleStartBuzzer(); cancelConnectionBuzzer(); countdownRunning=false; countdownPaused=false; countdownRemainingMs=0; countdownFinishSent=false;
   stopwatchRunning=false; stopwatchElapsedMs=0; scoreA=scoreB=0;
   displayMode=DISPLAY_NONE;

@@ -1,0 +1,43 @@
+iDotMatrix original hardware - 64x64 Graffiti full-raster capture
+Source: Android Bluetooth HCI snoop log
+Purpose: protocol reconstruction only; image payload omitted.
+
+Observed logical exchange:
+
+TX packet 1:
+  length: 4105
+  header: 09 10 00 00 00 00 30 00 00
+  marker: 00
+  total raster bytes: 12288
+  RGB payload bytes: 4096
+RX notification:
+  05 00 00 00 02
+
+TX packet 2:
+  length: 4105
+  header prefix: 09 10 00 00 02 00 30 00 00
+  marker: 02
+  total raster bytes: 12288
+  RGB payload bytes: 4096
+RX notification:
+  05 00 00 00 02
+
+TX packet 3:
+  length: 4105
+  header prefix: 09 10 00 00 02 00 30 00 00
+  marker: 02
+  total raster bytes: 12288
+  RGB payload bytes: 4096
+RX notification:
+  05 00 00 00 01
+
+Confirmed interpretation:
+- Graffiti full-raster transport uses a dedicated 9-byte header.
+- Type is 0x00.
+- Marker 0x00 starts the transfer; marker 0x02 continues it.
+- Bytes 5..8 carry total raster size LE.
+- RGB payload starts at byte 9.
+- 64x64 RGB is 12288 bytes and is transferred as three 4096-byte chunks.
+- Status 0x02 is returned while more data is required.
+- Status 0x01 is returned after the complete raster has been accepted.
+- No CRC32 field is present in this header.

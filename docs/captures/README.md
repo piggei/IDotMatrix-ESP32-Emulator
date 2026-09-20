@@ -11,3 +11,7 @@ The files have been reduced to the useful portions by removing periodic heap rep
 `12-preset-default-protocol.txt` records the Preset/Default protocol captures and subsequent hardware validation: volatile slots 14..19, mixed TEXT/GIF media, constant `timeSign=5`, the `06/02 <count> <slots...>` activation list, normal Bulk continuation markers on large Preset images, and content-aware TEXT timing.
 
 `13-preset-default-validation.txt` records the hardware playback validation: mixed TEXT/GIF timing, five-image ordered playback, large multi-packet media, looping, and clean active-bank replacement.
+
+`14-graffiti-original-hardware.txt` records the Bluetooth HCI capture that established the dedicated 64x64 Graffiti full-raster framing: 9-byte header, marker `0x00`/`0x02`, 4096-byte RGB chunks, and original-hardware ACK sequence `0x02` while incomplete / `0x01` on completion.
+
+`15-original-hardware-command-crosscheck.txt` records additional ordinary command/ACK pairs observed directly against the original 64x64 device: time sync, DIY mode, Clock, Device Assets, Countdown, Preset activation, Program state and display power. Large media fragments are intentionally excluded from this reduced command list.

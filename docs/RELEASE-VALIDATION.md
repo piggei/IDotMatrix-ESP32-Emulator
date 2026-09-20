@@ -40,4 +40,4 @@ The following areas are considered qualified for 0.5.0:
 
 ## Packaging checks
 
-The final package must contain no generated build output, `.pio` directory, cache directory, temporary diagnostic file or pre-release version identifier. User-facing documentation must remain in English.
+The final package must contain no generated build output, `.pio` directory, cache directory or temporary diagnostic file. Active release identifiers must be final; historical development identifiers may remain only in the release history. User-facing documentation must remain in English.

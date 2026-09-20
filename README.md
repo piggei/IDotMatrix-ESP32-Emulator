@@ -10,16 +10,18 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.6.0-dev`
-- **Build:** `165`
+- **Release:** `0.5.1`
+- **Build:** `172`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.6.0-dev-B165
+IDOTMATRIX_FW=0.5.1-B172
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
+
+Release notes: [`docs/RELEASE-NOTES-0.5.1.md`](docs/RELEASE-NOTES-0.5.1.md).
 
 ## What the emulator supports
 
@@ -27,17 +29,18 @@ The current implementation includes:
 
 - BLE advertising, services and characteristics compatible with the official app;
 - app-facing device information and logical 16x16, 32x32 and 64x64 profiles;
-- time synchronization, screen power, brightness, power saving and 180-degree rotation;
+- time synchronization, screen power, brightness, power saving and app-controlled 180-degree rotation;
 - Clock, Countdown, Stopwatch and Scoreboard;
 - TEXT with 16/32/64-pixel glyph families, scrolling, paging and multiline non-scrolling layouts;
-- Solid, Graffiti/DIY, image and GIF content;
+- Solid, live Graffiti/DIY, full-raster Graffiti, image and GIF content;
 - the persistent 12-slot Device Assets Carousel;
 - the volatile six-slot Preset/Default bank (`14..19`) with mixed TEXT/GIF playback;
 - Alarm and Program/Schedule, including validated multipart media handling;
 - Audio/Rhythm with five LEVEL and five FFT effects;
 - LittleFS-backed media storage and transactional replacement where required;
 - optional DS3231 RTC support;
-- independent logical and physical display resolutions with nearest-neighbor upscaling and box-average downscaling.
+- independent logical and physical display resolutions with nearest-neighbor upscaling and box-average downscaling;
+- hardware-qualified LIS3DH automatic orientation on MatrixPortal S3, with generic mount compensation for custom sensor placement.
 
 Protocol details, confidence levels and original-device observations are documented in [`PROTOCOL.md`](PROTOCOL.md).
 
@@ -106,9 +109,15 @@ The FFT transport is treated as a byte stream because one BLE ATT write may cont
 
 LEVEL and FFT rendering and transport have been hardware validated on the MatrixPortal S3 reference target.
 
+## Graffiti full-raster transport
+
+Release 0.5.1 includes the hardware-captured 64x64 Graffiti full-raster transport used by the official Android app. This path is separate from normal 16-byte GIF/RAW/TEXT Bulk: each logical Graffiti packet has a 9-byte header, a first/continuation marker (`0x00` / `0x02`), the complete raster size, and up to 4096 RGB bytes. On original hardware the device replies `05 00 00 00 02` after incomplete chunks and `05 00 00 00 01` after the complete raster. The emulator publishes the framebuffer only after all `width * height * 3` bytes have arrived.
+
+The raw HCI-derived exchange is summarized in [`docs/captures/14-graffiti-original-hardware.txt`](docs/captures/14-graffiti-original-hardware.txt).
+
 ## Automatic orientation support
 
-The `0.6.0-dev` line introduces a compile-time-gated orientation-sensor architecture. Build 165 consolidates the LIS3DH orientation backend and the common orientation support layer. Automatic display rotation is enabled on the MatrixPortal S3 using its on-board LIS3DH. The validated normalized mapping is `+Y`=0 deg, `+X`=90 deg, `-Y`=180 deg and `-X`=270 deg. External or custom-mounted sensors can compensate their planar mounting orientation at compile time with `IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`.
+Release 0.5.1 adds a compile-time-gated orientation-sensor architecture. Automatic display rotation is hardware-qualified on MatrixPortal S3 using its on-board LIS3DH. The validated normalized mapping is `+Y`=0 deg, `+X`=90 deg, `-Y`=180 deg and `-X`=270 deg. External or custom-mounted sensors can compensate their planar mounting orientation at compile time with `IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`.
 
 Rotation is applied only in the final logical-to-physical output mapping, so the qualified TEXT, media, Clock, timer, scoreboard, Audio/Rhythm and automation renderers remain unchanged. Sensor-specific backends automatically enable the common orientation engine; targets without an `IDOTMATRIX_ACCEL_DRIVER_*` selection compile without accelerometer code or dependencies. See [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md).
 
@@ -186,6 +195,7 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
+- [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — final source/documentation/protocol audit
 
 ## Related project
 
