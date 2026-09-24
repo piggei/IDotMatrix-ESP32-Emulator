@@ -1,5 +1,63 @@
 # Release History
 
+## 0.5.2-dev / Build 176
+
+Post-qualification cleanup and documentation-alignment build.
+
+- records successful ICM-20689 hardware qualification on ESP32-C3 with the I2C bus shared with the gesture sensor;
+- keeps the qualified ICM-20689 register path, auto-probe logic and common orientation engine unchanged;
+- returns verbose orientation probe/configuration and continuous XYZ diagnostics to opt-in operation;
+- removes the unused sample-diagnostic timestamp from builds where continuous XYZ logging is disabled;
+- retains one concise serial error if an enabled orientation sensor fails to initialize;
+- keeps MPU-6050 support implemented but explicitly unqualified;
+- aligns README, hardware support, PlatformIO guidance and Wiki status with the physical B175 test;
+- leaves BLE, Graffiti, media, audio, display ownership and renderer behavior unchanged.
+
+Status: **ICM-20689 hardware-qualified on ESP32-C3 shared-I2C hardware; MPU-6050 remains unqualified.**
+
+## 0.5.2-dev / Build 175
+
+Qualification-diagnostics build for ESP32-C3 + external ICM-20689 on a shared I2C bus.
+
+- keeps the Build 174 sensor driver, I2C initialization and orientation behavior unchanged;
+- enables one-shot orientation diagnostics by default whenever an accelerometer backend is selected;
+- records the `0x68` and `0x69` probe attempts separately, including ACK, `WHO_AM_I`, backend match and final configuration state;
+- prints the configured I2C pins (or reports board-default pins);
+- repeats the complete orientation diagnostic summary near the end of `setup()` so ESP32-C3 USB/CDC monitors that attach late do not miss the early probe;
+- exposes the diagnostic switches in `IDotMatrixUserConfig.example.h`; continuous XYZ sample logging remains opt-in;
+- no intended changes to BLE, Graffiti, display rendering, audio, media, orientation classification or sensor register programming.
+
+Status: **diagnostic build for identifying the ESP32-C3 shared-bus qualification failure without changing the working WLED-derived ICM-20689 logic.**
+
+## 0.5.2-dev / Build 174
+
+Configuration/persistence build for external orientation-sensor qualification.
+
+- added optional `src/IDotMatrixUserConfig.h`, created from the tracked `.example.h` template;
+- local configuration can select the accelerometer backend and define SDA/SCL, sensor address and mount rotation;
+- changed PlatformIO sensor flags to `IDOTMATRIX_DEFAULT_*` fallbacks so explicit local values take precedence without duplicate backend definitions;
+- added compile-time validation and regression coverage for local-config precedence;
+- `update_idotmatrix_emulator.sh` now preserves the local hardware header across destructive source synchronization;
+- no intended runtime changes to the Build 173 ICM-20689/MPU-family driver or to qualified BLE/display paths.
+
+Status: **ready for ICM-20689 hardware qualification with board-specific wiring kept outside tracked source files.**
+
+## 0.5.2-dev / Build 173
+
+First hardware-compatibility development build after the 0.5.1 release.
+
+- added a dedicated `IDOTMATRIX_ACCEL_DRIVER_ICM20689` backend based on the already hardware-tested WLED implementation supplied for the external module;
+- identifies ICM-20689 with `WHO_AM_I=0x98`;
+- added the shared MPU-family register path for MPU-6050 (`WHO_AM_I=0x68/0x69`) without claiming hardware qualification;
+- configures 50 Hz sampling, +/-2 g acceleration and the ICM-20689-specific accelerometer DLPF register at `0x1D`;
+- verifies critical configuration registers after initialization;
+- supports automatic probing of I2C addresses `0x68` and `0x69` when `IDOTMATRIX_ACCEL_I2C_ADDRESS=0`;
+- added optional compile-time `IDOTMATRIX_I2C_SDA_PIN` / `IDOTMATRIX_I2C_SCL_PIN` overrides for external sensor wiring;
+- added `matrixportal_s3_hub75_64_icm20689` as a development/qualification PlatformIO profile with continuous sample diagnostics enabled;
+- left the qualified LIS3DH backend, common orientation engine, BLE protocol, Graffiti, media, audio and renderer paths unchanged.
+
+Status at Build 173: **ICM-20689 implementation complete, hardware qualification pending.** Qualification was later completed on ESP32-C3 and is recorded in Build 176.
+
 ## 0.5.1 / Build 172
 
 Final 0.5.1 release of the standalone iDotMatrix ESP32 Emulator.

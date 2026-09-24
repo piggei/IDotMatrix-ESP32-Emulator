@@ -208,7 +208,7 @@ echo "  Runtime target    : ${SERIAL_TARGET:-currently unavailable}"
 echo "  Serial baud       : $SERIAL_BAUD"
 echo
 echo "Important:"
-echo "  .git/ and .pio/ are preserved during repository synchronization."
+echo "  .git/, .pio/ and src/IDotMatrixUserConfig.h are preserved during repository synchronization."
 echo "  Build and upload run as one PlatformIO upload target."
 echo "  No JTAG endpoint is checked before upload; it appears only during programming."
 echo "  After upload the script waits for the Adafruit runtime endpoint used by the serial monitor."
@@ -263,7 +263,7 @@ echo
 echo "==> [3] Synchronize extracted source into repository"
 echo "    Source      : $SOURCE_DIR/"
 echo "    Destination : $REPO/"
-echo "    Preserved   : .git/ .pio/ serial.log"
+echo "    Preserved   : .git/ .pio/ serial.log src/IDotMatrixUserConfig.h"
 echo "    NOTE        : other repository files not present in the archive will be deleted."
 
 if ! confirm "Replace repository source with BUILD ${SOURCE_BUILD:-UNKNOWN}?"; then
@@ -275,6 +275,7 @@ rsync -a --delete \
     --exclude='.git/' \
     --exclude='.pio/' \
     --exclude='serial.log' \
+    --exclude='src/IDotMatrixUserConfig.h' \
     "$SOURCE_DIR/" "$REPO/"
 
 [[ -f "$REPO/platformio.ini" ]] || die "platformio.ini missing after synchronization"

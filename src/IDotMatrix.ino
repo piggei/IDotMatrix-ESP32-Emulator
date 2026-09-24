@@ -12,10 +12,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.1"
+#define FW_RELEASE "0.5.2-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 172
+#define FW_BUILD 176
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -6432,7 +6432,11 @@ void setup(){
 #endif
 
 #if IDOTMATRIX_ORIENTATION_SENSOR || RTC_ENABLED
-  Wire.begin();
+  #if defined(IDOTMATRIX_I2C_SDA_PIN) && defined(IDOTMATRIX_I2C_SCL_PIN)
+    Wire.begin(IDOTMATRIX_I2C_SDA_PIN, IDOTMATRIX_I2C_SCL_PIN);
+  #else
+    Wire.begin();
+  #endif
 #endif
 #if IDOTMATRIX_ORIENTATION_SENSOR
   idotOrientationBegin();
@@ -6563,6 +6567,13 @@ void setup(){
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
   const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
+
+#if IDOTMATRIX_ORIENTATION_SENSOR && IDOTMATRIX_ORIENTATION_DIAGNOSTICS
+  // Repeat the orientation summary at the end of setup. On ESP32-C3 USB/CDC
+  // serial can attach after the early sensor probe, so this late summary keeps
+  // qualification diagnostics visible without changing sensor behaviour.
+  idotOrientationPrintDiagnostics();
+#endif
 
   reportHeap("setup complete");
 }

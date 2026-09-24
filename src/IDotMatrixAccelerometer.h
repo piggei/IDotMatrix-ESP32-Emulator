@@ -13,5 +13,6 @@ struct IDotMatrixAccelSample {
 bool idotAccelBegin();
 bool idotAccelRead(IDotMatrixAccelSample &sample);
 const char *idotAccelDriverName();
+void idotAccelPrintDiagnostics();
 
 #endif

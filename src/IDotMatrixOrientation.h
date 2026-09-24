@@ -24,6 +24,7 @@ bool idotOrientationBegin();
 // Returns true only when the effective automatic display rotation changes.
 bool idotOrientationUpdate(uint32_t nowMs);
 bool idotOrientationReady();
+void idotOrientationPrintDiagnostics();
 IDotMatrixGravityDirection idotOrientationStableDirection();
 IDotMatrixDisplayRotation idotOrientationDisplayRotation();
 const char *idotOrientationDirectionName(IDotMatrixGravityDirection direction);

@@ -6,5 +6,6 @@
 
 bool idotAccelLIS3DHBegin();
 bool idotAccelLIS3DHRead(IDotMatrixAccelSample &sample);
+void idotAccelLIS3DHPrintDiagnostics();
 
 #endif

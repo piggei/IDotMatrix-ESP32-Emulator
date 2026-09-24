@@ -1,6 +1,6 @@
 # Hardware Support Status
 
-This document describes the hardware targets currently qualified for the v0.5.x emulator line.
+This document describes the hardware targets and current qualification status for the v0.5.x emulator line.
 
 ## Support policy
 
@@ -87,6 +87,14 @@ See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.
 
 ## Orientation sensor support
 
-Release 0.5.1 includes the optional accelerometer abstraction introduced during development. The MatrixPortal S3 LIS3DH backend is enabled on the `matrixportal_s3_hub75_64` profile. Automatic display rotation is hardware-qualified, and the common orientation layer now supports a compile-time planar mounting offset (`IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`) so the same sensor driver can be reused on custom boards or external modules.
+The MatrixPortal S3 LIS3DH backend is enabled on the `matrixportal_s3_hub75_64` profile and remains hardware-qualified. The common orientation layer supports a compile-time planar mounting offset (`IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`).
 
-The feature is backend-driven rather than board-driven, so future external accelerometers can be enabled on ESP32-C3 or classic ESP32 targets without changing the common orientation logic. Targets without a selected accelerometer backend do not compile or link the orientation subsystem.
+The external ICM-20689 backend is selected with `IDOTMATRIX_ACCEL_DRIVER_ICM20689`. It identifies the sensor with `WHO_AM_I=0x98`, uses the common orientation engine, and is **hardware-qualified on ESP32-C3 with the I2C bus shared with the gesture sensor**. The same low-level driver also contains an MPU-6050 path for `WHO_AM_I=0x68/0x69`; that MPU-6050 path remains implemented but unqualified.
+
+A dedicated `matrixportal_s3_hub75_64_icm20689` PlatformIO environment is provided for an external ICM-20689 on MatrixPortal. It auto-probes I2C addresses `0x68` and `0x69`; that specific board/sensor combination has not been separately hardware-qualified. External boards can override the I2C pins with `IDOTMATRIX_I2C_SDA_PIN` and `IDOTMATRIX_I2C_SCL_PIN`. Verbose probe and XYZ diagnostics are opt-in.
+
+The feature remains backend-driven rather than board-driven. Targets without a selected accelerometer backend do not compile or link the orientation subsystem.
+
+## Local sensor wiring configuration
+
+Build 174 adds `src/IDotMatrixUserConfig.h` as an optional, untracked local hardware layer. Use it for external-sensor backend selection, SDA/SCL pins, sensor address and mount rotation. See [`HARDWARE-CONFIGURATION.md`](HARDWARE-CONFIGURATION.md).

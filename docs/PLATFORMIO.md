@@ -8,6 +8,7 @@ The repository currently provides:
 
 ```text
 matrixportal_s3_hub75_64
+matrixportal_s3_hub75_64_icm20689
 ios_compat_esp32_ws2812_32
 esp32c3_ws2812_16
 ```
@@ -21,6 +22,14 @@ esp32c3_ws2812_16
 - LittleFS;
 - pinned HUB75 DMA driver;
 - primary hardware-qualified large-panel target.
+
+### `matrixportal_s3_hub75_64_icm20689`
+
+- external-sensor variant of the 64x64 MatrixPortal target;
+- selects an external ICM-20689 instead of the on-board LIS3DH;
+- auto-probes I2C address `0x68` then `0x69`;
+- verbose probe and sample diagnostics are opt-in;
+- the ICM-20689 backend is qualified on ESP32-C3, while this MatrixPortal/external-sensor combination is not separately qualified.
 
 ### `esp32c3_ws2812_16`
 
@@ -74,6 +83,12 @@ From the repository root:
 
 ```bash
 pio run -e matrixportal_s3_hub75_64
+```
+
+MatrixPortal external ICM-20689 build:
+
+```bash
+pio run -e matrixportal_s3_hub75_64_icm20689
 ```
 
 ESP32-C3:
@@ -193,10 +208,43 @@ Orientation support is selected by the sensor backend, not by the ESP32 family.
 The MatrixPortal S3 environment currently enables:
 
 ```ini
--DIDOTMATRIX_ACCEL_DRIVER_LIS3DH
--DIDOTMATRIX_ACCEL_I2C_ADDRESS=0x19
+-DIDOTMATRIX_DEFAULT_ACCEL_DRIVER_LIS3DH
+-DIDOTMATRIX_DEFAULT_ACCEL_I2C_ADDRESS=0x19
 ```
 
 This automatically enables the common `IDOTMATRIX_ORIENTATION_SENSOR` subsystem.
 
-An ESP32-C3 or classic ESP32 can use the same feature in the future by attaching a supported external sensor and enabling its `IDOTMATRIX_ACCEL_DRIVER_*` backend. Targets without a selected backend do not compile the orientation code or sensor library.
+Build 173 also provides the ICM-20689 backend:
+
+```ini
+-DIDOTMATRIX_DEFAULT_ACCEL_DRIVER_ICM20689
+-DIDOTMATRIX_DEFAULT_ACCEL_I2C_ADDRESS=0
+```
+
+Address `0` requests automatic probing of `0x68` and `0x69`. The backend verifies `WHO_AM_I=0x98` before configuration. The ICM-20689 path is hardware-qualified on ESP32-C3 with a shared I2C bus. The shared MPU-family implementation also supports `IDOTMATRIX_ACCEL_DRIVER_MPU6050` with `WHO_AM_I=0x68/0x69`, but that path remains unqualified.
+
+External boards may override the shared Wire pins at compile time:
+
+```ini
+-DIDOTMATRIX_I2C_SDA_PIN=<gpio>
+-DIDOTMATRIX_I2C_SCL_PIN=<gpio>
+```
+
+Both pin macros must be defined together. Targets without a selected backend do not compile the orientation code.
+
+### Local hardware overrides (Build 174)
+
+The `IDOTMATRIX_DEFAULT_*` names are intentionally fallbacks. If `src/IDotMatrixUserConfig.h` exists, explicit sensor backend, I2C address and mount-rotation values in that file take precedence. SDA/SCL may also be supplied there.
+
+Create the file with:
+
+```bash
+cp src/IDotMatrixUserConfig.example.h src/IDotMatrixUserConfig.h
+```
+
+The update helper preserves this file across source-archive synchronization. See [`HARDWARE-CONFIGURATION.md`](HARDWARE-CONFIGURATION.md).
+
+
+### Optional sensor diagnostics
+
+Build 175 introduced a repeatable one-shot sensor probe/configuration summary for ESP32-C3 qualification. Build 176 retains it but disables verbose diagnostics by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` locally to print the detailed summary during initialization and again near the end of `setup()` for native USB/CDC visibility. Continuous XYZ samples remain opt-in through `IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS=1`.

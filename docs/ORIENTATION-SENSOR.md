@@ -2,9 +2,9 @@
 
 ## Status
 
-Release 0.5.1 includes an optional accelerometer-backed display orientation subsystem.
+Release 0.5.1 introduced the qualified accelerometer-backed display orientation subsystem. Build 173 started the 0.5.2-dev hardware-compatibility work by adding an external ICM-20689 backend while preserving the same common orientation engine. Build 174 added an optional local hardware include. Build 175 provided the diagnostics used to qualify the ICM-20689 on ESP32-C3 with a shared I2C bus. Build 176 is the post-qualification cleanup build.
 
-Build 164 was the first build to apply automatic framebuffer rotation after the MatrixPortal S3 axis mapping was measured on hardware. Build 165 closes the LIS3DH support work by adding generic compile-time mounting compensation for custom boards and external sensor modules.
+Build 164 was the first build to apply automatic framebuffer rotation after the MatrixPortal S3 axis mapping was measured on hardware. Build 165 added generic compile-time mounting compensation. Build 173 adds the first external sensor backend.
 
 Validated MatrixPortal S3 mapping:
 
@@ -81,9 +81,9 @@ The common layer contains no LIS3DH register or library logic.
 The MatrixPortal S3 profile enables:
 
 ```ini
--DIDOTMATRIX_ACCEL_DRIVER_LIS3DH
--DIDOTMATRIX_ACCEL_I2C_ADDRESS=0x19
--DIDOTMATRIX_ORIENTATION_DIAGNOSTICS=1
+-DIDOTMATRIX_DEFAULT_ACCEL_DRIVER_LIS3DH
+-DIDOTMATRIX_DEFAULT_ACCEL_I2C_ADDRESS=0x19
+-DIDOTMATRIX_DEFAULT_ACCEL_MOUNT_ROTATION=0
 -DIDOTMATRIX_ORIENTATION_AUTO_ROTATE=1
 ```
 
@@ -139,7 +139,7 @@ When neither X nor Y has sufficient gravity magnitude, for example while the pan
 
 ## Diagnostics
 
-Normal orientation diagnostics are intentionally compact. Initialization and actual rotation changes are reported, for example:
+Verbose orientation diagnostics are opt-in in Build 176. When enabled, initialization and actual rotation changes are reported, for example:
 
 ```text
 ORIENTATION SENSOR: driver=LIS3DH init=OK
@@ -154,7 +154,7 @@ Continuous X/Y/Z sample logging is separately controlled by:
 IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS
 ```
 
-and is disabled by default after the Build 163 mapping work.
+and is disabled by default.
 
 ## Compile-time controls
 
@@ -162,15 +162,52 @@ and is disabled by default after the Build 163 mapping work.
 
 This is useful for future sensor qualification and board bring-up.
 
-## Future sensor backends
+## External ICM-20689 backend
 
-The planned GY-521 backend will use the MPU-6050 through:
+Build 173 adds:
+
+```text
+IDOTMATRIX_ACCEL_DRIVER_ICM20689
+```
+
+The backend originated from the separately tested WLED implementation and is now **hardware-qualified in the emulator on ESP32-C3 with the I2C bus shared with the gesture sensor**. The qualified path uses the same auto-probe/register logic implemented in Build 173.
+
+Identification and configuration:
+
+- I2C address: `0x68` or `0x69`;
+- `WHO_AM_I=0x98` for ICM-20689;
+- 50 Hz output configuration;
+- +/-2 g accelerometer range;
+- accelerometer data starts at register `0x3B`;
+- ICM-20689 accelerometer DLPF uses `ACCEL_CONFIG2` at `0x1D`;
+- critical configuration registers are read back after initialization.
+
+Set `IDOTMATRIX_ACCEL_I2C_ADDRESS=0` to auto-probe `0x68` then `0x69`. A fixed address can be supplied instead.
+
+A MatrixPortal external-sensor PlatformIO profile is also provided:
+
+```text
+matrixportal_s3_hub75_64_icm20689
+```
+
+This profile selects the ICM-20689 backend and auto-probes `0x68/0x69`. The specific MatrixPortal + external-ICM combination has not been separately qualified. Enable `IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS=1` locally when normalized X/Y/Z values are needed for bring-up.
+
+For boards whose external I2C wiring does not use the framework defaults, define both:
+
+```text
+IDOTMATRIX_I2C_SDA_PIN=<gpio>
+IDOTMATRIX_I2C_SCL_PIN=<gpio>
+```
+
+## MPU-6050 compatibility path
+
+The same low-level register driver also implements an MPU-6050 path selected with:
 
 ```text
 IDOTMATRIX_ACCEL_DRIVER_MPU6050
 ```
 
-It will feed the same normalized `xG`, `yG`, `zG` interface. No change to the common orientation engine should be required.
+It accepts `WHO_AM_I=0x68` or `0x69` and intentionally omits the ICM-20689-only `ACCEL_CONFIG2` configuration. This code path is implemented but has not yet been hardware-qualified in the emulator project.
 ## Sensor mounting compensation
 
 The accelerometer driver and the common orientation engine are intentionally independent from the mechanical mounting of the sensor PCB.
@@ -200,3 +237,16 @@ The common orientation engine subtracts this mounting offset from the orientatio
 
 This option handles planar rotations. A future sensor backend whose raw chip axes differ from the common normalized convention should normalize those axes inside the backend before returning `IDotMatrixAccelSample`.
 
+
+## Local hardware include (Build 174)
+
+Create `src/IDotMatrixUserConfig.h` from `src/IDotMatrixUserConfig.example.h` to keep board-specific sensor choices and wiring local. It may define the backend, SDA/SCL pins, sensor I2C address and `IDOTMATRIX_ACCEL_MOUNT_ROTATION`.
+
+The local file takes precedence over `IDOTMATRIX_DEFAULT_*` values supplied by PlatformIO profiles. It is ignored by Git and preserved by the repository update helper. See [`HARDWARE-CONFIGURATION.md`](HARDWARE-CONFIGURATION.md).
+
+
+## Qualification diagnostics
+
+Build 175 introduced the detailed probe/configuration report used during ESP32-C3 qualification. Build 176 keeps that tooling but disables it by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` to report independent `0x68`/`0x69` probes, ACK state, `WHO_AM_I`, backend match, active address and configuration result.
+
+When enabled, the diagnostic summary is repeated near the end of `setup()` because native USB/CDC serial on ESP32-C3 can attach after the first sensor probe has completed. Continuous XYZ output remains independently controlled by `IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS`.

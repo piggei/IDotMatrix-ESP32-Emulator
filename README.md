@@ -10,18 +10,20 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.5.1`
-- **Build:** `172`
+- **Release:** `0.5.2-dev`
+- **Build:** `176`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.1-B172
+IDOTMATRIX_FW=0.5.2-dev-B176
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Release notes: [`docs/RELEASE-NOTES-0.5.1.md`](docs/RELEASE-NOTES-0.5.1.md).
+Development build notes: [`docs/BUILD-176-NOTES.md`](docs/BUILD-176-NOTES.md).
+
+The latest stable public release remains `0.5.1 / Build 172`.
 
 ## What the emulator supports
 
@@ -40,7 +42,8 @@ The current implementation includes:
 - LittleFS-backed media storage and transactional replacement where required;
 - optional DS3231 RTC support;
 - independent logical and physical display resolutions with nearest-neighbor upscaling and box-average downscaling;
-- hardware-qualified LIS3DH automatic orientation on MatrixPortal S3, with generic mount compensation for custom sensor placement.
+- hardware-qualified automatic orientation with the MatrixPortal S3 LIS3DH and an external ICM-20689 validated on ESP32-C3 with a shared I2C bus;
+- generic orientation mount compensation and optional compile-time I2C pin overrides for external sensors.
 
 Protocol details, confidence levels and original-device observations are documented in [`PROTOCOL.md`](PROTOCOL.md).
 
@@ -61,7 +64,7 @@ Reference configuration:
 
 ### ESP32-C3 + 16x16 WS2812
 
-The native 16x16 ESP32-C3 profile is also hardware validated. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target.
+The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor selection/wiring is supplied through the optional local hardware configuration.
 
 ### Classic ESP32 + WS2812
 
@@ -117,16 +120,17 @@ The raw HCI-derived exchange is summarized in [`docs/captures/14-graffiti-origin
 
 ## Automatic orientation support
 
-Release 0.5.1 adds a compile-time-gated orientation-sensor architecture. Automatic display rotation is hardware-qualified on MatrixPortal S3 using its on-board LIS3DH. The validated normalized mapping is `+Y`=0 deg, `+X`=90 deg, `-Y`=180 deg and `-X`=270 deg. External or custom-mounted sensors can compensate their planar mounting orientation at compile time with `IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`.
+The orientation subsystem is compile-time gated. Automatic display rotation is hardware-qualified on MatrixPortal S3 using its on-board LIS3DH and on ESP32-C3 using an external ICM-20689 on a shared I2C bus. MPU-6050 support shares the same low-level family driver but remains implemented and unqualified. The validated normalized mapping is `+Y`=0 deg, `+X`=90 deg, `-Y`=180 deg and `-X`=270 deg. External or custom-mounted sensors can compensate their planar mounting orientation at compile time with `IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`.
 
 Rotation is applied only in the final logical-to-physical output mapping, so the qualified TEXT, media, Clock, timer, scoreboard, Audio/Rhythm and automation renderers remain unchanged. Sensor-specific backends automatically enable the common orientation engine; targets without an `IDOTMATRIX_ACCEL_DRIVER_*` selection compile without accelerometer code or dependencies. See [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md).
 
 ## Build with PlatformIO
 
-The repository contains three explicit environments:
+The repository contains four explicit environments:
 
 ```text
 matrixportal_s3_hub75_64
+matrixportal_s3_hub75_64_icm20689
 ios_compat_esp32_ws2812_32
 esp32c3_ws2812_16
 ```
@@ -144,6 +148,39 @@ Upload with:
 ```bash
 pio run -e matrixportal_s3_hub75_64 -t upload
 ```
+
+Build the MatrixPortal external ICM-20689 profile with:
+
+```bash
+pio run -e matrixportal_s3_hub75_64_icm20689
+```
+
+### Optional local hardware configuration
+
+Build 174 added an optional local include for board-specific sensor wiring. Build 176 retains that interface after successful ESP32-C3 / ICM-20689 qualification and returns verbose sensor diagnostics to opt-in operation. Copy the tracked template:
+
+```bash
+cp src/IDotMatrixUserConfig.example.h src/IDotMatrixUserConfig.h
+```
+
+Then uncomment only the settings required by the local hardware. The header can select the accelerometer backend and define I2C pins, sensor address and mount compensation without editing `platformio.ini` or tracked source files. For example:
+
+```cpp
+#pragma once
+#define IDOTMATRIX_ACCEL_DRIVER_ICM20689
+#define IDOTMATRIX_I2C_SDA_PIN 8
+#define IDOTMATRIX_I2C_SCL_PIN 9
+#define IDOTMATRIX_ACCEL_I2C_ADDRESS 0
+#define IDOTMATRIX_ACCEL_MOUNT_ROTATION 90
+// Optional: continuous XYZ logging during qualification.
+// #define IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS 1
+```
+
+Build 176 disables verbose orientation diagnostics by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` for the detailed probe/configuration summary; when enabled it is repeated near the end of `setup()` so ESP32-C3 USB serial sessions that attach late can still see it. A normal build still emits one concise error if sensor initialization fails.
+
+`src/IDotMatrixUserConfig.h` is ignored by Git and preserved by `update_idotmatrix_emulator.sh` when a new source archive is synchronized. PlatformIO sensor settings are now profile defaults, so explicit values in the local header take precedence.
+
+See [`docs/HARDWARE-CONFIGURATION.md`](docs/HARDWARE-CONFIGURATION.md) for precedence and examples.
 
 Build the ESP32-C3 target with:
 
@@ -190,12 +227,15 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`HISTORY.md`](HISTORY.md) — public release history
 - [`FUTURE-WORK.md`](FUTURE-WORK.md) — non-blocking research and possible extensions
 - [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) — supported hardware and qualification policy
+- [`docs/HARDWARE-CONFIGURATION.md`](docs/HARDWARE-CONFIGURATION.md) — local sensor/I2C override file and precedence
 - [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md) — accelerometer driver abstraction and orientation diagnostics
 - [`docs/PLATFORMIO.md`](docs/PLATFORMIO.md) — reproducible PlatformIO build/upload guide
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — final source/documentation/protocol audit
+- [`docs/BUILD-176-NOTES.md`](docs/BUILD-176-NOTES.md) — current 0.5.2-dev / Build 176 consolidation notes
+- [`docs/BUILD-174-NOTES.md`](docs/BUILD-174-NOTES.md) — local hardware configuration layer
+- [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — final 0.5.1 source/documentation/protocol audit
 
 ## Related project
 

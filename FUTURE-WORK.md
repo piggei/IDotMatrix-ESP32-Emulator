@@ -1,6 +1,6 @@
 # Future Work
 
-Release 0.5.1 is feature-complete for its qualified hardware targets. The items below are non-blocking research or possible future extensions.
+Release 0.5.1 remains the stable qualified baseline. The 0.5.2-dev line is extending hardware compatibility. The items below are non-blocking research or possible future extensions.
 
 ## iOS compatibility research
 
@@ -27,7 +27,9 @@ Password support remains intentionally disabled because the complete transaction
 
 ## Possible platform extensions
 
-- Add and qualify an MPU-6050 / GY-521 backend using the existing common orientation engine.
+- Hardware-qualify additional ICM-20689 board/wiring combinations only where they materially differ from the qualified ESP32-C3 shared-I2C setup.
+- Hardware-qualify the implemented MPU-6050 code path if a genuine MPU-6050 module becomes available.
+- Add further accelerometer backends only through the existing normalized X/Y/Z interface and common orientation engine.
 - Revisit optional DS3231 RTC integration on the MatrixPortal S3 platform.
 - Hardware-qualify additional logical/physical scaling combinations beyond native 64x64 and native 16x16.
 - Revisit PSRAM placement only if future media sizes or features demonstrate a real need.

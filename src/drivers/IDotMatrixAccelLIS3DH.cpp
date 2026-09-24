@@ -29,4 +29,12 @@ bool idotAccelLIS3DHRead(IDotMatrixAccelSample &sample) {
   return true;
 }
 
+
+void idotAccelLIS3DHPrintDiagnostics() {
+#if IDOTMATRIX_ORIENTATION_DIAGNOSTICS
+  Serial.print("ACCEL CONFIG: backend=LIS3DH address=0x");
+  Serial.println((uint8_t)IDOTMATRIX_ACCEL_I2C_ADDRESS, HEX);
+#endif
+}
+
 #endif

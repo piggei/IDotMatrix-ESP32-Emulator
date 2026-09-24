@@ -9,7 +9,9 @@ namespace {
 
 bool sensorReady = false;
 uint32_t lastSampleAt = 0;
+#if IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS
 uint32_t lastDiagAt = 0;
+#endif
 IDotMatrixGravityDirection candidateDirection = IDotMatrixGravityDirection::Unknown;
 IDotMatrixGravityDirection stableDirection = IDotMatrixGravityDirection::Unknown;
 IDotMatrixDisplayRotation displayRotation = IDotMatrixDisplayRotation::Deg0;
@@ -116,6 +118,12 @@ bool idotOrientationBegin() {
     Serial.println("ORIENTATION AUTO-ROTATE: disabled");
 #endif
   }
+#else
+  if (!sensorReady) {
+    Serial.print("ORIENTATION SENSOR ERROR: driver=");
+    Serial.print(idotAccelDriverName());
+    Serial.println(" init=FAILED; enable IDOTMATRIX_ORIENTATION_DIAGNOSTICS for details");
+  }
 #endif
   return sensorReady;
 }
@@ -156,6 +164,25 @@ bool idotOrientationUpdate(uint32_t nowMs) {
 
   printSampleDiagnostics(nowMs);
   return rotationChanged;
+}
+
+
+void idotOrientationPrintDiagnostics() {
+#if IDOTMATRIX_ORIENTATION_DIAGNOSTICS
+  Serial.println("--- ORIENTATION DIAGNOSTIC SUMMARY ---");
+  Serial.print("ORIENTATION SENSOR: driver="); Serial.print(idotAccelDriverName());
+  Serial.print(" init="); Serial.println(sensorReady ? "OK" : "FAILED");
+#if defined(IDOTMATRIX_I2C_SDA_PIN) && defined(IDOTMATRIX_I2C_SCL_PIN)
+  Serial.print("I2C BUS: explicit pins SDA="); Serial.print(IDOTMATRIX_I2C_SDA_PIN);
+  Serial.print(" SCL="); Serial.println(IDOTMATRIX_I2C_SCL_PIN);
+#else
+  Serial.println("I2C BUS: board-default pins");
+#endif
+  Serial.print("ORIENTATION SENSOR MOUNT: ");
+  Serial.print(IDOTMATRIX_ACCEL_MOUNT_ROTATION); Serial.println(" deg CW");
+  idotAccelPrintDiagnostics();
+  Serial.println("--- END ORIENTATION DIAGNOSTIC SUMMARY ---");
+#endif
 }
 
 bool idotOrientationReady() {
