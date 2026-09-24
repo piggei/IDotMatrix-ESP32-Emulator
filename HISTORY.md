@@ -1,4 +1,44 @@
+## 0.5.2-dev / Build 180
+
+ESP32-C3 native-USB serial routing and RTC boot-diagnostics build.
+
+- enables `ARDUINO_USB_MODE=1` and `ARDUINO_USB_CDC_ON_BOOT=1` in the `esp32c3_ws2812_16` PlatformIO profile so firmware `Serial` output is routed to the native USB CDC/JTAG port;
+- adds a late startup summary reporting user-config presence, shared-I2C pins, RTC backend/address/readiness/validity/status/current time, software time-sync state, selected boot display mode and screen power state;
+- repeats the summary twice after setup to survive late ESP32-C3 USB monitor attachment;
+- keeps the Build 179 DS3231 driver and boot policy unchanged; the driver already clears DS3231 OSF after a successful BLE time synchronization;
+- documents that Arduino IDE builds do not inherit PlatformIO hardware defaults and therefore require explicit local hardware configuration when those defaults are needed.
+
+Status: **diagnostic build for closing DS3231 boot qualification; no intended RTC runtime-policy change.**
+
 # Release History
+
+## 0.5.2-dev / Build 179
+
+RTC compile-fix build.
+
+- closes the `IDOTMATRIX_RTC_AVAILABLE` preprocessor block in `setup()` correctly;
+- fixes the `unterminated #if` compilation failure introduced by Build 178;
+- adds a static preprocessor-balance regression check;
+- makes no intended runtime change to the DS3231, I2C, ICM-20689, buzzer, BLE, Graffiti or display behavior.
+
+Status: **compile-fix successor to Build 178; RTC hardware qualification still pending.**
+
+## 0.5.2-dev / Build 178
+
+DS3231 RTC/shared-I2C integration build.
+
+- promotes the dormant DS3231 concept into the common hardware-configuration layer;
+- enables the DS3231 by default on the `esp32c3_ws2812_16` reference profile;
+- configures that C3 profile for the shared I2C bus on SDA GPIO1 / SCL GPIO2;
+- replaces the former RTClib-dependent path with a direct DS3231 register driver that never calls `Wire.begin()` internally;
+- accepts an already valid RTC at boot and gives it priority over stored Carousel content;
+- rejects an oscillator-stop/invalid RTC until a valid BLE time synchronization arrives;
+- updates the RTC from the official-app time-sync command and clears the oscillator-stop flag;
+- lets Clock, Alarm, Program/Schedule and ECO timing use persistent RTC time after MCU reboot;
+- protects DS3231 address `0x68` from an explicitly configured MPU-family accelerometer collision and makes auto-probe prefer `0x69` when the RTC is enabled;
+- keeps the Build 177 passive-buzzer and qualified ICM-20689 paths unchanged.
+
+Status: **implemented and statically validated; DS3231 emulator hardware qualification pending.**
 
 ## 0.5.2-dev / Build 177
 
@@ -13,7 +53,7 @@ Passive-buzzer hardware support build.
 - permits an explicit local `IDOTMATRIX_BUZZER_NONE` selection to disable profile buzzer defaults cleanly;
 - leaves BLE protocol, media handling, display rendering and the qualified orientation paths unchanged.
 
-Status: **implementation ready for physical passive-buzzer qualification on the ESP32-C3 reference hardware.**
+Status: **hardware-qualified on the ESP32-C3 reference hardware with the passive buzzer on GPIO3.**
 
 ## 0.5.2-dev / Build 176
 

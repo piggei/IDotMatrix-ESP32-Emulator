@@ -175,6 +175,62 @@
 #endif
 
 // -----------------------------------------------------------------------------
+// Optional real-time clock backend
+//
+// The current hardware backend is DS3231. It uses the already initialized
+// shared TwoWire bus directly; the RTC driver never calls Wire.begin(), which
+// keeps custom/shared ESP32-C3 SDA/SCL routing stable for gesture and
+// accelerometer devices on the same bus.
+// -----------------------------------------------------------------------------
+#define IDOTMATRIX_RTC_NONE    0
+#define IDOTMATRIX_RTC_DS3231  1
+
+#ifdef IDOTMATRIX_RTC_TYPE
+  #define IDOTMATRIX_RTC_TYPE_EXPLICIT 1
+#else
+  #define IDOTMATRIX_RTC_TYPE_EXPLICIT 0
+#endif
+
+#ifndef IDOTMATRIX_RTC_TYPE
+  #ifdef IDOTMATRIX_DEFAULT_RTC_TYPE
+    #define IDOTMATRIX_RTC_TYPE IDOTMATRIX_DEFAULT_RTC_TYPE
+  #else
+    #define IDOTMATRIX_RTC_TYPE IDOTMATRIX_RTC_NONE
+  #endif
+#endif
+
+#ifndef IDOTMATRIX_RTC_I2C_ADDRESS
+  #ifdef IDOTMATRIX_DEFAULT_RTC_I2C_ADDRESS
+    #define IDOTMATRIX_RTC_I2C_ADDRESS IDOTMATRIX_DEFAULT_RTC_I2C_ADDRESS
+  #else
+    #define IDOTMATRIX_RTC_I2C_ADDRESS 0x68
+  #endif
+#endif
+
+#ifndef IDOTMATRIX_RTC_SYNC_FROM_BLE
+  #ifdef IDOTMATRIX_DEFAULT_RTC_SYNC_FROM_BLE
+    #define IDOTMATRIX_RTC_SYNC_FROM_BLE IDOTMATRIX_DEFAULT_RTC_SYNC_FROM_BLE
+  #else
+    #define IDOTMATRIX_RTC_SYNC_FROM_BLE 1
+  #endif
+#endif
+
+#ifndef IDOTMATRIX_RTC_DIAGNOSTICS
+  #define IDOTMATRIX_RTC_DIAGNOSTICS 0
+#endif
+
+#if IDOTMATRIX_RTC_TYPE != IDOTMATRIX_RTC_NONE && \
+    IDOTMATRIX_RTC_TYPE != IDOTMATRIX_RTC_DS3231
+  #error "IDOTMATRIX_RTC_TYPE must be NONE or DS3231"
+#endif
+
+#if IDOTMATRIX_RTC_TYPE == IDOTMATRIX_RTC_NONE
+  #define IDOTMATRIX_RTC_AVAILABLE 0
+#else
+  #define IDOTMATRIX_RTC_AVAILABLE 1
+#endif
+
+// -----------------------------------------------------------------------------
 // Optional orientation-sensor architecture
 //
 // Select exactly one accelerometer backend explicitly or let the selected
@@ -197,10 +253,29 @@
   #define IDOTMATRIX_ORIENTATION_SENSOR 0
 #endif
 
-// Optional shared I2C pin override for external sensors/RTC. Define both pins
-// or neither; board defaults are used when the override is absent.
+// Optional shared I2C pin override for external sensors/RTC. Explicit local
+// values win; otherwise a build profile may provide DEFAULT_* pins. Define
+// complete SDA/SCL pairs only.
+#if defined(IDOTMATRIX_DEFAULT_I2C_SDA_PIN) != defined(IDOTMATRIX_DEFAULT_I2C_SCL_PIN)
+  #error "Define both IDOTMATRIX_DEFAULT_I2C_SDA_PIN and IDOTMATRIX_DEFAULT_I2C_SCL_PIN, or neither"
+#endif
+
 #if defined(IDOTMATRIX_I2C_SDA_PIN) != defined(IDOTMATRIX_I2C_SCL_PIN)
   #error "Define both IDOTMATRIX_I2C_SDA_PIN and IDOTMATRIX_I2C_SCL_PIN, or neither"
+#endif
+
+#if !defined(IDOTMATRIX_I2C_SDA_PIN) && defined(IDOTMATRIX_DEFAULT_I2C_SDA_PIN)
+  #define IDOTMATRIX_I2C_SDA_PIN IDOTMATRIX_DEFAULT_I2C_SDA_PIN
+  #define IDOTMATRIX_I2C_SCL_PIN IDOTMATRIX_DEFAULT_I2C_SCL_PIN
+#endif
+
+// DS3231 has a fixed 0x68 address. An MPU-family accelerometer explicitly
+// forced to the same address cannot coexist on the shared bus. Auto-probe (0)
+// remains allowed because it can discover an ICM/MPU physically strapped to 0x69.
+#if IDOTMATRIX_RTC_TYPE == IDOTMATRIX_RTC_DS3231 && \
+    (defined(IDOTMATRIX_ACCEL_DRIVER_ICM20689) || defined(IDOTMATRIX_ACCEL_DRIVER_MPU6050)) && \
+    defined(IDOTMATRIX_ACCEL_I2C_ADDRESS) && IDOTMATRIX_ACCEL_I2C_ADDRESS == 0x68
+  #error "DS3231 and MPU-family accelerometer cannot both use I2C address 0x68; strap/configure the accelerometer at 0x69"
 #endif
 
 #ifndef IDOTMATRIX_ORIENTATION_DIAGNOSTICS

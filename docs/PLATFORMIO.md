@@ -36,9 +36,11 @@ esp32c3_ws2812_16
 - board: `esp32-c3-devkitm-1`;
 - logical/physical 16x16;
 - WS2812 on GPIO4;
-- passive buzzer on GPIO3 at 2000 Hz in Build 177;
+- hardware-qualified passive buzzer on GPIO3 at 2000 Hz;
+- Build 178 shared I2C defaults SDA=GPIO1 / SCL=GPIO2;
+- Build 178 DS3231 RTC at `0x68` with BLE synchronization enabled;
 - LittleFS with `min_spiffs.csv`;
-- hardware validated display/orientation target; passive buzzer qualification pending.
+- hardware validated display/orientation/passive-buzzer target; Build 178 DS3231 integration pending physical qualification.
 
 This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-MatrixPanel-DMA` on the C3 target. That avoids pulling in HUB75/Adafruit_GFX dependencies for a WS2812-only build.
 
@@ -218,6 +220,22 @@ Arduino IDE builds use the defaults in `src/IDotMatrix.ino`. For the MatrixPorta
 - compatible graphics dependencies when required by the selected driver version.
 
 PlatformIO remains preferred because those choices are encoded in the repository rather than selected manually from IDE menus.
+
+## ESP32-C3 shared I2C and DS3231 RTC
+
+Build 178 adds these reference-profile fallbacks:
+
+```ini
+-DIDOTMATRIX_DEFAULT_I2C_SDA_PIN=1
+-DIDOTMATRIX_DEFAULT_I2C_SCL_PIN=2
+-DIDOTMATRIX_DEFAULT_RTC_TYPE=1
+-DIDOTMATRIX_DEFAULT_RTC_I2C_ADDRESS=0x68
+-DIDOTMATRIX_DEFAULT_RTC_SYNC_FROM_BLE=1
+```
+
+The RTC code does not depend on RTClib and does not call `Wire.begin()` internally. The firmware initializes the shared bus once, then the gesture sensor, accelerometer and RTC can reuse it. A local `IDotMatrixUserConfig.h` may override the profile defaults.
+
+DS3231 has a fixed `0x68` address. If an ICM-20689/MPU-family sensor is also present, configure that device at `0x69`; when address auto-probe is selected, Build 178 tries `0x69` before `0x68` while DS3231 support is enabled.
 
 ## Optional accelerometer backends
 

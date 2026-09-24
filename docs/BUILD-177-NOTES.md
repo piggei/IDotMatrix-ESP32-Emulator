@@ -19,4 +19,4 @@ Build 177 adds passive-buzzer support for the ESP32-C3 reference hardware after 
 
 ## Qualification boundary
 
-The source and configuration paths are statically validated in this build. Physical qualification of the passive buzzer output on the ESP32-C3 remains pending until the Build 177 firmware is flashed and the audible behavior is confirmed. BLE, display, media and orientation code paths are intentionally unchanged.
+The source and configuration paths are statically validated in this build. The passive buzzer output on the ESP32-C3 was subsequently physically tested and confirmed working. This document retains the Build 177 implementation boundary; the qualification result is recorded here for historical accuracy. BLE, display, media and orientation code paths are intentionally unchanged.

@@ -9,6 +9,9 @@
 #if IDOTMATRIX_ORIENTATION_SENSOR
   #include "IDotMatrixOrientation.h"
 #endif
+#if IDOTMATRIX_RTC_AVAILABLE
+  #include "IDotMatrixRtc.h"
+#endif
 
 // ======================================================
 // FIRMWARE RELEASE / BUILD ID
@@ -18,7 +21,7 @@
 #define FW_RELEASE "0.5.2-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 177
+#define FW_BUILD 180
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -37,12 +40,9 @@ static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_REL
 #define PRESET_SLOT_COUNT 6U
 #define PRESET_DWELL_MS 3000UL
 
-// Optional external RTC (DS3231 via RTClib).
-// Keep 0 when no RTC hardware is installed: alarms use BLE time sync.
-#define RTC_ENABLED             0
+// Optional hardware backends are resolved by IDotMatrixHardwareConfig.h.
 struct ScheduleActivity;
 struct AlarmSlot;
-#define RTC_SYNC_FROM_BLE       1
 
 // ======================================================
 // GENERIC REPOSITORY HARDWARE DEFAULTS
@@ -106,12 +106,11 @@ uint8_t unknownCommandStored = 0;
 #else
   #error "miniz header not found: required for Schedule PNG decoding"
 #endif
-#if IDOTMATRIX_ORIENTATION_SENSOR || RTC_ENABLED
+#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE
   #include <Wire.h>
 #endif
-#if RTC_ENABLED
-  #include <RTClib.h>
-  RTC_DS3231 rtc;
+#if IDOTMATRIX_RTC_AVAILABLE
+  IDotMatrixRtc rtc;
   bool rtcReady = false;
   bool rtcTimeValid = false;
 #endif
@@ -710,12 +709,22 @@ uint8_t currentWeekdayBit(uint16_t y,uint8_t m,uint8_t d){
   return dow==0 ? 0x80 : (uint8_t)(1U<<dow);
 }
 
+bool hasValidTimeSource(){
+#if IDOTMATRIX_RTC_AVAILABLE
+  if(rtcReady && rtcTimeValid) return true;
+#endif
+  return clockSynced;
+}
+
 void getAlarmDateTime(uint16_t &y,uint8_t &mo,uint8_t &d,uint8_t &h,uint8_t &mi,uint8_t &se){
-#if RTC_ENABLED
+#if IDOTMATRIX_RTC_AVAILABLE
   if(rtcReady && rtcTimeValid){
-    DateTime now=rtc.now();
-    y=now.year(); mo=now.month(); d=now.day(); h=now.hour(); mi=now.minute(); se=now.second();
-    return;
+    IDotMatrixRtcDateTime now;
+    if (rtc.read(now)) {
+      y=now.year; mo=now.month; d=now.day; h=now.hour; mi=now.minute; se=now.second;
+      return;
+    }
+    rtcTimeValid=false;
   }
 #endif
   getCurrentTime(h,mi,se);
@@ -941,7 +950,7 @@ void stopAlarm(){
     ::memcpy(framebuffer, scheduleSavedFrame, LOGICAL_FRAME_BYTES);
     displayMode=alarmPreviousMode;
     refreshMatrix();
-  } else if(clockSynced) {
+  } else if(hasValidTimeSource()) {
     switchDisplayMode(DISPLAY_CLOCK); renderClock();
   } else {
     switchDisplayMode(DISPLAY_NONE); clearFramebuffer(); refreshMatrix();
@@ -951,11 +960,7 @@ void stopAlarm(){
 void updateAlarms(){
   updateAlarmUploadTimeout();
   if(alarmActive){ if((int32_t)(millis()-alarmEndsAt)>=0) stopAlarm(); return; }
-#if RTC_ENABLED
-  if(!clockSynced && !(rtcReady && rtcTimeValid)) return;
-#else
-  if(!clockSynced) return;
-#endif
+  if(!hasValidTimeSource()) return;
   static uint32_t lastCheck=0; if(millis()-lastCheck<500) return; lastCheck=millis();
   uint16_t y; uint8_t mo,d,h,mi,se; getAlarmDateTime(y,mo,d,h,mi,se);
   uint32_t minuteKey=((uint32_t)y<<20)|((uint32_t)mo<<16)|((uint32_t)d<<11)|((uint32_t)h<<6)|mi;
@@ -1547,11 +1552,14 @@ void setStatusLed(bool on) {
 }
 
 void getCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s) {
-#if RTC_ENABLED
+#if IDOTMATRIX_RTC_AVAILABLE
   if (rtcReady && rtcTimeValid) {
-    DateTime now = rtc.now();
-    h = now.hour(); m = now.minute(); s = now.second();
-    return;
+    IDotMatrixRtcDateTime now;
+    if (rtc.read(now)) {
+      h = now.hour; m = now.minute; s = now.second;
+      return;
+    }
+    rtcTimeValid=false;
   }
 #endif
   if (!clockSynced) { h = m = s = 0; return; }
@@ -1566,10 +1574,11 @@ void getCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s) {
 bool isEnergySavingActive() {
   if (!energySaving.enabled) return false;
   uint8_t h=0, m=0, s=0;
-#if RTC_ENABLED
+#if IDOTMATRIX_RTC_AVAILABLE
   if (rtcReady && rtcTimeValid) {
-    DateTime now=rtc.now();
-    h=now.hour(); m=now.minute(); s=now.second();
+    IDotMatrixRtcDateTime now;
+    if (!rtc.read(now)) { rtcTimeValid=false; return false; }
+    h=now.hour; m=now.minute; s=now.second;
   } else if (clockSynced) {
     getCurrentTime(h, m, s);
   } else return false;
@@ -4805,13 +4814,22 @@ void processFA02Packet(const uint8_t *data,size_t len){
     uint8_t mo=data[5], d=data[6], h=data[8], mi=data[9], se=data[10];
     if(isValidDateTime(y,mo,d,h,mi,se)){
       syncYear=y; syncMonth=mo; syncDay=d; syncHour=h; syncMinute=mi; syncSecond=se; syncMillis=millis(); clockSynced=true;
-#if RTC_ENABLED && RTC_SYNC_FROM_BLE
+#if IDOTMATRIX_RTC_AVAILABLE && IDOTMATRIX_RTC_SYNC_FROM_BLE
       if(rtcReady){
-        rtc.adjust(DateTime(syncYear,syncMonth,syncDay,syncHour,syncMinute,syncSecond));
-        rtcTimeValid=true;
+        IDotMatrixRtcDateTime rtcValue;
+        rtcValue.year=syncYear; rtcValue.month=syncMonth; rtcValue.day=syncDay;
+        rtcValue.hour=syncHour; rtcValue.minute=syncMinute; rtcValue.second=syncSecond;
+        if (rtc.adjust(rtcValue)) {
+          rtcTimeValid=true;
 #if DEBUG_SERIAL
-        Serial.println("RTC: synchronized from BLE time");
+          Serial.println("RTC: synchronized from BLE time");
 #endif
+        } else {
+          rtcTimeValid=false;
+#if DEBUG_SERIAL
+          Serial.print("RTC: BLE synchronization failed: "); Serial.println(rtc.errorText());
+#endif
+        }
       }
 #endif
     } else {
@@ -5844,7 +5862,7 @@ void stopScheduleActivity() {
     ::memcpy(framebuffer, scheduleSavedFrame, LOGICAL_FRAME_BYTES);
     displayMode = schedulePreviousMode;
     refreshMatrix();
-  } else if (clockSynced) {
+  } else if (hasValidTimeSource()) {
     displayMode = DISPLAY_CLOCK;
     renderClock();
   } else {
@@ -5904,12 +5922,7 @@ void updateSchedule() {
     if (scheduleActiveIndex >= 0) stopScheduleActivity();
     return;
   }
-#if RTC_ENABLED
-  bool haveTime = (rtcReady && rtcTimeValid) || clockSynced;
-#else
-  bool haveTime = clockSynced;
-#endif
-  if (!haveTime) return;
+  if (!hasValidTimeSource()) return;
 
   uint16_t y; uint8_t mo,d,h,mi,se;
   getAlarmDateTime(y,mo,d,h,mi,se);
@@ -6196,7 +6209,7 @@ void applyBootDisplayPolicy() {
   presetActive=false; presetActiveSlot=-1; presetOrderCount=0; gifPresetPlaybackFileActive=false;
   carouselUploadBlackout=false; carouselUploadOpen=false; carouselStartPending=false;
   carouselActive=false; carouselActiveSlot=-1; carouselEnterRequested=false;
-#if RTC_ENABLED
+#if IDOTMATRIX_RTC_AVAILABLE
   if (rtcReady && rtcTimeValid) {
     screenOn=true; setStatusLed(true);
     displayMode=DISPLAY_CLOCK; clockCycleStartedAt=millis(); renderClock();
@@ -6352,7 +6365,7 @@ void updateStatusOLED() {
   statusOLED.drawStr(0,9,line);
   snprintf(line,sizeof(line),"MODE:%s",oledModeName(displayMode));
   statusOLED.drawStr(0,19,line);
-  if(clockSynced) {
+  if(hasValidTimeSource()) {
     uint8_t h,m,se; getCurrentTime(h,m,se);
     snprintf(line,sizeof(line),"%02u:%02u:%02u BRI:%u%%",h,m,se,brightnessPercent);
   } else snprintf(line,sizeof(line),"--:--:-- BRI:%u%%",brightnessPercent);
@@ -6379,6 +6392,60 @@ void updateStatusOLED() {
   statusOLED.sendBuffer();
 }
 #endif
+
+static uint8_t startupSummaryRepeatsRemaining = 0;
+static uint32_t startupSummaryNextAt = 0;
+
+void printStartupHardwareSummary() {
+#if DEBUG_SERIAL
+  Serial.println("=== IDOTMATRIX STARTUP SUMMARY ===");
+  Serial.println(FW_SIGNATURE);
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+  Serial.println("MCU: ESP32-C3");
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  Serial.println("MCU: ESP32-S3");
+#else
+  Serial.println("MCU: ESP32");
+#endif
+  Serial.print("USER CONFIG: "); Serial.println(IDOTMATRIX_USER_CONFIG_PRESENT ? "present" : "not present");
+#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE
+  Serial.print("I2C BUS: ");
+  #if defined(IDOTMATRIX_I2C_SDA_PIN) && defined(IDOTMATRIX_I2C_SCL_PIN)
+    Serial.print("SDA=GPIO"); Serial.print(IDOTMATRIX_I2C_SDA_PIN);
+    Serial.print(" SCL=GPIO"); Serial.println(IDOTMATRIX_I2C_SCL_PIN);
+  #else
+    Serial.println("board default pins");
+  #endif
+#else
+  Serial.println("I2C BUS: no orientation/RTC backend compiled");
+#endif
+
+  Serial.print("RTC BACKEND: ");
+#if IDOTMATRIX_RTC_TYPE == IDOTMATRIX_RTC_DS3231
+  Serial.println("DS3231");
+  Serial.print("RTC ADDRESS: 0x"); Serial.println(IDOTMATRIX_RTC_I2C_ADDRESS, HEX);
+  Serial.print("RTC READY: "); Serial.println(rtcReady ? "YES" : "NO");
+  Serial.print("RTC TIME VALID: "); Serial.println(rtcTimeValid ? "YES" : "NO");
+  Serial.print("RTC STATUS: 0x"); Serial.println(rtc.statusRegister(), HEX);
+  if (rtcReady) {
+    IDotMatrixRtcDateTime now;
+    if (rtc.read(now)) {
+      Serial.printf("RTC NOW: %04u-%02u-%02u %02u:%02u:%02u\n",
+                    now.year, now.month, now.day, now.hour, now.minute, now.second);
+    } else {
+      Serial.print("RTC READ: FAILED ("); Serial.print(rtc.errorText()); Serial.println(")");
+    }
+  }
+#else
+  Serial.println("NONE");
+#endif
+
+  Serial.print("SOFTWARE TIME SYNCED: "); Serial.println(clockSynced ? "YES" : "NO");
+  Serial.print("BOOT DISPLAY MODE: "); Serial.println(displayMode);
+  Serial.print("SCREEN ON: "); Serial.println(screenOn ? "YES" : "NO");
+  Serial.println("=== END STARTUP SUMMARY ===");
+#endif
+}
 
 void setup(){
 #if PNG_DIAG_SERIAL
@@ -6471,7 +6538,7 @@ void setup(){
 #endif
 #endif
 
-#if IDOTMATRIX_ORIENTATION_SENSOR || RTC_ENABLED
+#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE
   #if defined(IDOTMATRIX_I2C_SDA_PIN) && defined(IDOTMATRIX_I2C_SCL_PIN)
     Wire.begin(IDOTMATRIX_I2C_SDA_PIN, IDOTMATRIX_I2C_SCL_PIN);
   #else
@@ -6481,12 +6548,28 @@ void setup(){
 #if IDOTMATRIX_ORIENTATION_SENSOR
   idotOrientationBegin();
 #endif
-#if RTC_ENABLED
-  rtcReady=rtc.begin();
-  rtcTimeValid=rtcReady && !rtc.lostPower();
+#if IDOTMATRIX_RTC_AVAILABLE
+  rtcReady=rtc.begin(Wire, IDOTMATRIX_RTC_I2C_ADDRESS);
+  rtcTimeValid=rtcReady && rtc.timeValid();
 #if DEBUG_SERIAL
-  Serial.print("RTC DS3231: "); Serial.println(rtcReady?"OK":"NOT FOUND");
-  if(rtcReady && !rtcTimeValid) Serial.println("RTC: lost power; time invalid until BLE synchronization");
+  Serial.print("RTC DS3231: "); Serial.print(rtcReady?"OK":"NOT FOUND");
+  Serial.print(" addr=0x"); Serial.print(IDOTMATRIX_RTC_I2C_ADDRESS,HEX);
+  if (rtcReady) {
+    Serial.print(" time="); Serial.println(rtcTimeValid?"VALID":"INVALID");
+  } else {
+    Serial.println();
+  }
+  if(rtcReady && !rtcTimeValid) Serial.println("RTC: time invalid/oscillator-stop flag set; waiting for BLE synchronization");
+  if(!rtcReady) { Serial.print("RTC: "); Serial.println(rtc.errorText()); }
+#if IDOTMATRIX_RTC_DIAGNOSTICS
+  if(rtcReady){
+    IDotMatrixRtcDateTime rtcDiag;
+    if(rtc.read(rtcDiag)){
+      Serial.printf("RTC NOW: %04u-%02u-%02u %02u:%02u:%02u status=0x%02X\n",
+                    rtcDiag.year,rtcDiag.month,rtcDiag.day,rtcDiag.hour,rtcDiag.minute,rtcDiag.second,rtc.statusRegister());
+    }
+  }
+#endif
 #endif
 #endif
   // Always try a non-destructive mount first. The repository default enables
@@ -6615,6 +6698,9 @@ void setup(){
   idotOrientationPrintDiagnostics();
 #endif
 
+  printStartupHardwareSummary();
+  startupSummaryRepeatsRemaining = 2;
+  startupSummaryNextAt = millis() + 2000UL;
   reportHeap("setup complete");
 }
 
@@ -6629,6 +6715,13 @@ void loop(){
   // can update packetLastRxMs/bulkLastRxMs to a newer value while loop() waits.
   // Unsigned subtraction would then wrap and falsely look like a huge timeout.
   uint32_t now=millis();
+#if DEBUG_SERIAL
+  if (startupSummaryRepeatsRemaining && (long)(now - startupSummaryNextAt) >= 0) {
+    printStartupHardwareSummary();
+    --startupSummaryRepeatsRemaining;
+    startupSummaryNextAt = now + 5000UL;
+  }
+#endif
 #if IDOTMATRIX_ORIENTATION_SENSOR
   // A static framebuffer must be redrawn immediately when the panel orientation
   // changes; animated modes will continue to use the same final-output mapping.

@@ -121,9 +121,18 @@ bool selectAddress() {
 #if IDOTMATRIX_ACCEL_I2C_ADDRESS != 0
   return probeAddress(static_cast<uint8_t>(IDOTMATRIX_ACCEL_I2C_ADDRESS));
 #else
+  // DS3231 is fixed at 0x68. When that RTC backend is enabled, try the
+  // MPU-family secondary address first so a shared bus does not needlessly
+  // read an unrelated DS3231 register during normal auto-probe.
+#if IDOTMATRIX_RTC_TYPE == IDOTMATRIX_RTC_DS3231
+  if (probeAddress(kAddressSecondary)) return true;
+  sensorAddress = 0;
+  if (probeAddress(kAddressPrimary)) return true;
+#else
   if (probeAddress(kAddressPrimary)) return true;
   sensorAddress = 0;
   if (probeAddress(kAddressSecondary)) return true;
+#endif
   sensorAddress = 0;
   return false;
 #endif
@@ -231,7 +240,11 @@ void idotAccelMPUFamilyPrintDiagnostics() {
   Serial.print("ACCEL CONFIG: backend="); Serial.print(idotAccelMPUFamilyName());
   Serial.print(" requestedAddress=");
 #if IDOTMATRIX_ACCEL_I2C_ADDRESS == 0
-  Serial.println("auto(0x68,0x69)");
+  #if IDOTMATRIX_RTC_TYPE == IDOTMATRIX_RTC_DS3231
+    Serial.println("auto(0x69,0x68; DS3231 reserves 0x68)");
+  #else
+    Serial.println("auto(0x68,0x69)");
+  #endif
 #else
   Serial.print("0x"); Serial.println((uint8_t)IDOTMATRIX_ACCEL_I2C_ADDRESS, HEX);
 #endif

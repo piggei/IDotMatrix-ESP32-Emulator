@@ -11,17 +11,17 @@ The emulator is based on official-app BLE captures, differential testing and dir
 ## Release
 
 - **Release:** `0.5.2-dev`
-- **Build:** `177`
+- **Build:** `180`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.2-dev-B177
+IDOTMATRIX_FW=0.5.2-dev-B180
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Development build notes: [`docs/BUILD-177-NOTES.md`](docs/BUILD-177-NOTES.md).
+Development build notes: [`docs/BUILD-180-NOTES.md`](docs/BUILD-180-NOTES.md).
 
 The latest stable public release remains `0.5.1 / Build 172`.
 
@@ -40,7 +40,7 @@ The current implementation includes:
 - Alarm and Program/Schedule, including validated multipart media handling;
 - Audio/Rhythm with five LEVEL and five FFT effects;
 - LittleFS-backed media storage and transactional replacement where required;
-- optional DS3231 RTC support;
+- DS3231 RTC support with persistent timekeeping, BLE time synchronization and shared-I2C operation;
 - independent logical and physical display resolutions with nearest-neighbor upscaling and box-average downscaling;
 - hardware-qualified automatic orientation with the MatrixPortal S3 LIS3DH and an external ICM-20689 validated on ESP32-C3 with a shared I2C bus;
 - generic orientation mount compensation and optional compile-time I2C pin overrides for external sensors;
@@ -65,7 +65,7 @@ Reference configuration:
 
 ### ESP32-C3 + 16x16 WS2812
 
-The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor. Build 177 configures the reference C3 profile for a passive buzzer on GPIO3 using hardware LEDC tone generation at 2 kHz. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor and buzzer settings can be overridden through the optional local hardware configuration.
+The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the passive buzzer on GPIO3 is hardware-qualified. Build 178 adds a DS3231 RTC backend on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. The RTC path is implemented and ready for physical qualification in the emulator. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
 
 ### Classic ESP32 + WS2812
 
@@ -125,6 +125,14 @@ The orientation subsystem is compile-time gated. Automatic display rotation is h
 
 Rotation is applied only in the final logical-to-physical output mapping, so the qualified TEXT, media, Clock, timer, scoreboard, Audio/Rhythm and automation renderers remain unchanged. Sensor-specific backends automatically enable the common orientation engine; targets without an `IDOTMATRIX_ACCEL_DRIVER_*` selection compile without accelerometer code or dependencies. See [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md).
 
+## RTC support
+
+Build 178 promotes the previously dormant RTC concept into a shared-bus hardware backend. The first implemented device is the DS3231 at I2C address `0x68`. The driver talks directly to the already initialized `Wire` instance and never reinitializes the bus, which is important on the ESP32-C3 reference hardware where the RTC shares GPIO1/GPIO2 with other I2C peripherals.
+
+At boot, a valid DS3231 becomes the authoritative clock source. If the oscillator-stop flag is set or the stored date/time is invalid, the RTC is ignored until the official app sends its normal time-synchronization command. With `IDOTMATRIX_RTC_SYNC_FROM_BLE=1` (the default), every valid app time sync also updates the DS3231 and clears the oscillator-stop condition. Alarm, Program/Schedule, ECO timing and Clock rendering can therefore continue across MCU reboots without requiring a new BLE connection.
+
+The DS3231 address is fixed at `0x68`. If an ICM-20689/MPU-family accelerometer shares the same I2C bus, it must be physically configured at `0x69`; the firmware rejects an explicit `0x68` accelerometer configuration when DS3231 support is enabled. Auto-probe remains supported and tries `0x69` first in that configuration.
+
 ## Build with PlatformIO
 
 The repository contains four explicit environments:
@@ -137,6 +145,8 @@ esp32c3_ws2812_16
 ```
 
 The reference toolchain is Arduino-ESP32 3.3.11 / ESP-IDF 5.5.5 through pioarduino.
+
+The ESP32-C3 PlatformIO profile enables native USB CDC/JTAG (`ARDUINO_USB_MODE=1`, `ARDUINO_USB_CDC_ON_BOOT=1`) so firmware `Serial` diagnostics are visible on the same native USB connection used for development.
 
 Build the MatrixPortal target with:
 
@@ -155,6 +165,10 @@ Build the MatrixPortal external ICM-20689 profile with:
 ```bash
 pio run -e matrixportal_s3_hub75_64_icm20689
 ```
+
+### Arduino IDE note for ESP32-C3
+
+When using the ESP32-C3 native USB connector in Arduino IDE, set **USB CDC On Boot = Enabled** and **USB Mode = Hardware CDC and JTAG**. PlatformIO profile defaults are not available to Arduino IDE builds, so board-specific RTC, buzzer and I2C settings must be present explicitly in `src/IDotMatrixUserConfig.h` when compiling outside PlatformIO.
 
 ### Optional local hardware configuration
 
@@ -206,7 +220,7 @@ The project-local 8 MB partition table is stored in `partitions/idotmatrix_matri
 
 ## Original-device policy
 
-Some emulator behaviors intentionally differ from the original 64x64 device. Examples include preserving transient Cloud/Graffiti content after leaving the app section, optional RTC support, a one-shot Program notification, and a Countdown completion buzzer.
+Some emulator behaviors intentionally differ from the original 64x64 device. Examples include preserving transient Cloud/Graffiti content after leaving the app section, persistent DS3231 RTC support, a one-shot Program notification, and a Countdown completion buzzer.
 
 These differences are documented explicitly rather than presented as protocol facts. See [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) and [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md).
 
@@ -236,7 +250,7 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/BUILD-177-NOTES.md`](docs/BUILD-177-NOTES.md) — current 0.5.2-dev / Build 177 passive-buzzer development notes
+- [`docs/BUILD-180-NOTES.md`](docs/BUILD-180-NOTES.md) — current 0.5.2-dev / Build 180 ESP32-C3 USB serial and RTC boot-diagnostics notes
 - [`docs/BUILD-174-NOTES.md`](docs/BUILD-174-NOTES.md) — local hardware configuration layer
 - [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — final 0.5.1 source/documentation/protocol audit
 

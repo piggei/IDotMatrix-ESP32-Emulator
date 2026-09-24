@@ -21,6 +21,7 @@ The following areas are considered qualified for 0.5.0:
 
 - BLE advertising/services and Device Info;
 - time synchronization, screen power, brightness and rotation;
+- DS3231 RTC boot/read, BLE resynchronization and reboot persistence when the backend is enabled;
 - Clock, Countdown, Stopwatch and Scoreboard;
 - TEXT rendering and motion modes;
 - Solid, Graffiti/DIY, images and GIFs;

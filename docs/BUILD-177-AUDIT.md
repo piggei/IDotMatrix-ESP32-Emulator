@@ -32,4 +32,4 @@ No intentional changes were made to BLE protocol parsing, Graffiti, media transa
 
 ## Build limitation
 
-PlatformIO is not installed in the audit environment, so a complete Arduino-ESP32 firmware compile/link was not performed here. The passive-buzzer API selection was cross-checked against the Arduino-ESP32 3.x LEDC interface used by the pinned project toolchain. Physical buzzer qualification remains required.
+PlatformIO is not installed in the audit environment, so a complete Arduino-ESP32 firmware compile/link was not performed here. The passive-buzzer API selection was cross-checked against the Arduino-ESP32 3.x LEDC interface used by the pinned project toolchain. The passive buzzer was subsequently physically qualified on the ESP32-C3 reference hardware.

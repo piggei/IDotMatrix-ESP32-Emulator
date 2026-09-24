@@ -30,7 +30,7 @@ Password support remains intentionally disabled because the complete transaction
 - Hardware-qualify additional ICM-20689 board/wiring combinations only where they materially differ from the qualified ESP32-C3 shared-I2C setup.
 - Hardware-qualify the implemented MPU-6050 code path if a genuine MPU-6050 module becomes available.
 - Add further accelerometer backends only through the existing normalized X/Y/Z interface and common orientation engine.
-- Revisit optional DS3231 RTC integration on the MatrixPortal S3 platform.
+- Hardware-qualify the Build 178 DS3231 backend on the ESP32-C3 shared-I2C reference hardware; evaluate additional RTC backends only when real hardware is available.
 - Hardware-qualify additional logical/physical scaling combinations beyond native 64x64 and native 16x16.
 - Revisit PSRAM placement only if future media sizes or features demonstrate a real need.
 - Continue moving heavyweight work out of latency-sensitive BLE callbacks if profiling identifies a concrete problem.

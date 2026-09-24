@@ -8,7 +8,9 @@
 // The copied file is intentionally ignored by Git and preserved by the
 // repository update helper. Uncomment only the settings you need. Explicit
 // values here take precedence over the corresponding PlatformIO profile
-// defaults.
+// defaults. PlatformIO supplies those profile defaults at build time; Arduino
+// IDE does not, so copy/uncomment the complete hardware settings needed by the
+// target when compiling directly with Arduino IDE.
 
 // -----------------------------------------------------------------------------
 // Accelerometer backend -- select at most one.
@@ -32,6 +34,19 @@
 // -----------------------------------------------------------------------------
 // #define IDOTMATRIX_ACCEL_I2C_ADDRESS 0
 
+
+// -----------------------------------------------------------------------------
+// Optional RTC configuration.
+//
+// The current backend is DS3231. On the qualified ESP32-C3 profile it shares
+// the same I2C bus on SDA=GPIO1 / SCL=GPIO2. DS3231 uses address 0x68.
+// App time synchronization updates the RTC by default, so an invalid/lost-power
+// clock is repaired automatically when the app sends its normal time packet.
+// -----------------------------------------------------------------------------
+// #define IDOTMATRIX_RTC_TYPE IDOTMATRIX_RTC_DS3231
+// #define IDOTMATRIX_RTC_I2C_ADDRESS 0x68
+// #define IDOTMATRIX_RTC_SYNC_FROM_BLE 1
+// #define IDOTMATRIX_RTC_DIAGNOSTICS 1
 
 // -----------------------------------------------------------------------------
 // Orientation diagnostics.

@@ -1,6 +1,6 @@
 # Local Hardware Configuration
 
-Build 174 added an optional local configuration header for board-specific wiring and orientation settings. Build 177 extends the same layer to buzzer hardware and sound-policy overrides.
+Build 174 added an optional local configuration header for board-specific wiring and orientation settings. Build 177 extended the same layer to buzzer hardware and sound-policy overrides. Build 178 adds RTC selection, address, synchronization policy and shared-bus defaults.
 
 ## Create the local file
 
@@ -50,7 +50,7 @@ Define both pins or neither:
 #define IDOTMATRIX_I2C_SCL_PIN 9
 ```
 
-Defining only SDA or only SCL is rejected at compile time. When neither is supplied, the board's default `Wire` pins are used.
+Defining only SDA or only SCL is rejected at compile time. When neither is supplied, a PlatformIO profile may provide `IDOTMATRIX_DEFAULT_I2C_SDA_PIN` / `IDOTMATRIX_DEFAULT_I2C_SCL_PIN`; otherwise the board's default `Wire` pins are used. The Build 178 ESP32-C3 profile defaults to SDA GPIO1 and SCL GPIO2.
 
 ### Sensor address
 
@@ -82,6 +82,26 @@ Supported values are `0`, `90`, `180` and `270` degrees clockwise. The common or
 
 This example keeps address auto-probing enabled. Change only the pins and mount rotation to match the actual wiring and physical installation.
 
+
+## RTC configuration
+
+Build 178 provides the first persistent RTC backend:
+
+```cpp
+#define IDOTMATRIX_RTC_TYPE IDOTMATRIX_RTC_DS3231
+#define IDOTMATRIX_RTC_I2C_ADDRESS 0x68
+#define IDOTMATRIX_RTC_SYNC_FROM_BLE 1
+```
+
+The DS3231 driver uses the shared `Wire` bus directly and never calls `Wire.begin()`. On the ESP32-C3 reference profile, that bus is GPIO1/GPIO2. If the RTC reports the oscillator-stop condition or an invalid date/time, it is not trusted until the app sends a valid time-sync command. With BLE synchronization enabled, the same command updates the hardware RTC.
+
+For targeted bring-up, enable:
+
+```cpp
+#define IDOTMATRIX_RTC_DIAGNOSTICS 1
+```
+
+DS3231 uses fixed address `0x68`. An ICM-20689/MPU-family accelerometer on the same bus must therefore be strapped/configured at `0x69`. An explicit conflicting `0x68` accelerometer configuration is rejected at compile time.
 
 ## Buzzer configuration
 
