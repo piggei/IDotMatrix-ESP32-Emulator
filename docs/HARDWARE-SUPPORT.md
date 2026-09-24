@@ -46,7 +46,7 @@ Current reference settings:
 - logical 16x16 profile (`screenType=0x01`);
 - physical 16x16 WS2812;
 - matrix data GPIO 4;
-- hardware-qualified passive buzzer on GPIO3 at 2000 Hz;
+- hardware-qualified three-wire passive low-level-trigger buzzer module on GPIO3 at 2000 Hz;
 - hardware-qualified DS3231 RTC on the shared GPIO1/GPIO2 I2C bus, including battery-backed retention, BLE writeback and cold-boot Clock fallback when no persisted Carousel starts;
 - LittleFS using `min_spiffs.csv`.
 
@@ -89,7 +89,7 @@ See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.
 
 ### Buzzer backends
 
-The firmware supports both self-oscillating active buzzers and passive buzzers. Passive output uses the ESP32 LEDC hardware peripheral and therefore does not depend on timing loops in the main firmware. The reference ESP32-C3 profile selects a hardware-qualified passive buzzer on GPIO3 at 2000 Hz. Buzzer backend, GPIO, frequency and per-event policies can be overridden in `IDotMatrixUserConfig.h`.
+The firmware supports both self-oscillating active buzzers and passive buzzers. Passive output uses the ESP32 LEDC hardware peripheral and therefore does not depend on timing loops in the main firmware. Passive trigger polarity is configurable with `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW`. The reference ESP32-C3 profile selects the qualified three-wire transistor module on GPIO3 at 2000 Hz with low-level triggering and 3.3 V module supply; while silent, GPIO3 is held HIGH so the module transistor is off and the buzzer is not DC-biased. Buzzer backend, GPIO, frequency, trigger polarity and per-event policies can be overridden in `IDotMatrixUserConfig.h`.
 
 ## Orientation sensor support
 

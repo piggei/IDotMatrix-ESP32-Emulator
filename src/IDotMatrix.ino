@@ -18,10 +18,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.2-rc.2"
+#define FW_RELEASE "0.5.2-rc.3"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 184
+#define FW_BUILD 185
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -317,6 +317,10 @@ void loadBrightnessFromNVS() {
 #define BUZZER_PULSE_GAP_MS      70UL
 #define BUZZER_TRILL_PAUSE_MS   550UL
 #define BUZZER_TRILL_PULSES       3
+#if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
+static constexpr uint8_t BUZZER_LEDC_RESOLUTION_BITS = 10;
+static constexpr uint32_t BUZZER_LEDC_MAX_DUTY = (1u << BUZZER_LEDC_RESOLUTION_BITS) - 1u;
+#endif
 #define ALARM_MEDIA_BASE_ID    0x14
 #define ALARM_CONTENT_GIF      0x01
 #define ALARM_CONTENT_RAW      0x02
@@ -907,9 +911,15 @@ static inline void setBuzzerOutput(bool on) {
   }
   buzzerOutputOn = on;
 #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
-  // Arduino-ESP32 3.x LEDC uses the GPIO number directly. The channel is
-  // attached once during setup(); frequency 0 cleanly silences the output.
-  ledcWriteTone(IDOTMATRIX_BUZZER_PIN, on ? IDOTMATRIX_BUZZER_FREQUENCY_HZ : 0);
+  // Passive outputs use a 50% LEDC tone while active. At rest, keep the GPIO
+  // at the module's inactive logic level. This is critical for three-wire
+  // transistor modules marked "low level trigger": leaving the pin LOW would
+  // continuously bias the buzzer even though no audible tone is generated.
+  if (on) {
+    ledcWriteTone(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ);
+  } else {
+    ledcWrite(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW ? BUZZER_LEDC_MAX_DUTY : 0u);
+  }
 #else
   digitalWrite(IDOTMATRIX_BUZZER_PIN,
                on ? (IDOTMATRIX_BUZZER_ACTIVE_HIGH ? HIGH : LOW)
@@ -6616,17 +6626,23 @@ void setup(){
 #endif
 #if IDOTMATRIX_BUZZER_AVAILABLE
   #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
+    // Establish the inactive level before handing the pin to LEDC. The C3
+    // reference module is a transistor-driven low-level-trigger board, so its
+    // safe idle state is HIGH.
+    pinMode(IDOTMATRIX_BUZZER_PIN, OUTPUT);
+    digitalWrite(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW ? HIGH : LOW);
     // Attach one LEDC channel to the passive buzzer. Tone generation is fully
     // hardware-driven and therefore does not block BLE or display updates.
-    buzzerHardwareReady = ledcAttach(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ, 10);
+    buzzerHardwareReady = ledcAttach(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ, BUZZER_LEDC_RESOLUTION_BITS);
     if (!buzzerHardwareReady) {
       Serial.print("BUZZER: LEDC attach failed on GPIO");
       Serial.println(IDOTMATRIX_BUZZER_PIN);
     } else {
-      ledcWriteTone(IDOTMATRIX_BUZZER_PIN, 0);
+      setBuzzerOutput(false);
 #if DEBUG_SERIAL
       Serial.print("BUZZER: passive GPIO"); Serial.print(IDOTMATRIX_BUZZER_PIN);
-      Serial.print(" frequency="); Serial.print(IDOTMATRIX_BUZZER_FREQUENCY_HZ); Serial.println(" Hz");
+      Serial.print(" frequency="); Serial.print(IDOTMATRIX_BUZZER_FREQUENCY_HZ);
+      Serial.print(" Hz trigger="); Serial.println(IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW ? "LOW" : "HIGH");
 #endif
     }
   #else

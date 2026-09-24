@@ -162,3 +162,17 @@ To enable the detailed one-shot probe/configuration report:
 ```
 
 For the ICM-20689 / MPU-family backend, the summary identifies probes at `0x68` and `0x69` separately and is repeated near the end of `setup()` for ESP32-C3 USB/CDC visibility. With verbose diagnostics disabled, a failed sensor initialization still produces one concise serial error.
+
+
+## Passive buzzer trigger polarity
+
+Three-wire passive buzzer modules may include a transistor driver and expose `VCC`, `GND` and `I/O`. The qualified ESP32-C3 reference module is marked **low level trigger** and is powered from 3.3 V with its `I/O` connected to GPIO3. The 5 V supply option advertised for some modules has not been qualified with a 3.3 V ESP32 control signal. Configure it with:
+
+```cpp
+#define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_PASSIVE
+#define IDOTMATRIX_BUZZER_PIN 3
+#define IDOTMATRIX_BUZZER_FREQUENCY_HZ 2000
+#define IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW 1
+```
+
+With `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW=1`, the firmware holds GPIO3 HIGH while silent. During a beep, LEDC generates the configured square wave. This prevents the module transistor from remaining enabled by a constant LOW level when no tone is requested. Direct passive buzzers normally use the default value `0`.

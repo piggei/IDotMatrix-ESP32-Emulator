@@ -1,6 +1,6 @@
 # Future Work
 
-Release `0.5.2-rc.2 / Build 184` is the current release-candidate baseline. The items below are non-blocking research or possible future extensions and are not RC2 release blockers. The latest stable public release remains `0.5.1 / Build 172` until the 0.5.2 line is promoted to final.
+Release `0.5.2-rc.3 / Build 185` is the current release-candidate baseline. The items below are non-blocking research or possible future extensions and are not RC3 release blockers. The latest stable public release remains `0.5.1 / Build 172` until the 0.5.2 line is promoted to final.
 
 ## iOS compatibility research
 

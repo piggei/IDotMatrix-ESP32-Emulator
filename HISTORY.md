@@ -1,3 +1,17 @@
+## 0.5.2-rc.3 / Build 185
+
+Passive buzzer electrical-idle correction release candidate.
+
+- adds `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW` for passive buzzer modules whose transistor input is active-low;
+- configures the qualified ESP32-C3 reference module on GPIO3 as low-level-trigger, preserving the existing 2000 Hz LEDC tone;
+- drives the passive output to its inactive logic level while silent instead of relying on a zero-frequency LEDC tone;
+- for the qualified three-wire module, idle is HIGH so the onboard PNP transistor and buzzer are not continuously DC-biased;
+- establishes the safe idle GPIO level before LEDC attachment to minimize startup activation;
+- keeps direct active-high passive buzzers and self-oscillating active buzzer modules supported through configuration;
+- leaves RTC, Carousel boot priority, Clock persistence, BLE protocol, Graffiti, media, Audio/Rhythm and orientation behavior unchanged.
+
+Status: **release candidate; low-level-trigger passive buzzer behavior requires the final on-device RC3 smoke test.**
+
 ## 0.5.2-rc.2 / Build 184
 
 Second release candidate for the 0.5.2 line.

@@ -10,18 +10,18 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.5.2-rc.2`
-- **Build:** `184`
+- **Release:** `0.5.2-rc.3`
+- **Build:** `185`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.2-rc.2-B184
+IDOTMATRIX_FW=0.5.2-rc.3-B185
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Release candidate notes: [`docs/RELEASE-NOTES-0.5.2-rc.2.md`](docs/RELEASE-NOTES-0.5.2-rc.2.md).
+Release candidate notes: [`docs/RELEASE-NOTES-0.5.2-rc.3.md`](docs/RELEASE-NOTES-0.5.2-rc.3.md).
 
 The latest stable public release remains `0.5.1 / Build 172`.
 
@@ -44,7 +44,7 @@ The current implementation includes:
 - independent logical and physical display resolutions with nearest-neighbor upscaling and box-average downscaling;
 - hardware-qualified automatic orientation with the MatrixPortal S3 LIS3DH and an external ICM-20689 validated on ESP32-C3 with a shared I2C bus;
 - generic orientation mount compensation and optional compile-time I2C pin overrides for external sensors;
-- active and passive buzzer backends with non-blocking Alarm, Countdown, Schedule and connection notification patterns.
+- active and passive buzzer backends with configurable passive trigger polarity and non-blocking Alarm, Countdown, Schedule and connection notification patterns.
 
 Protocol details, confidence levels and original-device observations are documented in [`PROTOCOL.md`](PROTOCOL.md).
 
@@ -65,7 +65,7 @@ Reference configuration:
 
 ### ESP32-C3 + 16x16 WS2812
 
-The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the passive buzzer on GPIO3 is hardware-qualified. The DS3231 RTC backend is hardware-qualified on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. Battery-backed retention, BLE time writeback and cold boot into Clock when no persisted Carousel takes priority have been validated on the ESP32-C3 target. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
+The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the three-wire passive low-level-trigger buzzer module on GPIO3 is hardware-qualified. The DS3231 RTC backend is hardware-qualified on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. Battery-backed retention, BLE time writeback and cold boot into Clock when no persisted Carousel takes priority have been validated on the ESP32-C3 target. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
 
 ### Classic ESP32 + WS2812
 
@@ -182,7 +182,7 @@ Board-specific sensor wiring and peripheral overrides can be kept in an optional
 cp src/IDotMatrixUserConfig.example.h src/IDotMatrixUserConfig.h
 ```
 
-Then uncomment only the settings required by the local hardware. The header can select the accelerometer backend, define I2C pins, sensor address and mount compensation, configure RTC behavior/retry timing, and override the buzzer backend/pin/frequency without editing `platformio.ini` or tracked source files. For example:
+Then uncomment only the settings required by the local hardware. The header can select the accelerometer backend, define I2C pins, sensor address and mount compensation, configure RTC behavior/retry timing, and override the buzzer backend/pin/frequency/trigger polarity without editing `platformio.ini` or tracked source files. For example:
 
 ```cpp
 #pragma once
@@ -199,7 +199,7 @@ Verbose orientation diagnostics are disabled by default. Set `IDOTMATRIX_ORIENTA
 
 `src/IDotMatrixUserConfig.h` is ignored by Git and preserved by `update_idotmatrix_emulator.sh` when a new source archive is synchronized. PlatformIO sensor settings are now profile defaults, so explicit values in the local header take precedence.
 
-The C3 profile defaults to `IDOTMATRIX_BUZZER_PASSIVE` on GPIO3 at 2000 Hz. Active buzzer modules remain supported, and any individual buzzer event can be disabled locally.
+The C3 profile defaults to `IDOTMATRIX_BUZZER_PASSIVE` on GPIO3 at 2000 Hz with `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW=1`, matching the qualified three-wire transistor module marked `low level trigger` and powered from 3.3 V. Its idle state is therefore driven HIGH so the buzzer is not DC-biased while silent. Direct passive buzzers can use the default active-high behavior, and active buzzer modules remain supported. Any individual buzzer event can be disabled locally.
 
 See [`docs/HARDWARE-CONFIGURATION.md`](docs/HARDWARE-CONFIGURATION.md) for precedence and examples.
 
@@ -254,8 +254,8 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/RELEASE-NOTES-0.5.2-rc.2.md`](docs/RELEASE-NOTES-0.5.2-rc.2.md) — 0.5.2 RC2 feature and qualification summary
-- [`docs/RELEASE-AUDIT-0.5.2-rc.2.md`](docs/RELEASE-AUDIT-0.5.2-rc.2.md) — RC2 source/documentation/package audit
+- [`docs/RELEASE-NOTES-0.5.2-rc.3.md`](docs/RELEASE-NOTES-0.5.2-rc.3.md) — 0.5.2 RC3 correction and qualification summary
+- [`docs/RELEASE-AUDIT-0.5.2-rc.3.md`](docs/RELEASE-AUDIT-0.5.2-rc.3.md) — RC3 source/documentation/package audit
 - [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — historical 0.5.1 release audit
 
 ## Related project

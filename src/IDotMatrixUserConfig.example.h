@@ -71,11 +71,12 @@
 //
 // ACTIVE is for self-oscillating modules; PASSIVE generates a PWM tone through
 // the ESP32 LEDC peripheral. The ESP32-C3 16x16 profile defaults to a passive
-// buzzer on GPIO3, but every value can be overridden here.
+// low-level-trigger buzzer module on GPIO3, but every value can be overridden here.
 // -----------------------------------------------------------------------------
 // #define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_PASSIVE
 // #define IDOTMATRIX_BUZZER_PIN 3
 // #define IDOTMATRIX_BUZZER_FREQUENCY_HZ 2000
+// #define IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW 1  // three-wire transistor module marked "low level trigger"
 // #define IDOTMATRIX_BUZZER_ACTIVE_HIGH 1  // active buzzer only
 //
 // #define IDOTMATRIX_ALARM_BUZZER_ENABLED 1

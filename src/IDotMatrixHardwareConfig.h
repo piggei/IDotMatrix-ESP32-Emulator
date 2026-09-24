@@ -110,6 +110,16 @@
   #endif
 #endif
 
+#ifndef IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW
+  #ifdef IDOTMATRIX_DEFAULT_BUZZER_PASSIVE_TRIGGER_LOW
+    #define IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW IDOTMATRIX_DEFAULT_BUZZER_PASSIVE_TRIGGER_LOW
+  #else
+    // Direct passive buzzers are normally driven active-high. Three-wire
+    // transistor modules marked "low level trigger" must override this to 1.
+    #define IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW 0
+  #endif
+#endif
+
 #ifndef IDOTMATRIX_ALARM_BUZZER_ENABLED
   #if IDOTMATRIX_BUZZER_TYPE_EXPLICIT && IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_NONE
     #define IDOTMATRIX_ALARM_BUZZER_ENABLED 0
@@ -166,6 +176,10 @@
 
 #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE && IDOTMATRIX_BUZZER_FREQUENCY_HZ <= 0
   #error "Passive buzzer frequency must be greater than zero"
+#endif
+
+#if IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW != 0 && IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW != 1
+  #error "IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW must be 0 or 1"
 #endif
 
 #if !IDOTMATRIX_BUZZER_AVAILABLE && \

@@ -36,7 +36,7 @@ esp32c3_ws2812_16
 - board: `esp32-c3-devkitm-1`;
 - logical/physical 16x16;
 - WS2812 on GPIO4;
-- hardware-qualified passive buzzer on GPIO3 at 2000 Hz;
+- hardware-qualified three-wire passive low-level-trigger buzzer module on GPIO3 at 2000 Hz;
 - shared I2C defaults SDA=GPIO1 / SCL=GPIO2;
 - hardware-qualified DS3231 RTC at `0x68` with BLE synchronization enabled;
 - 60-second RTC recovery interval by default when the configured RTC is unavailable;
@@ -197,12 +197,13 @@ Brightness is applied through the HUB75 output-enable/PWM path (`setBrightness8`
 
 ## Optional buzzer backends
 
-Profile/local configuration supports active and passive buzzers. The ESP32-C3 reference environment supplies these fallbacks:
+Profile/local configuration supports active and passive buzzers. Passive modules can also declare low-level triggering so the silent idle level is correct. The ESP32-C3 reference environment supplies these fallbacks:
 
 ```ini
 -DIDOTMATRIX_DEFAULT_BUZZER_TYPE=2
 -DIDOTMATRIX_DEFAULT_BUZZER_PIN=3
 -DIDOTMATRIX_DEFAULT_BUZZER_FREQUENCY_HZ=2000
+-DIDOTMATRIX_DEFAULT_BUZZER_PASSIVE_TRIGGER_LOW=1
 -DIDOTMATRIX_DEFAULT_ALARM_BUZZER_ENABLED=1
 -DIDOTMATRIX_DEFAULT_COUNTDOWN_BUZZER_ENABLED=1
 -DIDOTMATRIX_DEFAULT_SCHEDULE_BUZZER_ENABLED=1
