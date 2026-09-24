@@ -228,7 +228,7 @@ The configured reduction is re-evaluated once per second. This is an emulator ru
 
 Direct testing on an original 64×64 shows that reset removes the stored Device Assets content; the password remembered by the original device/app workflow is also cleared. The emulator therefore treats this command as a destructive device-state reset rather than the earlier runtime-only reset.
 
-The emulator clears transient renderers plus persisted Carousel, Alarm and Schedule media/metadata, the volatile Preset/Default bank, stored brightness, ECO configuration and rotation. An app-issued `03/80` is not treated as an electrical power cycle: the active BLE connection remains valid, the already synchronized volatile software clock is preserved, and the matrix remains logically ON with a black framebuffer ready for the next command. A real boot still follows the RTC -> stored Carousel -> screen-off policy. Password support is not currently implemented, so there is no emulator password state to clear.
+The emulator clears transient renderers plus persisted Carousel, Alarm and Schedule media/metadata, the volatile Preset/Default bank, stored brightness, ECO configuration and rotation. An app-issued `03/80` is not treated as an electrical power cycle: the active BLE connection remains valid, the already synchronized volatile software clock is preserved, and the matrix remains logically ON with a black framebuffer ready for the next command. A real boot follows the stored Carousel -> valid RTC Clock -> screen-off policy. Password support is not currently implemented, so there is no emulator password state to clear.
 
 Clearing Alarm/Schedule and the additional emulator settings is an intentional, easy-to-explain reset policy; it is not yet claimed that the original hardware clears every one of those fields.
 
@@ -933,8 +933,8 @@ The following behaviors were directly observed on an original iDotMatrix 64×64 
 
 | Area | Original hardware observation | Emulator policy |
 |---|---|---|
-| Boot | Stored Device Assets carousel resumes after power cycle | Valid DS3231 -> Clock; otherwise stored Carousel fallback |
-| RTC/time | No persistent RTC observed; Alarm/Program need a new time sync after reboot | DS3231 backend can persist time; valid RTC has boot priority |
+| Boot | Stored Device Assets carousel resumes after power cycle | Stored Carousel resumes first; valid DS3231 starts Clock only when no Carousel can start |
+| RTC/time | No persistent RTC observed; Alarm/Program need a new time sync after reboot | DS3231 backend can persist time and provides Clock fallback when no stored Carousel starts |
 | Alarm buzzer | Repeating three-beep trill | Repeating three-beep trill |
 | Program buzzer | Same trill repeated for about 30 s | One three-beep trill only |
 | Countdown buzzer | Silent | One three-beep trill (intentional enhancement) |

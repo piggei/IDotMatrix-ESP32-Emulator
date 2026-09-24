@@ -1,3 +1,15 @@
+## 0.5.2-rc.2 / Build 184
+
+Second release candidate for the 0.5.2 line.
+
+- corrects boot-display priority so a valid persisted Device Assets/Carousel resumes before the optional RTC-backed Clock;
+- keeps the fallback order `stored Carousel -> valid RTC Clock -> screen off`;
+- adds a static regression test that locks this priority order;
+- updates current release documentation and validation material to RC2;
+- makes no other intended runtime change from the hardware-tested RC1/B183 baseline.
+
+Status: **release candidate; requires the normal on-device RC2 smoke test before final 0.5.2 publication.**
+
 ## 0.5.2-rc.1 / Build 183
 
 First release candidate for the 0.5.2 line.
@@ -74,7 +86,7 @@ DS3231 RTC/shared-I2C integration build.
 - enables the DS3231 by default on the `esp32c3_ws2812_16` reference profile;
 - configures that C3 profile for the shared I2C bus on SDA GPIO1 / SCL GPIO2;
 - replaces the former RTClib-dependent path with a direct DS3231 register driver that never calls `Wire.begin()` internally;
-- accepts an already valid RTC at boot and gives it priority over stored Carousel content;
+- initially gave an already valid RTC boot priority over stored Carousel content; this ordering was corrected in `0.5.2-rc.2 / Build 184` so persistent Carousel resumes first;
 - rejects an oscillator-stop/invalid RTC until a valid BLE time synchronization arrives;
 - updates the RTC from the official-app time-sync command and clears the oscillator-stop flag;
 - lets Clock, Alarm, Program/Schedule and ECO timing use persistent RTC time after MCU reboot;

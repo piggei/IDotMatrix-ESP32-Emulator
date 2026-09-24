@@ -77,9 +77,10 @@ The official app exposes three text sizes for the 64×64 profile and two for the
 | Original Snowflake line/stroke construction | Custom snow visual effect |
 | Original Laser beam/reveal construction | Custom scan-line laser effect |
 | No persistent RTC | Optional RTC support for standalone operation |
-| Stored Carousel resumes when no valid clock exists | Boot policy: valid RTC → Clock; else valid Carousel → Carousel; else screen off |
 
 These are deliberate product choices, not protocol-compatibility defects.
+
+For persistent display selection, the emulator resumes a valid stored Carousel before considering its optional RTC extension. If no stored Carousel can start, a valid RTC starts Clock; otherwise the display remains off. This keeps Carousel persistence aligned with the observed original-device behavior while adding standalone RTC-backed Clock as a fallback.
 
 ## Physical inspection plan
 

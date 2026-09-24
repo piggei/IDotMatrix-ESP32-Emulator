@@ -18,10 +18,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.2-rc.1"
+#define FW_RELEASE "0.5.2-rc.2"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 183
+#define FW_BUILD 184
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -6356,16 +6356,6 @@ void applyBootDisplayPolicy() {
   presetActive=false; presetActiveSlot=-1; presetOrderCount=0; gifPresetPlaybackFileActive=false;
   carouselUploadBlackout=false; carouselUploadOpen=false; carouselStartPending=false;
   carouselActive=false; carouselActiveSlot=-1; carouselEnterRequested=false;
-#if IDOTMATRIX_RTC_AVAILABLE
-  if (rtcReady && rtcTimeValid) {
-    screenOn=true; setStatusLed(true);
-    displayMode=DISPLAY_CLOCK; clockCycleStartedAt=millis(); renderClock();
-#if DEBUG_SERIAL
-    Serial.println("BOOT POLICY: valid RTC -> CLOCK");
-#endif
-    return;
-  }
-#endif
   int8_t slot=nextCarouselSlot(-1);
   if (slot>=0) {
     screenOn=true; setStatusLed(true); carouselEnterRequested=true;
@@ -6376,10 +6366,20 @@ void applyBootDisplayPolicy() {
       return;
     }
   }
+#if IDOTMATRIX_RTC_AVAILABLE
+  if (rtcReady && rtcTimeValid) {
+    screenOn=true; setStatusLed(true);
+    displayMode=DISPLAY_CLOCK; clockCycleStartedAt=millis(); renderClock();
+#if DEBUG_SERIAL
+    Serial.println("BOOT POLICY: no stored carousel + valid RTC -> CLOCK");
+#endif
+    return;
+  }
+#endif
   screenOn=false; setStatusLed(false); displayMode=DISPLAY_NONE;
   clearFramebuffer(); refreshMatrix();
 #if DEBUG_SERIAL
-  Serial.println("BOOT POLICY: no valid RTC/carousel -> SCREEN OFF");
+  Serial.println("BOOT POLICY: no stored carousel / valid RTC -> SCREEN OFF");
 #endif
 }
 

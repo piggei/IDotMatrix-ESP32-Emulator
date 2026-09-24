@@ -47,7 +47,7 @@ Current reference settings:
 - physical 16x16 WS2812;
 - matrix data GPIO 4;
 - hardware-qualified passive buzzer on GPIO3 at 2000 Hz;
-- hardware-qualified DS3231 RTC on the shared GPIO1/GPIO2 I2C bus, including battery-backed retention, BLE writeback and cold-boot Clock;
+- hardware-qualified DS3231 RTC on the shared GPIO1/GPIO2 I2C bus, including battery-backed retention, BLE writeback and cold-boot Clock fallback when no persisted Carousel starts;
 - LittleFS using `min_spiffs.csv`.
 
 ### Classic ESP32 + WS2812

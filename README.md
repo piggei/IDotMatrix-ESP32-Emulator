@@ -10,18 +10,18 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.5.2-rc.1`
-- **Build:** `183`
+- **Release:** `0.5.2-rc.2`
+- **Build:** `184`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.2-rc.1-B183
+IDOTMATRIX_FW=0.5.2-rc.2-B184
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Release candidate notes: [`docs/RELEASE-NOTES-0.5.2-rc.1.md`](docs/RELEASE-NOTES-0.5.2-rc.1.md).
+Release candidate notes: [`docs/RELEASE-NOTES-0.5.2-rc.2.md`](docs/RELEASE-NOTES-0.5.2-rc.2.md).
 
 The latest stable public release remains `0.5.1 / Build 172`.
 
@@ -65,7 +65,7 @@ Reference configuration:
 
 ### ESP32-C3 + 16x16 WS2812
 
-The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the passive buzzer on GPIO3 is hardware-qualified. The DS3231 RTC backend is hardware-qualified on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. Battery-backed retention, BLE time writeback and cold boot directly into Clock have been validated on the ESP32-C3 target. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
+The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the passive buzzer on GPIO3 is hardware-qualified. The DS3231 RTC backend is hardware-qualified on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. Battery-backed retention, BLE time writeback and cold boot into Clock when no persisted Carousel takes priority have been validated on the ESP32-C3 target. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
 
 ### Classic ESP32 + WS2812
 
@@ -131,7 +131,9 @@ The DS3231 backend provides battery-backed persistent time on the shared I2C bus
 
 At boot, a valid DS3231 becomes the authoritative clock source and seeds the software clock as a fallback for temporary later I2C failures. If the oscillator-stop flag is set or the stored date/time is invalid, the RTC is ignored until the official app sends its normal time-synchronization command. With `IDOTMATRIX_RTC_SYNC_FROM_BLE=1` (the default), every valid app time sync also updates the DS3231 and clears the oscillator-stop condition. Alarm, Program/Schedule, ECO timing and Clock rendering can therefore continue across MCU reboots without requiring a new BLE connection.
 
-Clock presentation settings are stored separately from the RTC in NVS. The latest app-selected Clock style, 12/24-hour mode, date visibility and RGB text colour are restored before the boot display policy runs, so an RTC-driven cold boot renders the same Clock appearance that was active before power loss. Writes are deferred and coalesced to avoid unnecessary flash wear when the app repeats the same Clock command.
+Boot display priority is deterministic: a valid persisted Device Assets/Carousel is resumed first; if no stored Carousel can start, a valid RTC starts Clock; otherwise the display remains off. This preserves persistent Carousel intent while still allowing standalone RTC-backed Clock operation when no Carousel is configured.
+
+Clock presentation settings are stored separately from the RTC in NVS. The latest app-selected Clock style, 12/24-hour mode, date visibility and RGB text colour are restored before the boot display policy runs, so an RTC-driven Clock fallback renders the same Clock appearance that was active before power loss. Writes are deferred and coalesced to avoid unnecessary flash wear when the app repeats the same Clock command.
 
 The DS3231 address is fixed at `0x68`. If an ICM-20689/MPU-family accelerometer shares the same I2C bus, it must be physically configured at `0x69`; the firmware rejects an explicit `0x68` accelerometer configuration when DS3231 support is enabled. Auto-probe remains supported and tries `0x69` first in that configuration. If the configured RTC is unavailable, the firmware retries detection every 60 seconds by default; `IDOTMATRIX_RTC_RETRY_INTERVAL_MS` can override that interval. A BLE time-sync received while the RTC is offline schedules an immediate loop-side reprobe, and a recovered invalid RTC is updated from the current synchronized software time.
 
@@ -252,8 +254,8 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/RELEASE-NOTES-0.5.2-rc.1.md`](docs/RELEASE-NOTES-0.5.2-rc.1.md) — 0.5.2 RC1 feature and qualification summary
-- [`docs/RELEASE-AUDIT-0.5.2-rc.1.md`](docs/RELEASE-AUDIT-0.5.2-rc.1.md) — RC1 source/documentation/package audit
+- [`docs/RELEASE-NOTES-0.5.2-rc.2.md`](docs/RELEASE-NOTES-0.5.2-rc.2.md) — 0.5.2 RC2 feature and qualification summary
+- [`docs/RELEASE-AUDIT-0.5.2-rc.2.md`](docs/RELEASE-AUDIT-0.5.2-rc.2.md) — RC2 source/documentation/package audit
 - [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — historical 0.5.1 release audit
 
 ## Related project
