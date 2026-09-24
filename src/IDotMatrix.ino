@@ -18,10 +18,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.2-dev"
+#define FW_RELEASE "0.5.2-rc.1"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 180
+#define FW_BUILD 183
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -84,7 +84,6 @@ uint8_t unknownCommandStored = 0;
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
-#include <BLE2902.h>
 #include <FastLED.h>
 #include <AnimatedGIF.h>
 #include <Preferences.h>
@@ -113,6 +112,7 @@ uint8_t unknownCommandStored = 0;
   IDotMatrixRtc rtc;
   bool rtcReady = false;
   bool rtcTimeValid = false;
+  uint32_t rtcRetryNextAt = 0;
 #endif
 
 
@@ -218,6 +218,19 @@ bool littleFsReady = false;
 #define BRIGHTNESS_NVS_KEY       "brightness"
 #define BRIGHTNESS_SAVE_DELAY_MS 1000UL
 
+// Clock presentation persistence. The RTC stores date/time only; the app's
+// Clock command also carries renderer state that must survive MCU reboot.
+// Keep this in the same namespace as brightness so the existing device-reset
+// path clears all local presentation preferences atomically.
+#define CLOCK_NVS_NAMESPACE      "idotmatrix"
+#define CLOCK_NVS_VALID_KEY      "cvalid"
+#define CLOCK_NVS_STYLE_KEY      "cstyle"
+#define CLOCK_NVS_FLAGS_KEY      "cflags"
+#define CLOCK_NVS_R_KEY          "cr"
+#define CLOCK_NVS_G_KEY          "cg"
+#define CLOCK_NVS_B_KEY          "cb"
+#define CLOCK_SAVE_DELAY_MS      1000UL
+
 extern uint8_t brightnessPercent;
 bool brightnessDirty = false;
 uint32_t brightnessDirtySince = 0;
@@ -280,6 +293,7 @@ void loadBrightnessFromNVS() {
 #endif
   applyCurrentBrightness();
 }
+
 
 #define MAX_PACKET_SIZE     8192
 #define MAX_TEXT_PAYLOAD   16654  // 14-byte header + up to 64 x (4 meta + 256 bitmap)
@@ -394,6 +408,63 @@ CRGB clockColor = CRGB::White;
 uint32_t clockCycleStartedAt = 0;
 uint32_t clockEntryProtectUntil = 0;
 bool clockDatePreference = false;
+bool clockPrefsDirty = false;
+uint32_t clockPrefsDirtySince = 0;
+
+void scheduleClockPreferencesSave() {
+  clockPrefsDirty = true;
+  clockPrefsDirtySince = millis();
+}
+
+void flushClockPreferencesSaveIfNeeded() {
+  if (!clockPrefsDirty) return;
+  if ((uint32_t)(millis() - clockPrefsDirtySince) < CLOCK_SAVE_DELAY_MS) return;
+
+  Preferences prefs;
+  if (prefs.begin(CLOCK_NVS_NAMESPACE, false)) {
+    const uint8_t flags = (clock24h ? 0x01 : 0x00) | (clockShowDate ? 0x02 : 0x00);
+    prefs.putBool(CLOCK_NVS_VALID_KEY, true);
+    prefs.putUChar(CLOCK_NVS_STYLE_KEY, clockStyle);
+    prefs.putUChar(CLOCK_NVS_FLAGS_KEY, flags);
+    prefs.putUChar(CLOCK_NVS_R_KEY, clockColor.r);
+    prefs.putUChar(CLOCK_NVS_G_KEY, clockColor.g);
+    prefs.putUChar(CLOCK_NVS_B_KEY, clockColor.b);
+    prefs.end();
+    clockPrefsDirty = false;
+#if DEBUG_SERIAL
+    Serial.print("CLOCK PREF SAVE: style="); Serial.print(clockStyle);
+    Serial.print(" 24H="); Serial.print(clock24h ? 1 : 0);
+    Serial.print(" DATE="); Serial.print(clockShowDate ? 1 : 0);
+    Serial.print(" RGB="); Serial.print(clockColor.r); Serial.print(',');
+    Serial.print(clockColor.g); Serial.print(','); Serial.println(clockColor.b);
+#endif
+  }
+}
+
+void loadClockPreferencesFromNVS() {
+  Preferences prefs;
+  if (!prefs.begin(CLOCK_NVS_NAMESPACE, true)) return;
+  if (prefs.getBool(CLOCK_NVS_VALID_KEY, false)) {
+    clockStyle = (uint8_t)(prefs.getUChar(CLOCK_NVS_STYLE_KEY, 0) & 0x3F);
+    const uint8_t flags = prefs.getUChar(CLOCK_NVS_FLAGS_KEY, 0);
+    clock24h = (flags & 0x01) != 0;
+    clockShowDate = (flags & 0x02) != 0;
+    clockDatePreference = clockShowDate;
+    clockColor = CRGB(
+      prefs.getUChar(CLOCK_NVS_R_KEY, 255),
+      prefs.getUChar(CLOCK_NVS_G_KEY, 255),
+      prefs.getUChar(CLOCK_NVS_B_KEY, 255));
+#if DEBUG_SERIAL
+    Serial.print("CLOCK PREF LOAD: style="); Serial.print(clockStyle);
+    Serial.print(" 24H="); Serial.print(clock24h ? 1 : 0);
+    Serial.print(" DATE="); Serial.print(clockShowDate ? 1 : 0);
+    Serial.print(" RGB="); Serial.print(clockColor.r); Serial.print(',');
+    Serial.print(clockColor.g); Serial.print(','); Serial.println(clockColor.b);
+#endif
+  }
+  prefs.end();
+}
+
 
 // ======================================================
 // ECO
@@ -725,6 +796,8 @@ void getAlarmDateTime(uint16_t &y,uint8_t &mo,uint8_t &d,uint8_t &h,uint8_t &mi,
       return;
     }
     rtcTimeValid=false;
+    rtcReady=false;
+    rtcRetryNextAt=millis() + IDOTMATRIX_RTC_RETRY_INTERVAL_MS;
   }
 #endif
   getCurrentTime(h,mi,se);
@@ -739,6 +812,62 @@ void getAlarmDateTime(uint16_t &y,uint8_t &mo,uint8_t &d,uint8_t &h,uint8_t &mi,
     if(++d>dim){ d=1; if(++mo>12){mo=1;y++;} }
   }
 }
+
+#if IDOTMATRIX_RTC_AVAILABLE
+void updateRtcRecovery(uint32_t nowMs){
+  if(rtcReady) return;
+  if((int32_t)(nowMs-rtcRetryNextAt)<0) return;
+  rtcRetryNextAt=nowMs + IDOTMATRIX_RTC_RETRY_INTERVAL_MS;
+
+  if(!rtc.begin(Wire,IDOTMATRIX_RTC_I2C_ADDRESS)){
+#if DEBUG_SERIAL && IDOTMATRIX_RTC_DIAGNOSTICS
+    Serial.print("RTC: retry failed: "); Serial.println(rtc.errorText());
+#endif
+    return;
+  }
+
+  rtcReady=true;
+  rtcTimeValid=rtc.timeValid();
+#if DEBUG_SERIAL
+  Serial.print("RTC: recovered on I2C address 0x"); Serial.print(IDOTMATRIX_RTC_I2C_ADDRESS,HEX);
+  Serial.print(" time="); Serial.println(rtcTimeValid?"VALID":"INVALID");
+#endif
+
+  if(rtcTimeValid && !clockSynced){
+    IDotMatrixRtcDateTime recovered;
+    if(rtc.read(recovered)){
+      syncYear=recovered.year; syncMonth=recovered.month; syncDay=recovered.day;
+      syncHour=recovered.hour; syncMinute=recovered.minute; syncSecond=recovered.second;
+      syncMillis=millis(); clockSynced=true;
+#if DEBUG_SERIAL
+      Serial.println("RTC: software clock initialized from recovered RTC");
+#endif
+    } else {
+      rtcReady=false; rtcTimeValid=false;
+      return;
+    }
+  }
+
+#if IDOTMATRIX_RTC_SYNC_FROM_BLE
+  if(!rtcTimeValid && clockSynced){
+    uint16_t y=0; uint8_t mo=0,d=0,h=0,mi=0,se=0;
+    getAlarmDateTime(y,mo,d,h,mi,se);
+    IDotMatrixRtcDateTime value;
+    value.year=y; value.month=mo; value.day=d; value.hour=h; value.minute=mi; value.second=se;
+    if(rtc.adjust(value)){
+      rtcTimeValid=true;
+#if DEBUG_SERIAL
+      Serial.println("RTC: recovered and synchronized from software time");
+#endif
+    } else {
+#if DEBUG_SERIAL
+      Serial.print("RTC: recovery synchronization failed: "); Serial.println(rtc.errorText());
+#endif
+    }
+  }
+#endif
+}
+#endif
 
 bool loadAlarmMedia(uint8_t slot){
   if(!littleFsReady || slot>=ALARM_SLOT_COUNT) return false;
@@ -1560,6 +1689,8 @@ void getCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s) {
       return;
     }
     rtcTimeValid=false;
+    rtcReady=false;
+    rtcRetryNextAt=millis() + IDOTMATRIX_RTC_RETRY_INTERVAL_MS;
   }
 #endif
   if (!clockSynced) { h = m = s = 0; return; }
@@ -1577,7 +1708,12 @@ bool isEnergySavingActive() {
 #if IDOTMATRIX_RTC_AVAILABLE
   if (rtcReady && rtcTimeValid) {
     IDotMatrixRtcDateTime now;
-    if (!rtc.read(now)) { rtcTimeValid=false; return false; }
+    if (!rtc.read(now)) {
+      rtcTimeValid=false;
+      rtcReady=false;
+      rtcRetryNextAt=millis() + IDOTMATRIX_RTC_RETRY_INTERVAL_MS;
+      return false;
+    }
     h=now.hour; m=now.minute; s=now.second;
   } else if (clockSynced) {
     getCurrentTime(h, m, s);
@@ -4815,6 +4951,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
     if(isValidDateTime(y,mo,d,h,mi,se)){
       syncYear=y; syncMonth=mo; syncDay=d; syncHour=h; syncMinute=mi; syncSecond=se; syncMillis=millis(); clockSynced=true;
 #if IDOTMATRIX_RTC_AVAILABLE && IDOTMATRIX_RTC_SYNC_FROM_BLE
+      if(!rtcReady) rtcRetryNextAt=millis();
       if(rtcReady){
         IDotMatrixRtcDateTime rtcValue;
         rtcValue.year=syncYear; rtcValue.month=syncMonth; rtcValue.day=syncDay;
@@ -4900,6 +5037,10 @@ void processFA02Packet(const uint8_t *data,size_t len){
     if((enteringClock || styleChanged) && clockDatePreference) clockEntryProtectUntil=nowClock+1000UL;
     const bool protectDateOff=clockDatePreference &&
       (enteringClock || styleChanged || (int32_t)(clockEntryProtectUntil-nowClock)>0);
+    const uint8_t previousStyle=clockStyle;
+    const bool previous24h=clock24h;
+    const bool previousShowDate=clockShowDate;
+    const CRGB previousColor=clockColor;
     clockStyle=incomingStyle;
     clock24h=(flags&0x40)!=0;
     if(incomingShowDate || !protectDateOff){
@@ -4909,6 +5050,10 @@ void processFA02Packet(const uint8_t *data,size_t len){
       clockShowDate=true;
     }
     clockColor=CRGB(data[5],data[6],data[7]);
+    if(previousStyle!=clockStyle || previous24h!=clock24h || previousShowDate!=clockShowDate ||
+       previousColor.r!=clockColor.r || previousColor.g!=clockColor.g || previousColor.b!=clockColor.b){
+      scheduleClockPreferencesSave();
+    }
 #if DEBUG_SERIAL
     Serial.print("CLOCK RAW ["); Serial.print(len); Serial.print("]: "); dumpHex(data,len);
     Serial.print("CLOCK style raw="); Serial.print(clockStyle);
@@ -6194,6 +6339,8 @@ void clearPersistentDeviceState() {
   Preferences bp;
   if (bp.begin(BRIGHTNESS_NVS_NAMESPACE,false)) { bp.clear(); bp.end(); }
   brightnessPercent=100; brightnessDirty=false;
+  clockStyle=0; clock24h=false; clockShowDate=false; clockDatePreference=false; clockColor=CRGB::White;
+  clockPrefsDirty=false;
   energySaving=EnergySavingState();
   flipped180=false;
   diyMode=false;
@@ -6393,9 +6540,6 @@ void updateStatusOLED() {
 }
 #endif
 
-static uint8_t startupSummaryRepeatsRemaining = 0;
-static uint32_t startupSummaryNextAt = 0;
-
 void printStartupHardwareSummary() {
 #if DEBUG_SERIAL
   Serial.println("=== IDOTMATRIX STARTUP SUMMARY ===");
@@ -6551,6 +6695,19 @@ void setup(){
 #if IDOTMATRIX_RTC_AVAILABLE
   rtcReady=rtc.begin(Wire, IDOTMATRIX_RTC_I2C_ADDRESS);
   rtcTimeValid=rtcReady && rtc.timeValid();
+  if (!rtcReady) {
+    rtcRetryNextAt = millis() + IDOTMATRIX_RTC_RETRY_INTERVAL_MS;
+  } else if (rtcTimeValid) {
+    IDotMatrixRtcDateTime bootRtc;
+    if (rtc.read(bootRtc)) {
+      syncYear=bootRtc.year; syncMonth=bootRtc.month; syncDay=bootRtc.day;
+      syncHour=bootRtc.hour; syncMinute=bootRtc.minute; syncSecond=bootRtc.second;
+      syncMillis=millis(); clockSynced=true;
+    } else {
+      rtcReady=false; rtcTimeValid=false;
+      rtcRetryNextAt = millis() + IDOTMATRIX_RTC_RETRY_INTERVAL_MS;
+    }
+  }
 #if DEBUG_SERIAL
   Serial.print("RTC DS3231: "); Serial.print(rtcReady?"OK":"NOT FOUND");
   Serial.print(" addr=0x"); Serial.print(IDOTMATRIX_RTC_I2C_ADDRESS,HEX);
@@ -6647,7 +6804,9 @@ void setup(){
     }
   }
 #endif
-  loadBrightnessFromNVS(); clearPhysicalDisplay(); clearFramebuffer(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
+  loadBrightnessFromNVS();
+  loadClockPreferencesFromNVS();
+  clearPhysicalDisplay(); clearFramebuffer(); fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 
   runtimeStateMutex=xSemaphoreCreateMutex();
   if(!runtimeStateMutex){
@@ -6681,10 +6840,10 @@ void setup(){
   server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
   BLEService *fas=server->createService(FA_SERVICE_UUID);
   fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
-  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); fa03->addDescriptor(new BLE2902()); fas->start();
+  fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); fas->start();
   BLEService *aes=server->createService(AE_SERVICE_UUID);
   ae01=aes->createCharacteristic(AE01_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); ae01->setCallbacks(new AE01Callbacks());
-  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); ae02->addDescriptor(new BLE2902()); aes->start();
+  ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); aes->start();
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
@@ -6699,8 +6858,6 @@ void setup(){
 #endif
 
   printStartupHardwareSummary();
-  startupSummaryRepeatsRemaining = 2;
-  startupSummaryNextAt = millis() + 2000UL;
   reportHeap("setup complete");
 }
 
@@ -6715,12 +6872,8 @@ void loop(){
   // can update packetLastRxMs/bulkLastRxMs to a newer value while loop() waits.
   // Unsigned subtraction would then wrap and falsely look like a huge timeout.
   uint32_t now=millis();
-#if DEBUG_SERIAL
-  if (startupSummaryRepeatsRemaining && (long)(now - startupSummaryNextAt) >= 0) {
-    printStartupHardwareSummary();
-    --startupSummaryRepeatsRemaining;
-    startupSummaryNextAt = now + 5000UL;
-  }
+#if IDOTMATRIX_RTC_AVAILABLE
+  updateRtcRecovery(now);
 #endif
 #if IDOTMATRIX_ORIENTATION_SENSOR
   // A static framebuffer must be redrawn immediately when the panel orientation
@@ -6729,6 +6882,7 @@ void loop(){
 #endif
   expireStalledTransfers(now);
   flushBrightnessSaveIfNeeded();
+  flushClockPreferencesSaveIfNeeded();
 #if OLED_STATUS_ENABLED
   updateStatusOLED();
 #endif

@@ -37,10 +37,11 @@ esp32c3_ws2812_16
 - logical/physical 16x16;
 - WS2812 on GPIO4;
 - hardware-qualified passive buzzer on GPIO3 at 2000 Hz;
-- Build 178 shared I2C defaults SDA=GPIO1 / SCL=GPIO2;
-- Build 178 DS3231 RTC at `0x68` with BLE synchronization enabled;
+- shared I2C defaults SDA=GPIO1 / SCL=GPIO2;
+- hardware-qualified DS3231 RTC at `0x68` with BLE synchronization enabled;
+- 60-second RTC recovery interval by default when the configured RTC is unavailable;
 - LittleFS with `min_spiffs.csv`;
-- hardware validated display/orientation/passive-buzzer target; Build 178 DS3231 integration pending physical qualification.
+- hardware-validated display, orientation, passive-buzzer and DS3231 persistent-time target.
 
 This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-MatrixPanel-DMA` on the C3 target. That avoids pulling in HUB75/Adafruit_GFX dependencies for a WS2812-only build.
 
@@ -196,7 +197,7 @@ Brightness is applied through the HUB75 output-enable/PWM path (`setBrightness8`
 
 ## Optional buzzer backends
 
-Build 177 adds profile/local configuration for active and passive buzzers. The ESP32-C3 reference environment supplies these fallbacks:
+Profile/local configuration supports active and passive buzzers. The ESP32-C3 reference environment supplies these fallbacks:
 
 ```ini
 -DIDOTMATRIX_DEFAULT_BUZZER_TYPE=2
@@ -223,7 +224,7 @@ PlatformIO remains preferred because those choices are encoded in the repository
 
 ## ESP32-C3 shared I2C and DS3231 RTC
 
-Build 178 adds these reference-profile fallbacks:
+The ESP32-C3 reference profile provides these fallbacks:
 
 ```ini
 -DIDOTMATRIX_DEFAULT_I2C_SDA_PIN=1
@@ -231,11 +232,12 @@ Build 178 adds these reference-profile fallbacks:
 -DIDOTMATRIX_DEFAULT_RTC_TYPE=1
 -DIDOTMATRIX_DEFAULT_RTC_I2C_ADDRESS=0x68
 -DIDOTMATRIX_DEFAULT_RTC_SYNC_FROM_BLE=1
+-DIDOTMATRIX_DEFAULT_RTC_RETRY_INTERVAL_MS=60000UL
 ```
 
 The RTC code does not depend on RTClib and does not call `Wire.begin()` internally. The firmware initializes the shared bus once, then the gesture sensor, accelerometer and RTC can reuse it. A local `IDotMatrixUserConfig.h` may override the profile defaults.
 
-DS3231 has a fixed `0x68` address. If an ICM-20689/MPU-family sensor is also present, configure that device at `0x69`; when address auto-probe is selected, Build 178 tries `0x69` before `0x68` while DS3231 support is enabled.
+DS3231 has a fixed `0x68` address. If an ICM-20689/MPU-family sensor is also present, configure that device at `0x69`; when address auto-probe is selected, the firmware tries `0x69` before `0x68` while DS3231 support is enabled. The firmware retries an unavailable configured RTC every 60 seconds by default and exposes `IDOTMATRIX_RTC_RETRY_INTERVAL_MS` through the local hardware configuration.
 
 ## Optional accelerometer backends
 
@@ -250,7 +252,7 @@ The MatrixPortal S3 environment currently enables:
 
 This automatically enables the common `IDOTMATRIX_ORIENTATION_SENSOR` subsystem.
 
-Build 173 also provides the ICM-20689 backend:
+The ICM-20689 backend can be selected with:
 
 ```ini
 -DIDOTMATRIX_DEFAULT_ACCEL_DRIVER_ICM20689
@@ -268,7 +270,7 @@ External boards may override the shared Wire pins at compile time:
 
 Both pin macros must be defined together. Targets without a selected backend do not compile the orientation code.
 
-### Local hardware overrides (Build 174)
+### Local hardware overrides
 
 The `IDOTMATRIX_DEFAULT_*` names are intentionally fallbacks. If `src/IDotMatrixUserConfig.h` exists, explicit sensor backend, I2C address and mount-rotation values in that file take precedence. SDA/SCL may also be supplied there.
 
@@ -283,4 +285,4 @@ The update helper preserves this file across source-archive synchronization. See
 
 ### Optional sensor diagnostics
 
-Build 175 introduced a repeatable one-shot sensor probe/configuration summary for ESP32-C3 qualification. Build 176 retains it but disables verbose diagnostics by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` locally to print the detailed summary during initialization and again near the end of `setup()` for native USB/CDC visibility. Continuous XYZ samples remain opt-in through `IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS=1`.
+A repeatable one-shot sensor probe/configuration summary is available for qualification and troubleshooting, with verbose diagnostics disabled by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` locally to print the detailed summary during initialization and again near the end of `setup()` for native USB/CDC visibility. Continuous XYZ samples remain opt-in through `IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS=1`.

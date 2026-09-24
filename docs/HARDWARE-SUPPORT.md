@@ -47,7 +47,7 @@ Current reference settings:
 - physical 16x16 WS2812;
 - matrix data GPIO 4;
 - hardware-qualified passive buzzer on GPIO3 at 2000 Hz;
-- Build 178 DS3231 RTC backend on the shared GPIO1/GPIO2 I2C bus, pending emulator hardware qualification;
+- hardware-qualified DS3231 RTC on the shared GPIO1/GPIO2 I2C bus, including battery-backed retention, BLE writeback and cold-boot Clock;
 - LittleFS using `min_spiffs.csv`.
 
 ### Classic ESP32 + WS2812
@@ -89,7 +89,7 @@ See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.
 
 ### Buzzer backends
 
-Build 177 supports both self-oscillating active buzzers and passive buzzers. Passive output uses the ESP32 LEDC hardware peripheral and therefore does not depend on timing loops in the main firmware. The reference ESP32-C3 profile selects a hardware-qualified passive buzzer on GPIO3 at 2000 Hz. Buzzer backend, GPIO, frequency and per-event policies can be overridden in `IDotMatrixUserConfig.h`.
+The firmware supports both self-oscillating active buzzers and passive buzzers. Passive output uses the ESP32 LEDC hardware peripheral and therefore does not depend on timing loops in the main firmware. The reference ESP32-C3 profile selects a hardware-qualified passive buzzer on GPIO3 at 2000 Hz. Buzzer backend, GPIO, frequency and per-event policies can be overridden in `IDotMatrixUserConfig.h`.
 
 ## Orientation sensor support
 
@@ -103,19 +103,19 @@ The feature remains backend-driven rather than board-driven. Targets without a s
 
 ## Local sensor wiring configuration
 
-Build 174 adds `src/IDotMatrixUserConfig.h` as an optional, untracked local hardware layer. Use it for external-sensor backend selection, SDA/SCL pins, sensor address and mount rotation. See [`HARDWARE-CONFIGURATION.md`](HARDWARE-CONFIGURATION.md).
+`src/IDotMatrixUserConfig.h` is available as an optional, untracked local hardware layer. Use it for external-sensor backend selection, SDA/SCL pins, sensor address and mount rotation. See [`HARDWARE-CONFIGURATION.md`](HARDWARE-CONFIGURATION.md).
 
 ## DS3231 RTC
 
-Build 178 adds a direct DS3231 backend for persistent timekeeping. The ESP32-C3 reference profile enables it at the fixed DS3231 address `0x68` on the shared I2C bus:
+The direct DS3231 backend provides hardware-qualified persistent timekeeping. The ESP32-C3 reference profile enables it at the fixed DS3231 address `0x68` on the shared I2C bus:
 
 - SDA: GPIO1;
 - SCL: GPIO2;
 - address: `0x68`;
 - BLE time synchronization: enabled.
 
-The RTC driver uses the existing `Wire` object and does not initialize or reconfigure the bus. A valid RTC is used immediately after boot. If the DS3231 oscillator-stop flag is set, the stored time is treated as invalid until the app sends a valid time-sync packet.
+The RTC driver uses the existing `Wire` object and does not initialize or reconfigure the bus. A valid RTC is used immediately after boot. If the DS3231 oscillator-stop flag is set, the stored time is treated as invalid until the app sends a valid time-sync packet. If the RTC is unavailable, the firmware retries detection every 60 seconds by default and can synchronize a recovered invalid RTC from the current software clock.
 
 Because the DS3231 address is fixed at `0x68`, an ICM-20689/MPU-family device sharing the same bus must use `0x69`. The firmware rejects an explicit accelerometer `0x68` selection when the DS3231 backend is enabled.
 
-Build 178 is statically validated; physical qualification of this RTC integration on the complete ESP32-C3 shared-bus assembly is the next hardware gate.
+The DS3231 integration is hardware-qualified on ESP32-C3 with the gesture sensor sharing GPIO1/GPIO2. The ICM-20689 shared-bus orientation path was qualified separately on the same controller family. Simultaneous DS3231 + ICM-20689 operation requires the accelerometer to be physically strapped to `0x69` and is not claimed as a separately qualified three-device combination. Additional RTC models remain future work.

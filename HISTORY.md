@@ -1,3 +1,48 @@
+## 0.5.2-rc.1 / Build 183
+
+First release candidate for the 0.5.2 line.
+
+- promotes the hardware-tested Build 182 baseline to RC1 without new user-facing features;
+- keeps DS3231 RTC recovery, battery-backed boot time and Clock presentation persistence;
+- keeps the hardware-qualified passive buzzer and ICM-20689 ESP32-C3 paths;
+- removes release-facing development chronology from operational documentation and consolidates it here;
+- replaces the obsolete 0.5.0 release-validation page with the 0.5.2 RC validation scope;
+- removes unused RTC configuration bookkeeping and retains all protocol/debug switches disabled by default;
+- removes internal Build 173-182 note/audit files from the public RC package after consolidating relevant information into HISTORY, release notes and the RC audit.
+
+Status: **release candidate; final publication still requires the Build 183 on-device smoke test.**
+
+# Release History
+
+## 0.5.2-dev / Build 182
+
+Pre-RC Clock-persistence regression fix.
+
+- persists Clock style, 12/24-hour mode, date visibility and RGB text colour in NVS;
+- restores those values before the RTC boot policy renders the first Clock frame;
+- coalesces repeated app Clock commands with a one-second deferred save to limit flash wear;
+- clears the persisted Clock presentation as part of the existing device reset;
+- adds a dedicated static regression test for Clock persistence and boot ordering;
+- leaves RTC timekeeping, BLE protocol framing, renderers, media, Audio/Rhythm, orientation and buzzer behavior otherwise unchanged.
+
+Status: **replacement pre-RC baseline for the final `0.5.2-rc.1` physical regression.**
+
+## 0.5.2-dev / Build 181
+
+Pre-RC consolidation, RTC recovery and documentation-audit build.
+
+- records successful DS3231 hardware qualification on the ESP32-C3 shared-I2C reference hardware, including battery-backed retention, BLE time writeback and cold boot directly into Clock;
+- retries a configured but unavailable RTC every 60 seconds by default (`IDOTMATRIX_RTC_RETRY_INTERVAL_MS`), with an immediate loop-side reprobe requested after a valid BLE time sync;
+- if a recovered RTC is invalid while the software clock is already synchronized, writes the current software time to the RTC automatically;
+- seeds the software clock from a valid RTC at boot/recovery, preserving a time fallback across temporary later I2C failures;
+- routes runtime RTC read failures back into the same recovery path;
+- reduces Build 180 startup diagnostics to one final hardware summary now that C3 native USB CDC routing is qualified;
+- removes deprecated manual `BLE2902` descriptors under the pinned Arduino-ESP32 3.3.11/NimBLE stack, relying on the framework-generated CCCD for notify characteristics;
+- keeps DS3231 direct-I2C access, ICM-20689, passive buzzer, Graffiti, media, audio and renderer behavior otherwise unchanged;
+- audits README, hardware configuration, PlatformIO guidance, Wiki qualification tables and historical release-validation wording.
+
+Status: **consolidated 0.5.2-dev candidate baseline; intended to advance to `0.5.2-rc.1` after final physical regression.**
+
 ## 0.5.2-dev / Build 180
 
 ESP32-C3 native-USB serial routing and RTC boot-diagnostics build.
@@ -10,8 +55,6 @@ ESP32-C3 native-USB serial routing and RTC boot-diagnostics build.
 
 Status: **diagnostic build for closing DS3231 boot qualification; no intended RTC runtime-policy change.**
 
-# Release History
-
 ## 0.5.2-dev / Build 179
 
 RTC compile-fix build.
@@ -21,7 +64,7 @@ RTC compile-fix build.
 - adds a static preprocessor-balance regression check;
 - makes no intended runtime change to the DS3231, I2C, ICM-20689, buzzer, BLE, Graffiti or display behavior.
 
-Status: **compile-fix successor to Build 178; RTC hardware qualification still pending.**
+Status at Build 179: **compile-fix successor to Build 178; RTC hardware qualification still pending at that time.** Qualification was completed on ESP32-C3 and recorded in Build 181.
 
 ## 0.5.2-dev / Build 178
 
@@ -38,7 +81,7 @@ DS3231 RTC/shared-I2C integration build.
 - protects DS3231 address `0x68` from an explicitly configured MPU-family accelerometer collision and makes auto-probe prefer `0x69` when the RTC is enabled;
 - keeps the Build 177 passive-buzzer and qualified ICM-20689 paths unchanged.
 
-Status: **implemented and statically validated; DS3231 emulator hardware qualification pending.**
+Status at Build 178: **implemented and statically validated; DS3231 emulator hardware qualification pending at that time.** Qualification was completed on ESP32-C3 and recorded in Build 181.
 
 ## 0.5.2-dev / Build 177
 

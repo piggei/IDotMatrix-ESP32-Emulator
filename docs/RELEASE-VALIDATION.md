@@ -1,44 +1,73 @@
-# 0.5.0 Release Validation
+# 0.5.2-rc.1 Release Validation
 
-**Release:** 0.5.0  
-**Build:** 162
+**Release:** `0.5.2-rc.1`  
+**Build:** `183`  
+**Firmware signature:** `IDOTMATRIX_FW=0.5.2-rc.1-B183`
 
-This document records the qualification scope used to close the 0.5.0 line.
+This document defines the qualification scope for the first 0.5.2 release candidate. It supersedes the historical 0.5.0 validation document for current release work.
 
-## Hardware-qualified targets
+## Qualified reference targets
 
-### MatrixPortal ESP32-S3 + 64x64 HUB75
+### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
-Validated on physical hardware with the official iDotMatrix app, including representative BLE control, storage and display paths.
+Hardware-qualified baseline for the large-panel path, including representative BLE control, media/storage, Clock/TEXT, timers, automation, Audio/Rhythm and display-rotation behavior.
 
 ### ESP32-C3 + 16x16 WS2812
 
-Validated on physical hardware for the native 16x16 profile and WS2812 output path.
+Hardware-qualified baseline for the compact path. The 0.5.2 line additionally qualifies the following peripherals on ESP32-C3:
 
-## Functional qualification
+- passive buzzer on GPIO3 using the LEDC backend;
+- DS3231 RTC on the shared GPIO1/GPIO2 I2C bus, including battery-backed retention, BLE time writeback and cold boot directly into Clock;
+- Clock presentation persistence across power loss (style, 12/24-hour mode, date visibility and RGB color);
+- external ICM-20689 automatic orientation on the tested shared-I2C configuration.
 
-The following areas are considered qualified for 0.5.0:
+The DS3231 + gesture-sensor shared-bus configuration and the ICM-20689 + gesture-sensor shared-bus configuration were exercised separately. A simultaneous DS3231 + MPU-family accelerometer configuration requires the accelerometer at `0x69`; that three-device combination is not independently claimed as qualified by RC1.
 
-- BLE advertising/services and Device Info;
-- time synchronization, screen power, brightness and rotation;
-- DS3231 RTC boot/read, BLE resynchronization and reboot persistence when the backend is enabled;
+## Functional regression scope
+
+The RC must preserve the previously qualified protocol/runtime paths:
+
+- BLE advertising, services, characteristics and Device Info;
+- time synchronization, screen power, brightness and app-controlled flip;
 - Clock, Countdown, Stopwatch and Scoreboard;
-- TEXT rendering and motion modes;
-- Solid, Graffiti/DIY, images and GIFs;
-- Device Assets Carousel;
-- volatile Preset/Default playback;
-- Alarm and Program/Schedule multipart media transfers;
-- LEVEL and FFT Audio/Rhythm effects;
-- dedicated audio framing and recovery to ordinary FA02 commands;
-- TEXT/Preset/Carousel display ownership isolation;
-- LittleFS-backed persistent media behavior.
+- TEXT static/multiline and scrolling modes;
+- Solid, live Graffiti/DIY, full-raster Graffiti, RAW image and GIF;
+- Device Assets Carousel and volatile Preset/Default;
+- Alarm and Program/Schedule multipart media;
+- LEVEL and FFT Audio/Rhythm framing and effects;
+- LittleFS media ownership and persistence rules;
+- normal Bulk `0x01..0x03` routing isolated from Graffiti full-raster `type=0x00`;
+- automatic orientation at the final logical-to-physical output stage.
 
-## Release constraints
+## 0.5.2 RC additions
 
-- The classic ESP32 iOS compatibility target is retained as an isolated diagnostic configuration and does not define the qualification status of the main release.
-- Password SET/VERIFY remains outside the supported runtime feature set because the complete transaction is not yet characterized.
-- Optional future features such as accelerometer-based auto-rotation are intentionally deferred.
+RC1 adds or consolidates:
+
+- ICM-20689 orientation backend and shared MPU-family driver;
+- optional `IDotMatrixUserConfig.h` local hardware layer;
+- passive and active buzzer backends;
+- DS3231 persistent RTC backend using the already-initialized shared `Wire` bus;
+- RTC retry/recovery every 60 seconds by default when configured but unavailable;
+- software-clock seeding from a valid RTC for temporary I2C-failure fallback;
+- Clock presentation persistence in NVS;
+- native USB CDC/JTAG serial configuration on the ESP32-C3 PlatformIO profile;
+- removal of manually-added deprecated BLE2902 descriptors.
+
+## Explicit exclusions
+
+The following do not block RC1:
+
+- complete iOS/RCSP compatibility on the diagnostic classic-ESP32 profile;
+- password SET/VERIFY support;
+- MPU-6050 hardware qualification;
+- MatrixPortal + external ICM-20689 hardware qualification;
+- additional RTC models;
+- qualification of every possible logical/physical scaling combination.
 
 ## Packaging checks
 
-The final package must contain no generated build output, `.pio` directory, cache directory or temporary diagnostic file. Active release identifiers must be final; historical development identifiers may remain only in the release history. User-facing documentation must remain in English.
+The RC package must contain no `.pio` output, Python cache, local `src/IDotMatrixUserConfig.h`, temporary diagnostic files or generated firmware binaries. Public documentation must be in English. Current release/build identifiers must resolve to `0.5.2-rc.1 / Build 183`; historical identifiers may remain only where explicitly describing older builds/releases.
+
+## RC1 publication gate
+
+Static checks and source/documentation audit do not replace a final on-device smoke test of Build 183. Because Build 183 is intended as a cleanup/versioning promotion of the hardware-tested Build 182 baseline, any unexpected runtime difference should block publication and be treated as a regression.

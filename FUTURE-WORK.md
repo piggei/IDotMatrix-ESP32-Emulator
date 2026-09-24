@@ -1,6 +1,6 @@
 # Future Work
 
-Release 0.5.1 remains the stable qualified baseline. The 0.5.2-dev line is extending hardware compatibility. The items below are non-blocking research or possible future extensions.
+Release `0.5.2-rc.1 / Build 183` is the current release-candidate baseline. The items below are non-blocking research or possible future extensions and are not RC1 release blockers. The latest stable public release remains `0.5.1 / Build 172` until the 0.5.2 line is promoted to final.
 
 ## iOS compatibility research
 
@@ -30,7 +30,7 @@ Password support remains intentionally disabled because the complete transaction
 - Hardware-qualify additional ICM-20689 board/wiring combinations only where they materially differ from the qualified ESP32-C3 shared-I2C setup.
 - Hardware-qualify the implemented MPU-6050 code path if a genuine MPU-6050 module becomes available.
 - Add further accelerometer backends only through the existing normalized X/Y/Z interface and common orientation engine.
-- Hardware-qualify the Build 178 DS3231 backend on the ESP32-C3 shared-I2C reference hardware; evaluate additional RTC backends only when real hardware is available.
+- Evaluate additional RTC backends only when real hardware is available; keep the hardware-qualified DS3231 path unchanged unless new evidence requires it.
 - Hardware-qualify additional logical/physical scaling combinations beyond native 64x64 and native 16x16.
 - Revisit PSRAM placement only if future media sizes or features demonstrate a real need.
 - Continue moving heavyweight work out of latency-sensitive BLE callbacks if profiling identifies a concrete problem.

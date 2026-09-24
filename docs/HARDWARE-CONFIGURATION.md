@@ -1,6 +1,6 @@
 # Local Hardware Configuration
 
-Build 174 added an optional local configuration header for board-specific wiring and orientation settings. Build 177 extended the same layer to buzzer hardware and sound-policy overrides. Build 178 adds RTC selection, address, synchronization policy and shared-bus defaults.
+The optional local configuration header keeps board-specific wiring and peripheral policy outside tracked source files. It covers accelerometer selection and mounting, shared-I2C pins, RTC settings, buzzer hardware and sound-policy overrides.
 
 ## Create the local file
 
@@ -50,7 +50,7 @@ Define both pins or neither:
 #define IDOTMATRIX_I2C_SCL_PIN 9
 ```
 
-Defining only SDA or only SCL is rejected at compile time. When neither is supplied, a PlatformIO profile may provide `IDOTMATRIX_DEFAULT_I2C_SDA_PIN` / `IDOTMATRIX_DEFAULT_I2C_SCL_PIN`; otherwise the board's default `Wire` pins are used. The Build 178 ESP32-C3 profile defaults to SDA GPIO1 and SCL GPIO2.
+Defining only SDA or only SCL is rejected at compile time. When neither is supplied, a PlatformIO profile may provide `IDOTMATRIX_DEFAULT_I2C_SDA_PIN` / `IDOTMATRIX_DEFAULT_I2C_SCL_PIN`; otherwise the board's default `Wire` pins are used. The ESP32-C3 reference profile defaults to SDA GPIO1 and SCL GPIO2.
 
 ### Sensor address
 
@@ -85,7 +85,7 @@ This example keeps address auto-probing enabled. Change only the pins and mount 
 
 ## RTC configuration
 
-Build 178 provides the first persistent RTC backend:
+The first persistent RTC backend is DS3231:
 
 ```cpp
 #define IDOTMATRIX_RTC_TYPE IDOTMATRIX_RTC_DS3231
@@ -105,7 +105,7 @@ DS3231 uses fixed address `0x68`. An ICM-20689/MPU-family accelerometer on the s
 
 ## Buzzer configuration
 
-Build 177 provides three compile-time buzzer backends:
+Three compile-time buzzer backends are available:
 
 ```cpp
 #define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_NONE
@@ -149,7 +149,7 @@ The repository update helper explicitly excludes `src/IDotMatrixUserConfig.h` fr
 
 ## Qualification diagnostics
 
-Build 176 returns verbose sensor diagnostics to opt-in operation after successful ICM-20689 qualification. To request continuous samples during a hardware qualification or troubleshooting run:
+Verbose sensor diagnostics are opt-in. To request continuous samples during a hardware qualification or troubleshooting run:
 
 ```cpp
 #define IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS 1

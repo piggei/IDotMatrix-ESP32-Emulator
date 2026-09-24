@@ -162,7 +162,7 @@ Captured example:
 0B 00 01 80 1A 08 1E 07 14 0B 35
 ```
 
-The firmware uses this synchronization as the base for its software clock. When the Build 178 DS3231 backend is enabled (`IDOTMATRIX_RTC_TYPE=IDOTMATRIX_RTC_DS3231`) and `IDOTMATRIX_RTC_SYNC_FROM_BLE=1`, the same command also updates the hardware RTC and clears its oscillator-stop condition.
+The firmware uses this synchronization as the base for its software clock. When the DS3231 backend is enabled (`IDOTMATRIX_RTC_TYPE=IDOTMATRIX_RTC_DS3231`) and `IDOTMATRIX_RTC_SYNC_FROM_BLE=1`, the same command also updates the hardware RTC and clears its oscillator-stop condition.
 
 The emulator validates the calendar fields before updating either clock: month must be 1-12, day must exist in that month (including leap-year handling), hour must be 0-23, and minute/second must be 0-59. A malformed synchronization packet is ignored but receives the same compatibility ACK as a valid one because an original-device negative/error ACK for this command has not yet been established.
 
@@ -934,7 +934,7 @@ The following behaviors were directly observed on an original iDotMatrix 64×64 
 | Area | Original hardware observation | Emulator policy |
 |---|---|---|
 | Boot | Stored Device Assets carousel resumes after power cycle | Valid DS3231 -> Clock; otherwise stored Carousel fallback |
-| RTC/time | No persistent RTC observed; Alarm/Program need a new time sync after reboot | Build 178 DS3231 backend can persist time; valid RTC has boot priority |
+| RTC/time | No persistent RTC observed; Alarm/Program need a new time sync after reboot | DS3231 backend can persist time; valid RTC has boot priority |
 | Alarm buzzer | Repeating three-beep trill | Repeating three-beep trill |
 | Program buzzer | Same trill repeated for about 30 s | One three-beep trill only |
 | Countdown buzzer | Silent | One three-beep trill (intentional enhancement) |

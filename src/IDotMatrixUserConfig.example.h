@@ -46,6 +46,7 @@
 // #define IDOTMATRIX_RTC_TYPE IDOTMATRIX_RTC_DS3231
 // #define IDOTMATRIX_RTC_I2C_ADDRESS 0x68
 // #define IDOTMATRIX_RTC_SYNC_FROM_BLE 1
+// #define IDOTMATRIX_RTC_RETRY_INTERVAL_MS 60000UL
 // #define IDOTMATRIX_RTC_DIAGNOSTICS 1
 
 // -----------------------------------------------------------------------------

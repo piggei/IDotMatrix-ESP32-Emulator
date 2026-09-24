@@ -11,7 +11,7 @@ def test_c3_native_usb_serial_flags_present():
     assert '-DARDUINO_USB_MODE=1' in section
     assert '-DARDUINO_USB_CDC_ON_BOOT=1' in section
 
-def test_late_startup_summary_covers_rtc_boot_state():
+def test_single_startup_summary_covers_rtc_boot_state():
     for token in (
         '=== IDOTMATRIX STARTUP SUMMARY ===',
         'USER CONFIG:', 'I2C BUS:', 'RTC BACKEND:', 'RTC READY:',
@@ -19,7 +19,8 @@ def test_late_startup_summary_covers_rtc_boot_state():
         'SOFTWARE TIME SYNCED:', 'BOOT DISPLAY MODE:', 'SCREEN ON:'
     ):
         assert token in INO, token
-    assert 'startupSummaryRepeatsRemaining = 2' in INO
+    assert INO.count('printStartupHardwareSummary();') == 1
+    assert 'startupSummaryRepeatsRemaining' not in INO
 
 def test_arduino_ide_native_usb_documented():
     assert 'USB CDC On Boot = Enabled' in README
@@ -27,6 +28,6 @@ def test_arduino_ide_native_usb_documented():
 
 if __name__ == '__main__':
     test_c3_native_usb_serial_flags_present()
-    test_late_startup_summary_covers_rtc_boot_state()
+    test_single_startup_summary_covers_rtc_boot_state()
     test_arduino_ide_native_usb_documented()
     print('C3 serial/RTC diagnostics tests: PASS')

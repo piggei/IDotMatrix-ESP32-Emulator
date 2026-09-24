@@ -36,6 +36,7 @@ def test_c3_rtc_and_shared_bus_defaults():
         '-DIDOTMATRIX_DEFAULT_RTC_TYPE=1',
         '-DIDOTMATRIX_DEFAULT_RTC_I2C_ADDRESS=0x68',
         '-DIDOTMATRIX_DEFAULT_RTC_SYNC_FROM_BLE=1',
+        '-DIDOTMATRIX_DEFAULT_RTC_RETRY_INTERVAL_MS=60000UL',
     ):
         assert token in PIO, token
 
@@ -47,12 +48,14 @@ def test_default_rtc_resolution():
         '-DIDOTMATRIX_DEFAULT_RTC_TYPE=1',
         '-DIDOTMATRIX_DEFAULT_RTC_I2C_ADDRESS=0x68',
         '-DIDOTMATRIX_DEFAULT_RTC_SYNC_FROM_BLE=1',
+        '-DIDOTMATRIX_DEFAULT_RTC_RETRY_INTERVAL_MS=60000UL',
     ])
     assert macros['IDOTMATRIX_I2C_SDA_PIN'] == 'IDOTMATRIX_DEFAULT_I2C_SDA_PIN'
     assert macros['IDOTMATRIX_I2C_SCL_PIN'] == 'IDOTMATRIX_DEFAULT_I2C_SCL_PIN'
     assert macros['IDOTMATRIX_RTC_TYPE'] == 'IDOTMATRIX_DEFAULT_RTC_TYPE'
     assert macros['IDOTMATRIX_RTC_I2C_ADDRESS'] == 'IDOTMATRIX_DEFAULT_RTC_I2C_ADDRESS'
     assert macros['IDOTMATRIX_RTC_AVAILABLE'] == '1'
+    assert macros['IDOTMATRIX_RTC_RETRY_INTERVAL_MS'] == 'IDOTMATRIX_DEFAULT_RTC_RETRY_INTERVAL_MS'
 
 
 def test_local_none_disables_profile_rtc():
@@ -102,9 +105,33 @@ def test_user_template_exposes_rtc_settings():
     for token in (
         'IDOTMATRIX_RTC_TYPE', 'IDOTMATRIX_RTC_DS3231',
         'IDOTMATRIX_RTC_I2C_ADDRESS', 'IDOTMATRIX_RTC_SYNC_FROM_BLE',
-        'IDOTMATRIX_RTC_DIAGNOSTICS'):
+        'IDOTMATRIX_RTC_RETRY_INTERVAL_MS', 'IDOTMATRIX_RTC_DIAGNOSTICS'):
         assert token in USER_EXAMPLE
 
+
+
+def test_rtc_runtime_retry_and_recovery_policy():
+    assert 'uint32_t rtcRetryNextAt = 0;' in INO
+    assert 'updateRtcRecovery(now);' in INO
+    assert 'IDOTMATRIX_RTC_RETRY_INTERVAL_MS' in INO
+    assert 'rtcRetryNextAt=millis();' in INO  # valid BLE time sync requests an immediate loop-side retry
+    assert 'RTC: recovered on I2C address 0x' in INO
+    assert 'RTC: recovered and synchronized from software time' in INO
+    assert 'RTC: software clock initialized from recovered RTC' in INO
+    assert 'syncYear=bootRtc.year' in INO
+
+
+def test_rtc_retry_interval_rejects_unsafe_values():
+    with tempfile.TemporaryDirectory() as td:
+        probe = Path(td) / 'probe.cpp'
+        probe.write_text('#include "IDotMatrixHardwareConfig.h"\n')
+        result = subprocess.run([
+            'g++', '-E', f'-I{SRC}',
+            '-DIDOTMATRIX_RTC_TYPE=1',
+            '-DIDOTMATRIX_RTC_RETRY_INTERVAL_MS=999',
+            str(probe),
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert result.returncode != 0
 
 def test_rtc_driver_syntax_with_minimal_arduino_wire_stubs():
     with tempfile.TemporaryDirectory() as td:
@@ -144,5 +171,7 @@ if __name__ == '__main__':
     test_mpu_auto_probe_remains_allowed_with_ds3231()
     test_rtc_is_direct_i2c_and_does_not_reinitialize_wire()
     test_user_template_exposes_rtc_settings()
+    test_rtc_runtime_retry_and_recovery_policy()
+    test_rtc_retry_interval_rejects_unsafe_values()
     test_rtc_driver_syntax_with_minimal_arduino_wire_stubs()
     print('RTC config/driver tests: PASS')

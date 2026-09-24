@@ -10,18 +10,18 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.5.2-dev`
-- **Build:** `180`
+- **Release:** `0.5.2-rc.1`
+- **Build:** `183`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.2-dev-B180
+IDOTMATRIX_FW=0.5.2-rc.1-B183
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Development build notes: [`docs/BUILD-180-NOTES.md`](docs/BUILD-180-NOTES.md).
+Release candidate notes: [`docs/RELEASE-NOTES-0.5.2-rc.1.md`](docs/RELEASE-NOTES-0.5.2-rc.1.md).
 
 The latest stable public release remains `0.5.1 / Build 172`.
 
@@ -65,7 +65,7 @@ Reference configuration:
 
 ### ESP32-C3 + 16x16 WS2812
 
-The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the passive buzzer on GPIO3 is hardware-qualified. Build 178 adds a DS3231 RTC backend on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. The RTC path is implemented and ready for physical qualification in the emulator. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
+The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the passive buzzer on GPIO3 is hardware-qualified. The DS3231 RTC backend is hardware-qualified on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. Battery-backed retention, BLE time writeback and cold boot directly into Clock have been validated on the ESP32-C3 target. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
 
 ### Classic ESP32 + WS2812
 
@@ -115,7 +115,7 @@ LEVEL and FFT rendering and transport have been hardware validated on the Matrix
 
 ## Graffiti full-raster transport
 
-Release 0.5.1 includes the hardware-captured 64x64 Graffiti full-raster transport used by the official Android app. This path is separate from normal 16-byte GIF/RAW/TEXT Bulk: each logical Graffiti packet has a 9-byte header, a first/continuation marker (`0x00` / `0x02`), the complete raster size, and up to 4096 RGB bytes. On original hardware the device replies `05 00 00 00 02` after incomplete chunks and `05 00 00 00 01` after the complete raster. The emulator publishes the framebuffer only after all `width * height * 3` bytes have arrived.
+The emulator includes the hardware-captured 64x64 Graffiti full-raster transport used by the official Android app. This path is separate from normal 16-byte GIF/RAW/TEXT Bulk: each logical Graffiti packet has a 9-byte header, a first/continuation marker (`0x00` / `0x02`), the complete raster size, and up to 4096 RGB bytes. On original hardware the device replies `05 00 00 00 02` after incomplete chunks and `05 00 00 00 01` after the complete raster. The emulator publishes the framebuffer only after all `width * height * 3` bytes have arrived.
 
 The raw HCI-derived exchange is summarized in [`docs/captures/14-graffiti-original-hardware.txt`](docs/captures/14-graffiti-original-hardware.txt).
 
@@ -127,11 +127,13 @@ Rotation is applied only in the final logical-to-physical output mapping, so the
 
 ## RTC support
 
-Build 178 promotes the previously dormant RTC concept into a shared-bus hardware backend. The first implemented device is the DS3231 at I2C address `0x68`. The driver talks directly to the already initialized `Wire` instance and never reinitializes the bus, which is important on the ESP32-C3 reference hardware where the RTC shares GPIO1/GPIO2 with other I2C peripherals.
+The DS3231 backend provides battery-backed persistent time on the shared I2C bus. The first implemented device is the DS3231 at I2C address `0x68`. The driver talks directly to the already initialized `Wire` instance and never reinitializes the bus, which is important on the ESP32-C3 reference hardware where the RTC shares GPIO1/GPIO2 with other I2C peripherals.
 
-At boot, a valid DS3231 becomes the authoritative clock source. If the oscillator-stop flag is set or the stored date/time is invalid, the RTC is ignored until the official app sends its normal time-synchronization command. With `IDOTMATRIX_RTC_SYNC_FROM_BLE=1` (the default), every valid app time sync also updates the DS3231 and clears the oscillator-stop condition. Alarm, Program/Schedule, ECO timing and Clock rendering can therefore continue across MCU reboots without requiring a new BLE connection.
+At boot, a valid DS3231 becomes the authoritative clock source and seeds the software clock as a fallback for temporary later I2C failures. If the oscillator-stop flag is set or the stored date/time is invalid, the RTC is ignored until the official app sends its normal time-synchronization command. With `IDOTMATRIX_RTC_SYNC_FROM_BLE=1` (the default), every valid app time sync also updates the DS3231 and clears the oscillator-stop condition. Alarm, Program/Schedule, ECO timing and Clock rendering can therefore continue across MCU reboots without requiring a new BLE connection.
 
-The DS3231 address is fixed at `0x68`. If an ICM-20689/MPU-family accelerometer shares the same I2C bus, it must be physically configured at `0x69`; the firmware rejects an explicit `0x68` accelerometer configuration when DS3231 support is enabled. Auto-probe remains supported and tries `0x69` first in that configuration.
+Clock presentation settings are stored separately from the RTC in NVS. The latest app-selected Clock style, 12/24-hour mode, date visibility and RGB text colour are restored before the boot display policy runs, so an RTC-driven cold boot renders the same Clock appearance that was active before power loss. Writes are deferred and coalesced to avoid unnecessary flash wear when the app repeats the same Clock command.
+
+The DS3231 address is fixed at `0x68`. If an ICM-20689/MPU-family accelerometer shares the same I2C bus, it must be physically configured at `0x69`; the firmware rejects an explicit `0x68` accelerometer configuration when DS3231 support is enabled. Auto-probe remains supported and tries `0x69` first in that configuration. If the configured RTC is unavailable, the firmware retries detection every 60 seconds by default; `IDOTMATRIX_RTC_RETRY_INTERVAL_MS` can override that interval. A BLE time-sync received while the RTC is offline schedules an immediate loop-side reprobe, and a recovered invalid RTC is updated from the current synchronized software time.
 
 ## Build with PlatformIO
 
@@ -172,13 +174,13 @@ When using the ESP32-C3 native USB connector in Arduino IDE, set **USB CDC On Bo
 
 ### Optional local hardware configuration
 
-Build 174 added an optional local include for board-specific sensor wiring. Build 176 retains that interface after successful ESP32-C3 / ICM-20689 qualification and returns verbose sensor diagnostics to opt-in operation. Copy the tracked template:
+Board-specific sensor wiring and peripheral overrides can be kept in an optional local include. Copy the tracked template:
 
 ```bash
 cp src/IDotMatrixUserConfig.example.h src/IDotMatrixUserConfig.h
 ```
 
-Then uncomment only the settings required by the local hardware. The header can select the accelerometer backend, define I2C pins, sensor address and mount compensation, and override the buzzer backend/pin/frequency without editing `platformio.ini` or tracked source files. For example:
+Then uncomment only the settings required by the local hardware. The header can select the accelerometer backend, define I2C pins, sensor address and mount compensation, configure RTC behavior/retry timing, and override the buzzer backend/pin/frequency without editing `platformio.ini` or tracked source files. For example:
 
 ```cpp
 #pragma once
@@ -191,7 +193,7 @@ Then uncomment only the settings required by the local hardware. The header can 
 // #define IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS 1
 ```
 
-Build 176 disables verbose orientation diagnostics by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` for the detailed probe/configuration summary; when enabled it is repeated near the end of `setup()` so ESP32-C3 USB serial sessions that attach late can still see it. A normal build still emits one concise error if sensor initialization fails.
+Verbose orientation diagnostics are disabled by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` for the detailed probe/configuration summary; when enabled it is repeated near the end of `setup()` so ESP32-C3 USB serial sessions that attach late can still see it. A normal build still emits one concise error if sensor initialization fails.
 
 `src/IDotMatrixUserConfig.h` is ignored by Git and preserved by `update_idotmatrix_emulator.sh` when a new source archive is synchronized. PlatformIO sensor settings are now profile defaults, so explicit values in the local header take precedence.
 
@@ -250,9 +252,9 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/BUILD-180-NOTES.md`](docs/BUILD-180-NOTES.md) — current 0.5.2-dev / Build 180 ESP32-C3 USB serial and RTC boot-diagnostics notes
-- [`docs/BUILD-174-NOTES.md`](docs/BUILD-174-NOTES.md) — local hardware configuration layer
-- [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — final 0.5.1 source/documentation/protocol audit
+- [`docs/RELEASE-NOTES-0.5.2-rc.1.md`](docs/RELEASE-NOTES-0.5.2-rc.1.md) — 0.5.2 RC1 feature and qualification summary
+- [`docs/RELEASE-AUDIT-0.5.2-rc.1.md`](docs/RELEASE-AUDIT-0.5.2-rc.1.md) — RC1 source/documentation/package audit
+- [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — historical 0.5.1 release audit
 
 ## Related project
 

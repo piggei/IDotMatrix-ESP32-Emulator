@@ -2,9 +2,7 @@
 
 ## Status
 
-Release 0.5.1 introduced the qualified accelerometer-backed display orientation subsystem. Build 173 started the 0.5.2-dev hardware-compatibility work by adding an external ICM-20689 backend while preserving the same common orientation engine. Build 174 added an optional local hardware include. Build 175 provided the diagnostics used to qualify the ICM-20689 on ESP32-C3 with a shared I2C bus. Build 176 is the post-qualification cleanup build.
-
-Build 164 was the first build to apply automatic framebuffer rotation after the MatrixPortal S3 axis mapping was measured on hardware. Build 165 added generic compile-time mounting compensation. Build 173 adds the first external sensor backend.
+The common orientation engine is hardware-qualified with the MatrixPortal S3 onboard LIS3DH and with an external ICM-20689 on the tested ESP32-C3 shared-I2C configuration. MPU-6050 support is implemented through the same MPU-family backend but remains unqualified. Rotation stays isolated at the final framebuffer-to-output mapping stage.
 
 Validated MatrixPortal S3 mapping:
 
@@ -139,7 +137,7 @@ When neither X nor Y has sufficient gravity magnitude, for example while the pan
 
 ## Diagnostics
 
-Verbose orientation diagnostics are opt-in in Build 176. When enabled, initialization and actual rotation changes are reported, for example:
+Verbose orientation diagnostics are opt-in. When enabled, initialization and actual rotation changes are reported, for example:
 
 ```text
 ORIENTATION SENSOR: driver=LIS3DH init=OK
@@ -164,13 +162,13 @@ This is useful for future sensor qualification and board bring-up.
 
 ## External ICM-20689 backend
 
-Build 173 adds:
+The external ICM-20689 backend is selected with:
 
 ```text
 IDOTMATRIX_ACCEL_DRIVER_ICM20689
 ```
 
-The backend originated from the separately tested WLED implementation and is now **hardware-qualified in the emulator on ESP32-C3 with the I2C bus shared with the gesture sensor**. The qualified path uses the same auto-probe/register logic implemented in Build 173.
+The backend originated from the separately tested WLED implementation and is **hardware-qualified in the emulator on ESP32-C3 with the I2C bus shared with the gesture sensor**.
 
 Identification and configuration:
 
@@ -238,7 +236,7 @@ The common orientation engine subtracts this mounting offset from the orientatio
 This option handles planar rotations. A future sensor backend whose raw chip axes differ from the common normalized convention should normalize those axes inside the backend before returning `IDotMatrixAccelSample`.
 
 
-## Local hardware include (Build 174)
+## Local hardware include
 
 Create `src/IDotMatrixUserConfig.h` from `src/IDotMatrixUserConfig.example.h` to keep board-specific sensor choices and wiring local. It may define the backend, SDA/SCL pins, sensor I2C address and `IDOTMATRIX_ACCEL_MOUNT_ROTATION`.
 
@@ -247,6 +245,6 @@ The local file takes precedence over `IDOTMATRIX_DEFAULT_*` values supplied by P
 
 ## Qualification diagnostics
 
-Build 175 introduced the detailed probe/configuration report used during ESP32-C3 qualification. Build 176 keeps that tooling but disables it by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` to report independent `0x68`/`0x69` probes, ACK state, `WHO_AM_I`, backend match, active address and configuration result.
+The detailed probe/configuration report used during ESP32-C3 qualification is retained but disabled by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` to report independent `0x68`/`0x69` probes, ACK state, `WHO_AM_I`, backend match, active address and configuration result.
 
 When enabled, the diagnostic summary is repeated near the end of `setup()` because native USB/CDC serial on ESP32-C3 can attach after the first sensor probe has completed. Continuous XYZ output remains independently controlled by `IDOTMATRIX_ORIENTATION_SAMPLE_DIAGNOSTICS`.
