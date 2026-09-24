@@ -1,6 +1,6 @@
 # Local Hardware Configuration
 
-Build 174 adds an optional local configuration header for board-specific sensor wiring and orientation settings.
+Build 174 added an optional local configuration header for board-specific wiring and orientation settings. Build 177 extends the same layer to buzzer hardware and sound-policy overrides.
 
 ## Create the local file
 
@@ -81,6 +81,46 @@ Supported values are `0`, `90`, `180` and `270` degrees clockwise. The common or
 ```
 
 This example keeps address auto-probing enabled. Change only the pins and mount rotation to match the actual wiring and physical installation.
+
+
+## Buzzer configuration
+
+Build 177 provides three compile-time buzzer backends:
+
+```cpp
+#define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_NONE
+#define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_ACTIVE
+#define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_PASSIVE
+```
+
+`ACTIVE` is intended for self-oscillating buzzer modules and drives a static GPIO level. `PASSIVE` uses the ESP32 LEDC peripheral to generate a 50% square-wave tone.
+
+The reference ESP32-C3 profile defaults to:
+
+```cpp
+#define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_PASSIVE
+#define IDOTMATRIX_BUZZER_PIN 3
+#define IDOTMATRIX_BUZZER_FREQUENCY_HZ 2000
+```
+
+Override any of these locally if required. An explicit `IDOTMATRIX_BUZZER_NONE` disables the profile defaults without requiring the individual event flags to be cleared.
+
+For active buzzer modules, polarity can be selected with:
+
+```cpp
+#define IDOTMATRIX_BUZZER_ACTIVE_HIGH 1
+```
+
+Individual local notification policies are independently controlled by:
+
+```cpp
+#define IDOTMATRIX_ALARM_BUZZER_ENABLED 1
+#define IDOTMATRIX_COUNTDOWN_BUZZER_ENABLED 1
+#define IDOTMATRIX_SCHEDULE_BUZZER_ENABLED 1
+#define IDOTMATRIX_CONNECTION_BUZZER_ENABLED 1
+```
+
+The sound cadence is handled by the existing non-blocking state machine, so BLE processing and display refresh continue while the buzzer is active.
 
 ## Update-helper behavior
 

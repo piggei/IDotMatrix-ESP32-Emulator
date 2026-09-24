@@ -36,8 +36,9 @@ esp32c3_ws2812_16
 - board: `esp32-c3-devkitm-1`;
 - logical/physical 16x16;
 - WS2812 on GPIO4;
+- passive buzzer on GPIO3 at 2000 Hz in Build 177;
 - LittleFS with `min_spiffs.csv`;
-- hardware validated.
+- hardware validated display/orientation target; passive buzzer qualification pending.
 
 This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-MatrixPanel-DMA` on the C3 target. That avoids pulling in HUB75/Adafruit_GFX dependencies for a WS2812-only build.
 
@@ -189,6 +190,23 @@ Logical and physical resolutions are independent. The final renderer/output stag
 The MatrixPortal environment uses `ESP32-HUB75-MatrixPanel-DMA` with the project pin mapping, 8-bit color depth, single DMA buffering and the S3-specific flags carried by the qualified configuration.
 
 Brightness is applied through the HUB75 output-enable/PWM path (`setBrightness8`) instead of destructively scaling the framebuffer RGB values.
+
+
+## Optional buzzer backends
+
+Build 177 adds profile/local configuration for active and passive buzzers. The ESP32-C3 reference environment supplies these fallbacks:
+
+```ini
+-DIDOTMATRIX_DEFAULT_BUZZER_TYPE=2
+-DIDOTMATRIX_DEFAULT_BUZZER_PIN=3
+-DIDOTMATRIX_DEFAULT_BUZZER_FREQUENCY_HZ=2000
+-DIDOTMATRIX_DEFAULT_ALARM_BUZZER_ENABLED=1
+-DIDOTMATRIX_DEFAULT_COUNTDOWN_BUZZER_ENABLED=1
+-DIDOTMATRIX_DEFAULT_SCHEDULE_BUZZER_ENABLED=1
+-DIDOTMATRIX_DEFAULT_CONNECTION_BUZZER_ENABLED=1
+```
+
+Type `2` is `IDOTMATRIX_BUZZER_PASSIVE`. The passive backend uses the Arduino-ESP32 3.x LEDC API (`ledcAttach` / `ledcWriteTone`) so tone generation is hardware-driven. Explicit values in `IDotMatrixUserConfig.h` override these profile defaults; selecting `IDOTMATRIX_BUZZER_NONE` disables them.
 
 ## Arduino IDE compatibility
 

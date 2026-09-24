@@ -48,3 +48,21 @@
 // Clockwise planar mounting compensation: 0, 90, 180 or 270 degrees.
 // -----------------------------------------------------------------------------
 // #define IDOTMATRIX_ACCEL_MOUNT_ROTATION 0
+
+
+// -----------------------------------------------------------------------------
+// Optional buzzer configuration.
+//
+// ACTIVE is for self-oscillating modules; PASSIVE generates a PWM tone through
+// the ESP32 LEDC peripheral. The ESP32-C3 16x16 profile defaults to a passive
+// buzzer on GPIO3, but every value can be overridden here.
+// -----------------------------------------------------------------------------
+// #define IDOTMATRIX_BUZZER_TYPE IDOTMATRIX_BUZZER_PASSIVE
+// #define IDOTMATRIX_BUZZER_PIN 3
+// #define IDOTMATRIX_BUZZER_FREQUENCY_HZ 2000
+// #define IDOTMATRIX_BUZZER_ACTIVE_HIGH 1  // active buzzer only
+//
+// #define IDOTMATRIX_ALARM_BUZZER_ENABLED 1
+// #define IDOTMATRIX_COUNTDOWN_BUZZER_ENABLED 1
+// #define IDOTMATRIX_SCHEDULE_BUZZER_ENABLED 1
+// #define IDOTMATRIX_CONNECTION_BUZZER_ENABLED 1

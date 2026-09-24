@@ -46,6 +46,7 @@ Current reference settings:
 - logical 16x16 profile (`screenType=0x01`);
 - physical 16x16 WS2812;
 - matrix data GPIO 4;
+- passive buzzer on GPIO3 at 2000 Hz in Build 177;
 - LittleFS using `min_spiffs.csv`.
 
 ### Classic ESP32 + WS2812
@@ -84,6 +85,10 @@ The repository PlatformIO baseline uses:
 - a pinned `ESP32-HUB75-MatrixPanel-DMA` commit for the HUB75 environment.
 
 See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.
+
+### Buzzer backends
+
+Build 177 supports both self-oscillating active buzzers and passive buzzers. Passive output uses the ESP32 LEDC hardware peripheral and therefore does not depend on timing loops in the main firmware. The reference ESP32-C3 profile selects a passive buzzer on GPIO3 at 2000 Hz. Buzzer backend, GPIO, frequency and per-event policies can be overridden in `IDotMatrixUserConfig.h`.
 
 ## Orientation sensor support
 

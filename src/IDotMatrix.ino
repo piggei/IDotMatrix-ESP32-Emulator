@@ -3,6 +3,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include "IDotMatrixHardwareConfig.h"
+#if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
+  #include <esp32-hal-ledc.h>
+#endif
 #if IDOTMATRIX_ORIENTATION_SENSOR
   #include "IDotMatrixOrientation.h"
 #endif
@@ -15,7 +18,7 @@
 #define FW_RELEASE "0.5.2-dev"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 176
+#define FW_BUILD 177
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -293,18 +296,14 @@ void loadBrightnessFromNVS() {
 // ALARMS
 // ======================================================
 #define ALARM_SLOT_COUNT       10
-#define ALARM_BUZZER_ENABLED   0
-#define ALARM_BUZZER_PIN       -1
-#define BUZZER_ACTIVE_HIGH     1
 
-// Active-buzzer trill pattern: 3 short beeps followed by a longer pause.
-// Fully non-blocking: BLE, animations and matrix refresh continue normally.
+// Buzzer timing is shared by active and passive outputs. The electrical/output
+// backend and event policy are resolved by IDotMatrixHardwareConfig.h so local
+// hardware can be changed without editing this source file.
 #define BUZZER_PULSE_ON_MS       90UL
 #define BUZZER_PULSE_GAP_MS      70UL
 #define BUZZER_TRILL_PAUSE_MS   550UL
 #define BUZZER_TRILL_PULSES       3
-#define COUNTDOWN_BUZZER_ENABLED   0
-#define CONNECTION_BUZZER_ENABLED  0
 #define ALARM_MEDIA_BASE_ID    0x14
 #define ALARM_CONTENT_GIF      0x01
 #define ALARM_CONTENT_RAW      0x02
@@ -321,8 +320,6 @@ void loadBrightnessFromNVS() {
 #define SCHEDULE_CONTENT_IMAGE  0x02
 #define SCHEDULE_CONTENT_TEXT   0x03
 #define SCHEDULE_MEDIA_BASE_ID  0x1E
-#define SCHEDULE_BUZZER_ENABLED 0
-#define SCHEDULE_BUZZER_PIN     ALARM_BUZZER_PIN
 
 
 
@@ -753,9 +750,10 @@ bool loadAlarmMedia(uint8_t slot){
 }
 
 // ======================================================
-// ACTIVE BUZZER - NON-BLOCKING TRILL
+// BUZZER - NON-BLOCKING TRILL (ACTIVE OR PASSIVE)
 // ======================================================
-#if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
+#if IDOTMATRIX_BUZZER_AVAILABLE
+static bool buzzerHardwareReady = false;
 static bool buzzerOutputOn = false;
 static bool buzzerPatternRunning = false;
 static bool countdownBuzzerOneShot = false;
@@ -765,23 +763,35 @@ static uint8_t buzzerPulseIndex = 0;
 static uint32_t buzzerNextChangeAt = 0;
 
 static inline void setBuzzerOutput(bool on) {
+  if (!buzzerHardwareReady) {
+    buzzerOutputOn = false;
+    return;
+  }
   buzzerOutputOn = on;
-  digitalWrite(ALARM_BUZZER_PIN,
-               on ? (BUZZER_ACTIVE_HIGH ? HIGH : LOW)
-                  : (BUZZER_ACTIVE_HIGH ? LOW : HIGH));
+#if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
+  // Arduino-ESP32 3.x LEDC uses the GPIO number directly. The channel is
+  // attached once during setup(); frequency 0 cleanly silences the output.
+  ledcWriteTone(IDOTMATRIX_BUZZER_PIN, on ? IDOTMATRIX_BUZZER_FREQUENCY_HZ : 0);
+#else
+  digitalWrite(IDOTMATRIX_BUZZER_PIN,
+               on ? (IDOTMATRIX_BUZZER_ACTIVE_HIGH ? HIGH : LOW)
+                  : (IDOTMATRIX_BUZZER_ACTIVE_HIGH ? LOW : HIGH));
+#endif
 }
 
 static bool continuousBuzzerRequested() {
   bool wanted = false;
 
+#if IDOTMATRIX_ALARM_BUZZER_ENABLED
   if (alarmActive && activeAlarmSlot < ALARM_SLOT_COUNT)
     wanted |= alarms[activeAlarmSlot].buzzer != 0;
+#endif
 
   return wanted;
 }
 
 void triggerCountdownFinishBuzzer() {
-#if COUNTDOWN_BUZZER_ENABLED
+#if IDOTMATRIX_COUNTDOWN_BUZZER_ENABLED
   countdownBuzzerOneShot = true;
 #endif
 }
@@ -791,7 +801,7 @@ void cancelCountdownFinishBuzzer() {
 }
 
 void triggerScheduleStartBuzzer() {
-#if SCHEDULE_BUZZER_ENABLED && (SCHEDULE_BUZZER_PIN >= 0)
+#if IDOTMATRIX_SCHEDULE_BUZZER_ENABLED
   scheduleBuzzerOneShot = true;
 #endif
 }
@@ -801,7 +811,7 @@ void cancelScheduleStartBuzzer() {
 }
 
 void triggerConnectionBuzzer() {
-#if CONNECTION_BUZZER_ENABLED
+#if IDOTMATRIX_CONNECTION_BUZZER_ENABLED
   // Connection feedback is intentionally low priority. Never interrupt an
   // alarm or another one-shot notification already using the buzzer.
   if (!continuousBuzzerRequested() && !buzzerPatternRunning &&
@@ -816,6 +826,15 @@ void cancelConnectionBuzzer() {
 }
 
 void updateBuzzer() {
+  if (!buzzerHardwareReady) {
+    countdownBuzzerOneShot = false;
+    scheduleBuzzerOneShot = false;
+    connectionBuzzerOneShot = false;
+    buzzerPatternRunning = false;
+    buzzerPulseIndex = 0;
+    return;
+  }
+
   const bool continuousWanted = continuousBuzzerRequested();
   const bool trillOneShotWanted = countdownBuzzerOneShot || scheduleBuzzerOneShot;
   const bool wanted = continuousWanted || trillOneShotWanted || connectionBuzzerOneShot;
@@ -6384,8 +6403,29 @@ void setup(){
 #if OLED_STATUS_ENABLED
   setupStatusOLED();
 #endif
-#if ALARM_BUZZER_ENABLED && (ALARM_BUZZER_PIN >= 0)
-  pinMode(ALARM_BUZZER_PIN,OUTPUT); digitalWrite(ALARM_BUZZER_PIN,BUZZER_ACTIVE_HIGH?LOW:HIGH);
+#if IDOTMATRIX_BUZZER_AVAILABLE
+  #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
+    // Attach one LEDC channel to the passive buzzer. Tone generation is fully
+    // hardware-driven and therefore does not block BLE or display updates.
+    buzzerHardwareReady = ledcAttach(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ, 10);
+    if (!buzzerHardwareReady) {
+      Serial.print("BUZZER: LEDC attach failed on GPIO");
+      Serial.println(IDOTMATRIX_BUZZER_PIN);
+    } else {
+      ledcWriteTone(IDOTMATRIX_BUZZER_PIN, 0);
+#if DEBUG_SERIAL
+      Serial.print("BUZZER: passive GPIO"); Serial.print(IDOTMATRIX_BUZZER_PIN);
+      Serial.print(" frequency="); Serial.print(IDOTMATRIX_BUZZER_FREQUENCY_HZ); Serial.println(" Hz");
+#endif
+    }
+  #else
+    pinMode(IDOTMATRIX_BUZZER_PIN,OUTPUT);
+    digitalWrite(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_ACTIVE_HIGH ? LOW : HIGH);
+    buzzerHardwareReady = true;
+#if DEBUG_SERIAL
+    Serial.print("BUZZER: active GPIO"); Serial.println(IDOTMATRIX_BUZZER_PIN);
+#endif
+  #endif
 #endif
 // Allocate the logical display buffers at runtime. This is essential for the
   // 64x64 profile: three static 4096-pixel CRGB buffers would consume ~36 KB

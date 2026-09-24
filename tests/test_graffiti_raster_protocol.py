@@ -1,7 +1,7 @@
 from pathlib import Path
 src=(Path(__file__).resolve().parents[1]/"src"/"IDotMatrix.ino").read_text()
 assert "#define FW_RELEASE \"0.5.2-dev\"" in src
-assert "#define FW_BUILD 176" in src
+assert "#define FW_BUILD 177" in src
 assert "struct GraffitiRasterState" in src
 assert "data[4]==0x00 || data[4]==0x02" in src
 assert "const uint8_t *payload=data+9;" in src

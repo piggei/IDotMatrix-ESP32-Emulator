@@ -11,17 +11,17 @@ The emulator is based on official-app BLE captures, differential testing and dir
 ## Release
 
 - **Release:** `0.5.2-dev`
-- **Build:** `176`
+- **Build:** `177`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.2-dev-B176
+IDOTMATRIX_FW=0.5.2-dev-B177
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Development build notes: [`docs/BUILD-176-NOTES.md`](docs/BUILD-176-NOTES.md).
+Development build notes: [`docs/BUILD-177-NOTES.md`](docs/BUILD-177-NOTES.md).
 
 The latest stable public release remains `0.5.1 / Build 172`.
 
@@ -43,7 +43,8 @@ The current implementation includes:
 - optional DS3231 RTC support;
 - independent logical and physical display resolutions with nearest-neighbor upscaling and box-average downscaling;
 - hardware-qualified automatic orientation with the MatrixPortal S3 LIS3DH and an external ICM-20689 validated on ESP32-C3 with a shared I2C bus;
-- generic orientation mount compensation and optional compile-time I2C pin overrides for external sensors.
+- generic orientation mount compensation and optional compile-time I2C pin overrides for external sensors;
+- active and passive buzzer backends with non-blocking Alarm, Countdown, Schedule and connection notification patterns.
 
 Protocol details, confidence levels and original-device observations are documented in [`PROTOCOL.md`](PROTOCOL.md).
 
@@ -64,7 +65,7 @@ Reference configuration:
 
 ### ESP32-C3 + 16x16 WS2812
 
-The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor selection/wiring is supplied through the optional local hardware configuration.
+The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor. Build 177 configures the reference C3 profile for a passive buzzer on GPIO3 using hardware LEDC tone generation at 2 kHz. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor and buzzer settings can be overridden through the optional local hardware configuration.
 
 ### Classic ESP32 + WS2812
 
@@ -163,7 +164,7 @@ Build 174 added an optional local include for board-specific sensor wiring. Buil
 cp src/IDotMatrixUserConfig.example.h src/IDotMatrixUserConfig.h
 ```
 
-Then uncomment only the settings required by the local hardware. The header can select the accelerometer backend and define I2C pins, sensor address and mount compensation without editing `platformio.ini` or tracked source files. For example:
+Then uncomment only the settings required by the local hardware. The header can select the accelerometer backend, define I2C pins, sensor address and mount compensation, and override the buzzer backend/pin/frequency without editing `platformio.ini` or tracked source files. For example:
 
 ```cpp
 #pragma once
@@ -179,6 +180,8 @@ Then uncomment only the settings required by the local hardware. The header can 
 Build 176 disables verbose orientation diagnostics by default. Set `IDOTMATRIX_ORIENTATION_DIAGNOSTICS=1` for the detailed probe/configuration summary; when enabled it is repeated near the end of `setup()` so ESP32-C3 USB serial sessions that attach late can still see it. A normal build still emits one concise error if sensor initialization fails.
 
 `src/IDotMatrixUserConfig.h` is ignored by Git and preserved by `update_idotmatrix_emulator.sh` when a new source archive is synchronized. PlatformIO sensor settings are now profile defaults, so explicit values in the local header take precedence.
+
+The C3 profile defaults to `IDOTMATRIX_BUZZER_PASSIVE` on GPIO3 at 2000 Hz. Active buzzer modules remain supported, and any individual buzzer event can be disabled locally.
 
 See [`docs/HARDWARE-CONFIGURATION.md`](docs/HARDWARE-CONFIGURATION.md) for precedence and examples.
 
@@ -233,7 +236,7 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/BUILD-176-NOTES.md`](docs/BUILD-176-NOTES.md) — current 0.5.2-dev / Build 176 consolidation notes
+- [`docs/BUILD-177-NOTES.md`](docs/BUILD-177-NOTES.md) — current 0.5.2-dev / Build 177 passive-buzzer development notes
 - [`docs/BUILD-174-NOTES.md`](docs/BUILD-174-NOTES.md) — local hardware configuration layer
 - [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — final 0.5.1 source/documentation/protocol audit
 

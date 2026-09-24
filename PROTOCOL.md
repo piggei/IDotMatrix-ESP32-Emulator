@@ -555,7 +555,7 @@ At natural completion the firmware spontaneously sends:
 05 00 08 80 03
 ```
 
-Natural completion also triggers a local one-shot active-buzzer notification: three short 90 ms pulses separated by 70 ms gaps. This does not add or alter any BLE packet and is documented as emulator-side behavior rather than an observed original-device protocol requirement. Countdown reset or a new Countdown start cancels a completion trill still in progress.
+Natural completion also triggers a local one-shot buzzer notification: three short 90 ms pulses separated by 70 ms gaps. This does not add or alter any BLE packet and is documented as emulator-side behavior rather than an observed original-device protocol requirement. Countdown reset or a new Countdown start cancels a completion trill still in progress.
 
 The local countdown logic works, but app UI compatibility is not yet considered complete.
 
@@ -747,7 +747,7 @@ If the packet is shorter than the full header, the firmware treats it as a metad
 05 00 00 80 01
 ```
 
-The protocol carries buzzer/sound state, and the emulator includes optional active-buzzer support behind compile-time hardware configuration. The current generic source defaults keep the buzzer disabled unless a target enables it. Direct original-hardware testing shows Alarm uses repeating three-beep trills and Program/Schedule uses the same repeating pattern for roughly 30 seconds; original Countdown completion is silent. The emulator policy keeps Alarm repeating, uses one three-beep trill for Program/Schedule, and optionally emits one three-beep Countdown-completion trill when buzzer hardware is enabled. These local buzzer policies add no BLE packet.
+The protocol carries buzzer/sound state, and the emulator includes optional active and passive buzzer backends behind compile-time hardware configuration. Passive buzzers use hardware LEDC tone generation; generic source defaults keep buzzer output disabled unless a target enables it. Direct original-hardware testing shows Alarm uses repeating three-beep trills and Program/Schedule uses the same repeating pattern for roughly 30 seconds; original Countdown completion is silent. The emulator policy keeps Alarm repeating, uses one three-beep trill for Program/Schedule, and optionally emits one three-beep Countdown-completion trill when buzzer hardware is enabled. These local buzzer policies add no BLE packet.
 
 ---
 

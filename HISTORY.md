@@ -1,5 +1,20 @@
 # Release History
 
+## 0.5.2-dev / Build 177
+
+Passive-buzzer hardware support build.
+
+- adds a generic buzzer backend selection: `NONE`, `ACTIVE` or `PASSIVE`;
+- implements passive buzzer output through the ESP32 LEDC peripheral, keeping the existing non-blocking trill state machine;
+- keeps active self-oscillating buzzer support available for other hardware;
+- configures the qualified `esp32c3_ws2812_16` profile for a passive buzzer on GPIO3 at 2000 Hz;
+- enables Alarm, Countdown, Program/Schedule and connection notification buzzer policies on that C3 reference profile;
+- exposes buzzer type, pin, frequency, active polarity and per-event policy through `IDotMatrixUserConfig.h`;
+- permits an explicit local `IDOTMATRIX_BUZZER_NONE` selection to disable profile buzzer defaults cleanly;
+- leaves BLE protocol, media handling, display rendering and the qualified orientation paths unchanged.
+
+Status: **implementation ready for physical passive-buzzer qualification on the ESP32-C3 reference hardware.**
+
 ## 0.5.2-dev / Build 176
 
 Post-qualification cleanup and documentation-alignment build.
