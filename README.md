@@ -10,20 +10,20 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.5.2-rc.3`
-- **Build:** `185`
+- **Release:** `0.5.2`
+- **Build:** `189`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.2-rc.3-B185
+IDOTMATRIX_FW=0.5.2-B190
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Release candidate notes: [`docs/RELEASE-NOTES-0.5.2-rc.3.md`](docs/RELEASE-NOTES-0.5.2-rc.3.md).
+Release notes: [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md).
 
-The latest stable public release remains `0.5.1 / Build 172`.
+`0.5.2 / Build 190` is the current stable public release.
 
 ## What the emulator supports
 
@@ -65,13 +65,13 @@ Reference configuration:
 
 ### ESP32-C3 + 16x16 WS2812
 
-The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the three-wire passive low-level-trigger buzzer module on GPIO3 is hardware-qualified. The DS3231 RTC backend is hardware-qualified on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. Battery-backed retention, BLE time writeback and cold boot into Clock when no persisted Carousel takes priority have been validated on the ESP32-C3 target. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
+The native 16x16 ESP32-C3 profile is also hardware validated. The ICM-20689 orientation backend has additionally been validated on ESP32-C3 with the I2C bus shared with the gesture sensor, and the three-wire passive low-level-trigger buzzer module on GPIO3 is hardware-qualified. The DS3231 RTC backend is hardware-qualified on the same shared I2C bus, using GPIO1 as SDA and GPIO2 as SCL in the reference profile. Battery-backed retention, BLE time writeback and cold boot into Clock when no persisted Carousel takes priority have been validated on the ESP32-C3 target. Carousel-first boot priority, RTC hot recovery, Countdown buzzer completion, BLE connection feedback, Alarm persistence and Program/Schedule persistence have also been verified after app disconnect/reset as applicable. The checked-in PlatformIO environment uses a WS2812-only dependency set and does not build the HUB75 driver on this target; external sensor, RTC and buzzer settings can be overridden through the optional local hardware configuration.
 
 ### Classic ESP32 + WS2812
 
 Classic ESP32 remains supported by the source architecture. A dedicated environment is retained for isolated iOS compatibility research.
 
-See [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) for target-specific details.
+See [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) for target-specific details. Exact reference modules, supplied photos and qualification status are catalogued in [`docs/HARDWARE-MODULES.md`](docs/HARDWARE-MODULES.md).
 
 ## Display architecture
 
@@ -121,7 +121,7 @@ The raw HCI-derived exchange is summarized in [`docs/captures/14-graffiti-origin
 
 ## Automatic orientation support
 
-The orientation subsystem is compile-time gated. Automatic display rotation is hardware-qualified on MatrixPortal S3 using its on-board LIS3DH and on ESP32-C3 using an external ICM-20689 on a shared I2C bus. MPU-6050 support shares the same low-level family driver but remains implemented and unqualified. The validated normalized mapping is `+Y`=0 deg, `+X`=90 deg, `-Y`=180 deg and `-X`=270 deg. External or custom-mounted sensors can compensate their planar mounting orientation at compile time with `IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`.
+The orientation subsystem is compile-time gated. Automatic display rotation is hardware-qualified on MatrixPortal S3 using its on-board LIS3DH and on ESP32-C3 using an external ICM-20689 on a shared I2C bus. MPU-6050 support shares the same low-level family driver but remains implemented and unqualified. The current reference candidate is a GY-521 board sold as MPU-6050; because visually similar GY-521-class boards have also been observed with ICM-20689 silicon, runtime `WHO_AM_I` is authoritative. See [`docs/HARDWARE-MODULES.md`](docs/HARDWARE-MODULES.md). The validated normalized mapping is `+Y`=0 deg, `+X`=90 deg, `-Y`=180 deg and `-X`=270 deg. External or custom-mounted sensors can compensate their planar mounting orientation at compile time with `IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`.
 
 Rotation is applied only in the final logical-to-physical output mapping, so the qualified TEXT, media, Clock, timer, scoreboard, Audio/Rhythm and automation renderers remain unchanged. Sensor-specific backends automatically enable the common orientation engine; targets without an `IDOTMATRIX_ACCEL_DRIVER_*` selection compile without accelerometer code or dependencies. See [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md).
 
@@ -234,6 +234,8 @@ These differences are documented explicitly rather than presented as protocol fa
 
 The helper deliberately does not wait for the Espressif JTAG endpoint before starting PlatformIO upload, because that USB identity appears only after the programming transition has already begun.
 
+Before synchronizing the repository, the helper runs `tests/run_tests.py`. This regression runner uses only the Python standard library, so `pytest` is optional and does not need to be installed in the PlatformIO Python environment. Set `TEST_PYTHON` only when a different Python interpreter is desired.
+
 ## Security considerations
 
 The emulated compatibility BLE profile follows the behavior required by the official app and is not a secure authenticated control channel. CRC32 is used for media integrity, not authentication.
@@ -248,14 +250,15 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`HISTORY.md`](HISTORY.md) — public release history
 - [`FUTURE-WORK.md`](FUTURE-WORK.md) — non-blocking research and possible extensions
 - [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) — supported hardware and qualification policy
+- [`docs/HARDWARE-MODULES.md`](docs/HARDWARE-MODULES.md) — exact peripheral modules, supplied photos and qualification state
 - [`docs/HARDWARE-CONFIGURATION.md`](docs/HARDWARE-CONFIGURATION.md) — local sensor/I2C override file and precedence
 - [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md) — accelerometer driver abstraction and orientation diagnostics
 - [`docs/PLATFORMIO.md`](docs/PLATFORMIO.md) — reproducible PlatformIO build/upload guide
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
 - [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/RELEASE-NOTES-0.5.2-rc.3.md`](docs/RELEASE-NOTES-0.5.2-rc.3.md) — 0.5.2 RC3 correction and qualification summary
-- [`docs/RELEASE-AUDIT-0.5.2-rc.3.md`](docs/RELEASE-AUDIT-0.5.2-rc.3.md) — RC3 source/documentation/package audit
+- [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md) — 0.5.2 final release notes and qualification summary
+- [`docs/RELEASE-AUDIT-0.5.2.md`](docs/RELEASE-AUDIT-0.5.2.md) — 0.5.2 final source/documentation/package audit
 - [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — historical 0.5.1 release audit
 
 ## Related project

@@ -1,6 +1,6 @@
 # Future Work
 
-Release `0.5.2-rc.3 / Build 185` is the current release-candidate baseline. The items below are non-blocking research or possible future extensions and are not RC3 release blockers. The latest stable public release remains `0.5.1 / Build 172` until the 0.5.2 line is promoted to final.
+Release `0.5.2 / Build 190` is the current stable baseline. The items below are non-blocking research or possible future extensions and are not part of the 0.5.2 release scope.
 
 ## iOS compatibility research
 
@@ -28,7 +28,7 @@ Password support remains intentionally disabled because the complete transaction
 ## Possible platform extensions
 
 - Hardware-qualify additional ICM-20689 board/wiring combinations only where they materially differ from the qualified ESP32-C3 shared-I2C setup.
-- Hardware-qualify the implemented MPU-6050 code path if a genuine MPU-6050 module becomes available.
+- Hardware-qualify the supplied GY-521 / MPU-6050 candidate by confirming its runtime `WHO_AM_I` and exercising the existing MPU-6050 orientation path on real hardware.
 - Add further accelerometer backends only through the existing normalized X/Y/Z interface and common orientation engine.
 - Evaluate additional RTC backends only when real hardware is available; keep the hardware-qualified DS3231 path unchanged unless new evidence requires it.
 - Hardware-qualify additional logical/physical scaling combinations beyond native 64x64 and native 16x16.

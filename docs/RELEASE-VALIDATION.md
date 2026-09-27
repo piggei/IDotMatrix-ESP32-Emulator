@@ -1,10 +1,10 @@
-# 0.5.2-rc.3 Release Validation
+# 0.5.2 Release Validation
 
-**Release:** `0.5.2-rc.3`  
-**Build:** `185`  
-**Firmware signature:** `IDOTMATRIX_FW=0.5.2-rc.3-B185`
+**Release:** `0.5.2`  
+**Build:** `190`  
+**Firmware signature:** `IDOTMATRIX_FW=0.5.2-B190`
 
-This document defines the qualification scope for the third 0.5.2 release candidate. It supersedes the historical 0.5.0 validation document for current release work.
+This document records the qualification scope of the stable 0.5.2 release. Build 190 supersedes the initial stable Build 189 package with a tooling-only update: the repository updater now uses the checked-in dependency-free regression runner instead of requiring pytest, and the runner executes from the extracted archive root. Firmware runtime behavior is unchanged apart from the build identifier.
 
 ## Qualified reference targets
 
@@ -14,18 +14,24 @@ Hardware-qualified baseline for the large-panel path, including representative B
 
 ### ESP32-C3 + 16x16 WS2812
 
-Hardware-qualified baseline for the compact path. The 0.5.2 line additionally qualifies the following peripherals on ESP32-C3:
+Hardware-qualified baseline for the compact path. The 0.5.2 line additionally qualifies the following peripherals and behaviors on ESP32-C3:
 
-- passive low-level-trigger buzzer module on GPIO3 using the LEDC backend, with HIGH idle level;
-- DS3231 RTC on the shared GPIO1/GPIO2 I2C bus, including battery-backed retention, BLE time writeback and cold boot into Clock when no persisted Carousel starts;
+- passive three-wire low-level-trigger buzzer on GPIO3 at 2000 Hz, powered from 3.3 V, with HIGH idle level; the corrected idle behavior has been physically verified to remain cool and silent while inactive;
+- DS3231 RTC on the shared GPIO1/GPIO2 I2C bus, including battery-backed retention, BLE time writeback, 60-second hot-recovery retry and cold boot into Clock when no persisted Carousel takes priority;
+- persisted Carousel boot priority over the RTC Clock;
+- no-Carousel/no-RTC boot fallback to screen off;
 - Clock presentation persistence across power loss (style, 12/24-hour mode, date visibility and RGB color);
-- external ICM-20689 automatic orientation on the tested shared-I2C configuration.
+- Alarm operation after app disconnect and board reset;
+- Program/Schedule operation after app disconnect and board reset;
+- Countdown completion buzzer and BLE connection beep;
+- external ICM-20689 automatic orientation on the tested shared-I2C configuration;
+- post-hardening smoke tests for TEXT, Alarm, Carousel and Clock.
 
-The DS3231 + gesture-sensor shared-bus configuration and the ICM-20689 + gesture-sensor shared-bus configuration were exercised separately. A simultaneous DS3231 + MPU-family accelerometer configuration requires the accelerometer at `0x69`; that three-device combination is not independently claimed as qualified by RC3.
+The DS3231 + gesture-sensor shared-bus configuration and the ICM-20689 + gesture-sensor shared-bus configuration were exercised separately. A simultaneous DS3231 + MPU-family accelerometer configuration requires the accelerometer at `0x69`; that three-device combination is not independently claimed as qualified.
 
 ## Functional regression scope
 
-The RC must preserve the previously qualified protocol/runtime paths:
+The release preserves the previously qualified protocol/runtime paths:
 
 - BLE advertising, services, characteristics and Device Info;
 - time synchronization, screen power, brightness and app-controlled flip;
@@ -37,38 +43,47 @@ The RC must preserve the previously qualified protocol/runtime paths:
 - LEVEL and FFT Audio/Rhythm framing and effects;
 - LittleFS media ownership and persistence rules;
 - normal Bulk `0x01..0x03` routing isolated from Graffiti full-raster `type=0x00`;
-- automatic orientation at the final logical-to-physical output stage.
+- automatic orientation at the final logical-to-physical output stage;
 - boot-display priority: persisted Carousel first, otherwise valid RTC Clock, otherwise screen off.
 
-## 0.5.2 RC additions
+## 0.5.2 hardening scope
 
-The 0.5.2 RC line adds or consolidates:
+The final 0.5.2 line includes the static-audit corrections completed before promotion:
 
-- ICM-20689 orientation backend and shared MPU-family driver;
-- optional `IDotMatrixUserConfig.h` local hardware layer;
-- passive and active buzzer backends;
-- DS3231 persistent RTC backend using the already-initialized shared `Wire` bus;
-- RTC retry/recovery every 60 seconds by default when configured but unavailable;
-- software-clock seeding from a valid RTC for temporary I2C-failure fallback;
-- Clock presentation persistence in NVS;
-- native USB CDC/JTAG serial configuration on the ESP32-C3 PlatformIO profile;
-- removal of manually-added deprecated BLE2902 descriptors.
+- TEXT parser minimum-length guard rejects payloads that do not contain the first marker byte;
+- software fallback timekeeping uses the 64-bit ESP timer monotonic clock instead of a 32-bit `millis()` epoch;
+- `IDOTMATRIX_ACCEL_DRIVER_NONE` can explicitly suppress a profile-provided accelerometer backend;
+- Adafruit LIS3DH is pinned to exact version `1.3.0`;
+- the repository update helper runs the checked-in dependency-free Python regression runner before synchronization, requires explicit confirmation for a dirty Git tree and removes the selected PlatformIO environment build directory before build/upload;
+- host-regression coverage exists for TEXT minimum-length handling, long-uptime timekeeping and passive-buzzer idle polarity;
+- source comments and public documentation are maintained in English.
 
 ## Explicit exclusions
 
-The following do not block RC3:
+The following are outside the 0.5.2 release scope:
 
 - complete iOS/RCSP compatibility on the diagnostic classic-ESP32 profile;
 - password SET/VERIFY support;
-- MPU-6050 hardware qualification;
+- GY-521 / MPU-6050 hardware qualification (backend implemented; exact supplied board not yet physically qualified);
 - MatrixPortal + external ICM-20689 hardware qualification;
 - additional RTC models;
 - qualification of every possible logical/physical scaling combination.
 
 ## Packaging checks
 
-The RC package must contain no `.pio` output, Python cache, local `src/IDotMatrixUserConfig.h`, temporary diagnostic files or generated firmware binaries. Public documentation must be in English. Current release/build identifiers must resolve to `0.5.2-rc.3 / Build 185`; historical identifiers may remain only where explicitly describing older builds/releases.
+The final source package must contain no `.pio` output, Python cache, local `src/IDotMatrixUserConfig.h`, temporary diagnostic files or generated firmware binaries. Public documentation must be in English. Current release/build identifiers must resolve to `0.5.2 / Build 190`; historical identifiers may remain only in explicitly historical material.
 
-## RC3 publication gate
+All controller-board, LED-matrix and peripheral-module reference images present in the qualified documentation set must remain packaged and referenced.
 
-Static checks and source/documentation audit do not replace a final on-device smoke test of Build 185. RC3 intentionally changes only passive-buzzer idle polarity handling from the RC2 baseline: the qualified low-level-trigger module must remain electrically inactive while silent and must still produce the expected 2000 Hz notification tone. Any other unexpected runtime difference should block publication and be treated as a regression.
+## Build verification
+
+Repository-level tests do not replace a real PlatformIO compile. The recommended clean source-to-binary verification commands are:
+
+```bash
+pio run -e matrixportal_s3_hub75_64
+pio run -e matrixportal_s3_hub75_64_icm20689
+pio run -e ios_compat_esp32_ws2812_32
+pio run -e esp32c3_ws2812_16
+```
+
+The packaging environment used for Build 190 does not provide PlatformIO or Arduino CLI, so this document does not claim a fresh four-environment compile from that environment. The ESP32-C3 runtime paths changed during the 0.5.2 line were smoke-tested successfully on hardware before final promotion; MatrixPortal behavior is inherited from the previously qualified baseline for paths not changed afterward.

@@ -104,8 +104,8 @@ def test_source_uses_ledc_for_passive_output():
     assert '#include <esp32-hal-ledc.h>' in INO
     assert 'ledcAttach(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ, BUZZER_LEDC_RESOLUTION_BITS)' in INO
     assert 'ledcWriteTone(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ)' in INO
-    assert 'IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW ? BUZZER_LEDC_MAX_DUTY : 0u' in INO
-    assert 'digitalWrite(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW ? HIGH : LOW)' in INO
+    assert 'idotPassiveBuzzerIdleDuty(IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW != 0, BUZZER_LEDC_MAX_DUTY)' in INO
+    assert 'idotPassiveBuzzerIdleLevel(IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW != 0) ? HIGH : LOW' in INO
     assert 'digitalWrite(IDOTMATRIX_BUZZER_PIN' in INO
 
 

@@ -1,5 +1,7 @@
 # Local Hardware Configuration
 
+For exact photographed reference modules and their qualification state, see [`HARDWARE-MODULES.md`](HARDWARE-MODULES.md).
+
 The optional local configuration header keeps board-specific wiring and peripheral policy outside tracked source files. It covers accelerometer selection and mounting, shared-I2C pins, RTC settings, buzzer hardware and sound-policy overrides.
 
 ## Create the local file
@@ -29,9 +31,11 @@ When the local file explicitly changes only the backend, the previous profile-sp
 
 ### Accelerometer backend
 
-Select at most one:
+Select at most one backend, or explicitly suppress the profile fallback:
 
 ```cpp
+#define IDOTMATRIX_ACCEL_DRIVER_NONE
+// or
 #define IDOTMATRIX_ACCEL_DRIVER_LIS3DH
 // or
 #define IDOTMATRIX_ACCEL_DRIVER_ICM20689
@@ -39,7 +43,7 @@ Select at most one:
 #define IDOTMATRIX_ACCEL_DRIVER_MPU6050
 ```
 
-Selecting more than one backend is rejected at compile time.
+`IDOTMATRIX_ACCEL_DRIVER_NONE` is useful when a PlatformIO profile normally supplies a sensor backend but the target assembly omits that sensor. Combining `NONE` with a real backend, or selecting more than one real backend, is rejected at compile time.
 
 ### I2C pins
 

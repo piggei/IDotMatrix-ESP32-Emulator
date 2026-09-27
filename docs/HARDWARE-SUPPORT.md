@@ -10,6 +10,10 @@ A target is considered **supported** only after end-to-end physical validation o
 
 ### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
+![Adafruit MatrixPortal ESP32-S3](../assets/hardware/adafruit-matrixportal-s3.jpg)
+
+![64x64 HUB75 panel](../assets/hardware/hub75-64x64-smd2121.jpg)
+
 Primary reference target:
 
 - Adafruit MatrixPortal ESP32-S3;
@@ -29,6 +33,10 @@ matrixportal_s3_hub75_64
 ```
 
 ### ESP32-C3 + 16x16 WS2812
+
+![ESP32-C3 SuperMini](../assets/hardware/esp32-c3-supermini.jpg)
+
+![16x16 WS2812 matrix](../assets/hardware/ws2812b-16x16-eco.png)
 
 The native 16x16 ESP32-C3 target is also hardware validated.
 
@@ -91,11 +99,20 @@ See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.
 
 The firmware supports both self-oscillating active buzzers and passive buzzers. Passive output uses the ESP32 LEDC hardware peripheral and therefore does not depend on timing loops in the main firmware. Passive trigger polarity is configurable with `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW`. The reference ESP32-C3 profile selects the qualified three-wire transistor module on GPIO3 at 2000 Hz with low-level triggering and 3.3 V module supply; while silent, GPIO3 is held HIGH so the module transistor is off and the buzzer is not DC-biased. Buzzer backend, GPIO, frequency, trigger polarity and per-event policies can be overridden in `IDotMatrixUserConfig.h`.
 
+
+## Qualified peripheral modules
+
+The exact peripheral boards used for the 0.5.2 hardware work are documented with reference photos in [`HARDWARE-MODULES.md`](HARDWARE-MODULES.md). In particular:
+
+- the three-wire S9012-based passive buzzer module marked `low level trigger` is hardware-qualified at 3.3 V on ESP32-C3 GPIO3;
+- the DS3231 + AT24C32 combination board is hardware-qualified for its DS3231 RTC function at `0x68`; the onboard AT24C32 EEPROM is present but not currently used by the emulator;
+- the supplied GY-521 seller reference is documented as an MPU-6050 module, but the exact board remains **implemented / awaiting physical qualification** until its runtime `WHO_AM_I` is confirmed.
+
 ## Orientation sensor support
 
 The MatrixPortal S3 LIS3DH backend is enabled on the `matrixportal_s3_hub75_64` profile and remains hardware-qualified. The common orientation layer supports a compile-time planar mounting offset (`IDOTMATRIX_ACCEL_MOUNT_ROTATION=0|90|180|270`).
 
-The external ICM-20689 backend is selected with `IDOTMATRIX_ACCEL_DRIVER_ICM20689`. It identifies the sensor with `WHO_AM_I=0x98`, uses the common orientation engine, and is **hardware-qualified on ESP32-C3 with the I2C bus shared with the gesture sensor**. The same low-level driver also contains an MPU-6050 path for `WHO_AM_I=0x68/0x69`; that MPU-6050 path remains implemented but unqualified.
+The external ICM-20689 backend is selected with `IDOTMATRIX_ACCEL_DRIVER_ICM20689`. It identifies the sensor with `WHO_AM_I=0x98`, uses the common orientation engine, and is **hardware-qualified on ESP32-C3 with the I2C bus shared with the gesture sensor**. The same low-level driver also contains an MPU-6050 path for `WHO_AM_I=0x68/0x69`; that MPU-6050 path remains implemented but unqualified. A GY-521 board sold as MPU-6050 is now documented as the reference candidate module; runtime `WHO_AM_I` remains authoritative because visually similar GY-521 boards have been observed with ICM-20689 silicon.
 
 A dedicated `matrixportal_s3_hub75_64_icm20689` PlatformIO environment is provided for an external ICM-20689 on MatrixPortal. It auto-probes I2C addresses `0x68` and `0x69`; that specific board/sensor combination has not been separately hardware-qualified. External boards can override the I2C pins with `IDOTMATRIX_I2C_SDA_PIN` and `IDOTMATRIX_I2C_SCL_PIN`. Verbose probe and XYZ diagnostics are opt-in.
 

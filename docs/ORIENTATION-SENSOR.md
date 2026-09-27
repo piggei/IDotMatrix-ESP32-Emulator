@@ -205,7 +205,9 @@ The same low-level register driver also implements an MPU-6050 path selected wit
 IDOTMATRIX_ACCEL_DRIVER_MPU6050
 ```
 
-It accepts `WHO_AM_I=0x68` or `0x69` and intentionally omits the ICM-20689-only `ACCEL_CONFIG2` configuration. This code path is implemented but has not yet been hardware-qualified in the emulator project.
+It accepts `WHO_AM_I=0x68` or `0x69` and intentionally omits the ICM-20689-only `ACCEL_CONFIG2` configuration. This code path is implemented but has not yet been hardware-qualified in the emulator project. A supplied GY-521 seller reference identifies its board as MPU-6050 and lists 3-5 V module supply, I2C, 16-bit data, 2/4/8/16 g accelerometer ranges and 250/500/1000/2000 deg/s gyro ranges. The emulator only uses accelerometer data.
+
+Because visually similar GY-521 boards have already been encountered with ICM-20689 silicon, qualification must use the runtime `WHO_AM_I` result rather than the board name or seller listing. See [`HARDWARE-MODULES.md`](HARDWARE-MODULES.md).
 ## Sensor mounting compensation
 
 The accelerometer driver and the common orientation engine are intentionally independent from the mechanical mounting of the sensor PCB.

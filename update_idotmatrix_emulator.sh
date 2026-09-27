@@ -6,12 +6,13 @@ set -euo pipefail
 # Workflow:
 #   1. Select newest generated source ZIP from the Windows Downloads folder.
 #   2. Extract it to a temporary directory.
-#   3. Synchronize it into the Git working repository while preserving .git/.pio.
-#   4. Force the emulator translation unit to rebuild while preserving caches.
-#   5. Run the PlatformIO upload target directly (build + programming).  There is
+#   3. Run the dependency-free repository regression suite against the extracted source.
+#   4. Synchronize it into the Git working repository while preserving .git/.pio.
+#   5. Invalidate the selected environment build directory to prevent stale objects.
+#   6. Run the PlatformIO upload target directly (clean build + programming). There is
 #      intentionally no pre-upload JTAG endpoint check: that USB identity appears
 #      only after PlatformIO has already started the programming transition.
-#   6. Optionally report the linked firmware signature after upload, then wait for
+#   7. Optionally report the linked firmware signature after upload, then wait for
 #      the Adafruit runtime serial endpoint and optionally open the monitor.
 #
 # Every operational step requires explicit confirmation.
@@ -32,6 +33,7 @@ SERIAL_PORT_OVERRIDE="$MONITOR_SERIAL_PORT_OVERRIDE"
 SERIAL_PATTERN="$MONITOR_SERIAL_PATTERN"
 SERIAL_PORT=""
 SERIAL_BAUD="${SERIAL_BAUD:-115200}"
+TEST_PYTHON="${TEST_PYTHON:-python3}"
 
 select_serial_role() {
     [[ "$1" == "monitor" ]] || die "Only the runtime/monitor serial role is resolved by this helper"
@@ -173,6 +175,11 @@ command -v unzip >/dev/null 2>&1 || die "unzip not found"
 command -v rsync >/dev/null 2>&1 || die "rsync not found"
 command -v pio >/dev/null 2>&1 || die "PlatformIO CLI (pio) not found"
 command -v git >/dev/null 2>&1 || die "git not found"
+if [[ "$TEST_PYTHON" == */* ]]; then
+    [[ -x "$TEST_PYTHON" ]] || die "Test Python is not executable: $TEST_PYTHON"
+else
+    command -v "$TEST_PYTHON" >/dev/null 2>&1 || die "Python interpreter not found: $TEST_PYTHON"
+fi
 
 [[ -d "$ARCHIVE_DIR" ]] || die "Archive directory not found: $ARCHIVE_DIR"
 [[ -d "$REPO/.git" ]] || die "Not a Git repository: $REPO"
@@ -197,6 +204,9 @@ echo
 echo "Configuration:"
 echo "  Archive directory : $ARCHIVE_DIR"
 echo "  Selected archive  : $ARCHIVE"
+if command -v sha256sum >/dev/null 2>&1; then
+    echo "  Archive SHA-256   : $(sha256sum "$ARCHIVE" | awk '{print $1}')"
+fi
 echo "  Repository        : $REPO"
 echo "  PlatformIO env    : $PIO_ENV"
 echo "  Monitor pattern   : $MONITOR_SERIAL_PATTERN"
@@ -206,6 +216,7 @@ fi
 echo "  Runtime current   : ${SERIAL_PORT:-currently unavailable}"
 echo "  Runtime target    : ${SERIAL_TARGET:-currently unavailable}"
 echo "  Serial baud       : $SERIAL_BAUD"
+echo "  Test Python       : $(command -v "$TEST_PYTHON" 2>/dev/null || printf '%s' "$TEST_PYTHON")"
 echo
 echo "Important:"
 echo "  .git/, .pio/ and src/IDotMatrixUserConfig.h are preserved during repository synchronization."
@@ -246,21 +257,42 @@ SOURCE_BUILD="$(extract_fw_build "$SOURCE_DIR/src/IDotMatrix.ino")"
 echo "Archive firmware: ${SOURCE_RELEASE:-UNKNOWN} / BUILD ${SOURCE_BUILD:-UNKNOWN}"
 
 # -----------------------------------------------------------------------------
-# STEP 2 - Show repository state before replacement
+# STEP 2 - Run extracted-source regression tests before touching the repository
 # -----------------------------------------------------------------------------
 echo
-echo "==> [2] Inspect current Git working tree"
+echo "==> [2] Run repository regression tests"
+if [[ ! -d "$SOURCE_DIR/tests" ]]; then
+    die "tests/ directory missing from source archive"
+fi
+TEST_RUNNER="$SOURCE_DIR/tests/run_tests.py"
+[[ -f "$TEST_RUNNER" ]] || die "Dependency-free regression runner missing: $TEST_RUNNER"
+echo "    $TEST_PYTHON '$TEST_RUNNER'"
+"$TEST_PYTHON" "$TEST_RUNNER"
+
+# -----------------------------------------------------------------------------
+# STEP 3 - Show repository state before replacement
+# -----------------------------------------------------------------------------
+echo
+echo "==> [3] Inspect current Git working tree"
 if confirm "Show current git status before replacing files?"; then
     git -C "$REPO" status --short --branch
 else
     echo "Skipped."
 fi
 
+if [[ -n "$(git -C "$REPO" status --porcelain)" ]]; then
+    echo "WARNING: repository working tree contains local changes or untracked files."
+    if ! confirm "Continue and allow rsync --delete to replace non-preserved files?"; then
+        echo "Aborted before repository synchronization."
+        exit 0
+    fi
+fi
+
 # -----------------------------------------------------------------------------
-# STEP 3 - Synchronize source into repository
+# STEP 4 - Synchronize source into repository
 # -----------------------------------------------------------------------------
 echo
-echo "==> [3] Synchronize extracted source into repository"
+echo "==> [4] Synchronize extracted source into repository"
 echo "    Source      : $SOURCE_DIR/"
 echo "    Destination : $REPO/"
 echo "    Preserved   : .git/ .pio/ serial.log src/IDotMatrixUserConfig.h"
@@ -293,23 +325,20 @@ if [[ -n "$SOURCE_BUILD" && "$SOURCE_BUILD" != "$REPO_BUILD" ]]; then
     die "Build mismatch after synchronization: archive=$SOURCE_BUILD repository=$REPO_BUILD"
 fi
 
-# rsync -a preserves archive timestamps while .pio is intentionally preserved.
-# A freshly extracted source can therefore look older than the cached object and
-# PlatformIO may reuse the previous firmware object. Force only the emulator
-# translation unit to rebuild; framework and library caches remain untouched.
+# The package synchronizer deliberately preserves .pio so downloaded frameworks
+# and libraries remain cached, but the selected environment build directory is
+# removed completely. This prevents any source/header translation unit from
+# being reused after rsync based on stale archive timestamps.
 PIO_BUILD_DIR="$REPO/.pio/build/$PIO_ENV"
-rm -f \
-    "$PIO_BUILD_DIR/src/IDotMatrix.ino.cpp.o" \
-    "$PIO_BUILD_DIR/src/IDotMatrix.ino.cpp.d"
-touch "$REPO/src/IDotMatrix.ino"
+rm -rf "$PIO_BUILD_DIR"
 
-echo "Forced emulator source rebuild while preserving PlatformIO framework/library cache."
+echo "Invalidated PlatformIO build output for environment: $PIO_ENV"
 
 # -----------------------------------------------------------------------------
-# STEP 4 - Show updated repository state
+# STEP 5 - Show updated repository state
 # -----------------------------------------------------------------------------
 echo
-echo "==> [4] Inspect updated Git working tree"
+echo "==> [5] Inspect updated Git working tree"
 if confirm "Show git status after repository synchronization?"; then
     git -C "$REPO" status --short --branch
 else
@@ -317,17 +346,19 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# STEP 5 - Upload with PlatformIO (build + program in one operation)
+# STEP 6 - Upload with PlatformIO (build + program in one operation)
 # -----------------------------------------------------------------------------
 echo
-echo "==> [5] Build and upload with PlatformIO"
+echo "==> [6] Build and upload with PlatformIO"
 echo "    pio run -d '$REPO' -e '$PIO_ENV' -t upload"
 echo "    The MatrixPortal changes from the Adafruit runtime USB identity to the"
 echo "    Espressif JTAG/programming identity only after PlatformIO starts upload."
 echo "    Therefore there is intentionally no pre-upload JTAG serial check."
 
+UPLOAD_PERFORMED=0
 if confirm "Build and upload ${REPO_RELEASE:-firmware} BUILD ${REPO_BUILD:-?}?"; then
     pio run -d "$REPO" -e "$PIO_ENV" -t upload
+    UPLOAD_PERFORMED=1
 else
     echo "Upload skipped."
 fi
@@ -355,10 +386,10 @@ REPO_RELEASE="$VERIFY_RELEASE"
 REPO_BUILD="$VERIFY_BUILD"
 
 # -----------------------------------------------------------------------------
-# STEP 6 - Wait for runtime serial endpoint, then optionally monitor
+# STEP 7 - Wait for runtime serial endpoint, then optionally monitor
 # -----------------------------------------------------------------------------
 echo
-echo "==> [6] Wait for MatrixPortal runtime monitor endpoint"
+echo "==> [7] Wait for MatrixPortal runtime monitor endpoint"
 echo "    Runtime pattern: $MONITOR_SERIAL_PATTERN"
 echo "    If WSL/Linux lost the USB device during programming, re-attach/re-bind it"
 echo "    now so the Adafruit MatrixPortal runtime serial endpoint becomes visible."
@@ -380,4 +411,5 @@ echo "Repository : $REPO"
 echo "Release    : ${REPO_RELEASE:-UNKNOWN}"
 echo "Build      : ${REPO_BUILD:-UNKNOWN}"
 echo "Firmware   : $FIRMWARE"
+echo "Upload     : $([[ $UPLOAD_PERFORMED -eq 1 ]] && echo performed || echo skipped)"
 echo "Monitor    : ${SERIAL_PORT:-not attached}"

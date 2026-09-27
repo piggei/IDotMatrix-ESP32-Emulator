@@ -1,8 +1,11 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include "IDotMatrixHardwareConfig.h"
+#include "IDotMatrixProtocolGuards.h"
+#include "IDotMatrixBuzzerPolicy.h"
 #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
   #include <esp32-hal-ledc.h>
 #endif
@@ -18,10 +21,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.2-rc.3"
+#define FW_RELEASE "0.5.2"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 5
-#define FW_BUILD 185
+#define FW_BUILD 190
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -404,7 +407,11 @@ bool clockSynced = false;
 uint16_t syncYear = 2026;
 uint8_t syncMonth = 1, syncDay = 1;
 uint8_t syncHour = 0, syncMinute = 0, syncSecond = 0;
-uint32_t syncMillis = 0;
+uint64_t syncMillis = 0;
+
+static inline uint64_t monotonicMillis64() {
+  return (uint64_t)(esp_timer_get_time() / 1000LL);
+}
 uint8_t clockStyle = 0;
 bool clock24h = false;
 bool clockShowDate = false;
@@ -807,8 +814,8 @@ void getAlarmDateTime(uint16_t &y,uint8_t &mo,uint8_t &d,uint8_t &h,uint8_t &mi,
   getCurrentTime(h,mi,se);
   y=syncYear; mo=syncMonth; d=syncDay;
   if(!clockSynced) return;
-  uint32_t elapsed=(millis()-syncMillis)/1000UL;
-  uint32_t dayCarry=((uint32_t)syncHour*3600UL+(uint32_t)syncMinute*60UL+syncSecond+elapsed)/86400UL;
+  uint64_t elapsed=(monotonicMillis64()-syncMillis)/1000ULL;
+  uint64_t dayCarry=((uint64_t)syncHour*3600ULL+(uint64_t)syncMinute*60ULL+syncSecond+elapsed)/86400ULL;
   static const uint8_t mdays[]={31,28,31,30,31,30,31,31,30,31,30,31};
   while(dayCarry--){
     uint8_t dim=mdays[mo-1];
@@ -842,7 +849,7 @@ void updateRtcRecovery(uint32_t nowMs){
     if(rtc.read(recovered)){
       syncYear=recovered.year; syncMonth=recovered.month; syncDay=recovered.day;
       syncHour=recovered.hour; syncMinute=recovered.minute; syncSecond=recovered.second;
-      syncMillis=millis(); clockSynced=true;
+      syncMillis=monotonicMillis64(); clockSynced=true;
 #if DEBUG_SERIAL
       Serial.println("RTC: software clock initialized from recovered RTC");
 #endif
@@ -918,7 +925,7 @@ static inline void setBuzzerOutput(bool on) {
   if (on) {
     ledcWriteTone(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ);
   } else {
-    ledcWrite(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW ? BUZZER_LEDC_MAX_DUTY : 0u);
+    ledcWrite(IDOTMATRIX_BUZZER_PIN, idotPassiveBuzzerIdleDuty(IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW != 0, BUZZER_LEDC_MAX_DUTY));
   }
 #else
   digitalWrite(IDOTMATRIX_BUZZER_PIN,
@@ -1704,8 +1711,8 @@ void getCurrentTime(uint8_t &h, uint8_t &m, uint8_t &s) {
   }
 #endif
   if (!clockSynced) { h = m = s = 0; return; }
-  uint32_t elapsed = (millis() - syncMillis) / 1000UL;
-  uint32_t total = ((uint32_t)syncHour * 3600UL + (uint32_t)syncMinute * 60UL + syncSecond + elapsed) % 86400UL;
+  uint64_t elapsed = (monotonicMillis64() - syncMillis) / 1000ULL;
+  uint64_t total = ((uint64_t)syncHour * 3600ULL + (uint64_t)syncMinute * 60ULL + syncSecond + elapsed) % 86400ULL;
   h = total / 3600UL;
   total %= 3600UL;
   m = total / 60UL;
@@ -2959,7 +2966,7 @@ void updateTextAnimation() {
 // The exact-record-size fallback mirrors the hardware-validated WLED Usermod path
 // and tolerates equivalent app/firmware marker variants (for example 0x0A).
 bool parseTextPayloadInternal(const uint8_t *data,size_t len,bool carouselContext) {
-  if(len<TEXT_GLOBAL_HEADER) return false;
+  if(!idotTextPayloadHasMarker(data, len, TEXT_GLOBAL_HEADER)) return false;
   uint8_t requested=data[0];
   uint8_t n=min(requested,(uint8_t)MAX_TEXT_GLYPHS);
   if(!n) return false;
@@ -3059,7 +3066,7 @@ uint16_t effectFrameInterval(){
   // (for example speed=5).
   if(effectState.effect==6) return 40;
 
-  // Gli altri effetti restano volutamente piu' lenti.
+  // The remaining effects intentionally stay slower.
   return map(s,0,100,360,70);
 }
 
@@ -4959,7 +4966,7 @@ void processFA02Packet(const uint8_t *data,size_t len){
     uint16_t y=2000+data[4];
     uint8_t mo=data[5], d=data[6], h=data[8], mi=data[9], se=data[10];
     if(isValidDateTime(y,mo,d,h,mi,se)){
-      syncYear=y; syncMonth=mo; syncDay=d; syncHour=h; syncMinute=mi; syncSecond=se; syncMillis=millis(); clockSynced=true;
+      syncYear=y; syncMonth=mo; syncDay=d; syncHour=h; syncMinute=mi; syncSecond=se; syncMillis=monotonicMillis64(); clockSynced=true;
 #if IDOTMATRIX_RTC_AVAILABLE && IDOTMATRIX_RTC_SYNC_FROM_BLE
       if(!rtcReady) rtcRetryNextAt=millis();
       if(rtcReady){
@@ -5807,7 +5814,7 @@ bool scheduleTimeInside(const ScheduleActivity &a, uint16_t nowMin) {
   uint16_t e = (uint16_t)a.endHour * 60U + a.endMinute;
   if (s == e) return true;                 // 24h
   if (s < e) return nowMin >= s && nowMin < e;
-  return nowMin >= s || nowMin < e;        // attraversa mezzanotte
+  return nowMin >= s || nowMin < e;        // crosses midnight
 }
 
 static inline uint32_t pngBE32(const uint8_t *p) {
@@ -5826,7 +5833,7 @@ static inline uint8_t pngPaeth(uint8_t a, uint8_t b, uint8_t c) {
 // Small PNG decoder for app-supplied Schedule images. The expected image
 // dimensions follow the selected logical iDotMatrix profile. Supports 8-bit,
 // non-interlaced RGB (type 2) and RGBA (type 6).
-// La decompressione DEFLATE viene eseguita dal miniz dell'ESP32.
+// DEFLATE decompression is provided by the ESP32 miniz implementation.
 bool decodeSchedulePNG(File &f, uint32_t fileSize) {
 #if PNG_DIAG_SERIAL
   Serial.print("P0 n="); Serial.print(fileSize);
@@ -6630,7 +6637,7 @@ void setup(){
     // reference module is a transistor-driven low-level-trigger board, so its
     // safe idle state is HIGH.
     pinMode(IDOTMATRIX_BUZZER_PIN, OUTPUT);
-    digitalWrite(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW ? HIGH : LOW);
+    digitalWrite(IDOTMATRIX_BUZZER_PIN, idotPassiveBuzzerIdleLevel(IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW != 0) ? HIGH : LOW);
     // Attach one LEDC channel to the passive buzzer. Tone generation is fully
     // hardware-driven and therefore does not block BLE or display updates.
     buzzerHardwareReady = ledcAttach(IDOTMATRIX_BUZZER_PIN, IDOTMATRIX_BUZZER_FREQUENCY_HZ, BUZZER_LEDC_RESOLUTION_BITS);
@@ -6718,7 +6725,7 @@ void setup(){
     if (rtc.read(bootRtc)) {
       syncYear=bootRtc.year; syncMonth=bootRtc.month; syncDay=bootRtc.day;
       syncHour=bootRtc.hour; syncMinute=bootRtc.minute; syncSecond=bootRtc.second;
-      syncMillis=millis(); clockSynced=true;
+      syncMillis=monotonicMillis64(); clockSynced=true;
     } else {
       rtcReady=false; rtcTimeValid=false;
       rtcRetryNextAt = millis() + IDOTMATRIX_RTC_RETRY_INTERVAL_MS;

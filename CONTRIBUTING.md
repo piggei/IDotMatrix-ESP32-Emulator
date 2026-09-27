@@ -41,6 +41,16 @@ Keep protocol changes separate from unrelated refactoring where practical. If a 
 
 Build history belongs in `HISTORY.md`; the project overview in `README.md` should remain presentation-oriented.
 
+## Regression tests
+
+Run the checked-in regression suite with:
+
+```bash
+python3 tests/run_tests.py
+```
+
+The runner uses only the Python standard library and intentionally changes into the repository root before loading tests, so repository-relative checks always inspect the selected source tree. `pytest` remains optional for developers and is not required by the repository update workflow.
+
 ## License
 
 By contributing to this repository, you agree that your contribution may be distributed under the repository's MIT License.

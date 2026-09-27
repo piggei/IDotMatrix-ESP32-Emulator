@@ -14,7 +14,9 @@
 
 // -----------------------------------------------------------------------------
 // Accelerometer backend -- select at most one.
+// Use NONE to suppress a backend supplied by the selected PlatformIO profile.
 // -----------------------------------------------------------------------------
+// #define IDOTMATRIX_ACCEL_DRIVER_NONE
 // #define IDOTMATRIX_ACCEL_DRIVER_LIS3DH
 // #define IDOTMATRIX_ACCEL_DRIVER_ICM20689
 // #define IDOTMATRIX_ACCEL_DRIVER_MPU6050

@@ -122,3 +122,25 @@ with tempfile.TemporaryDirectory() as tmp:
 assert result.returncode != 0
 
 print('optional user hardware config precedence/preservation: PASS')
+
+# A local NONE selection must suppress a profile-provided accelerometer backend.
+with tempfile.TemporaryDirectory() as tmp:
+    td = Path(tmp)
+    (td / 'IDotMatrixUserConfig.h').write_text(
+        '#pragma once\n'
+        '#define IDOTMATRIX_ACCEL_DRIVER_NONE\n'
+    )
+    probe = td / 'probe.cpp'
+    probe.write_text('#include "IDotMatrixHardwareConfig.h"\n')
+    cmd = [
+        'g++', '-dM', '-E',
+        f'-I{td}', f'-I{root / "src"}',
+        '-DIDOTMATRIX_DEFAULT_ACCEL_DRIVER_LIS3DH',
+        '-DIDOTMATRIX_DEFAULT_ACCEL_I2C_ADDRESS=0x19',
+        str(probe),
+    ]
+    none_macros = subprocess.check_output(cmd, text=True)
+
+assert '#define IDOTMATRIX_ACCEL_DRIVER_NONE' in none_macros
+assert '#define IDOTMATRIX_ACCEL_DRIVER_LIS3DH' not in none_macros
+assert '#define IDOTMATRIX_ORIENTATION_SENSOR 0' in none_macros

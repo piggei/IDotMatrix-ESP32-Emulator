@@ -24,7 +24,13 @@
   #error "Select only one IDOTMATRIX_DEFAULT_ACCEL_DRIVER_* fallback"
 #endif
 
-#if defined(IDOTMATRIX_ACCEL_DRIVER_LIS3DH) || \
+#if defined(IDOTMATRIX_ACCEL_DRIVER_NONE) && (defined(IDOTMATRIX_ACCEL_DRIVER_LIS3DH) || \
+    defined(IDOTMATRIX_ACCEL_DRIVER_ICM20689) || defined(IDOTMATRIX_ACCEL_DRIVER_MPU6050))
+  #error "IDOTMATRIX_ACCEL_DRIVER_NONE cannot be combined with an accelerometer backend"
+#endif
+
+#if defined(IDOTMATRIX_ACCEL_DRIVER_NONE) || \
+    defined(IDOTMATRIX_ACCEL_DRIVER_LIS3DH) || \
     defined(IDOTMATRIX_ACCEL_DRIVER_ICM20689) || \
     defined(IDOTMATRIX_ACCEL_DRIVER_MPU6050)
   #define IDOTMATRIX_ACCEL_DRIVER_EXPLICIT 1
@@ -248,6 +254,11 @@
 
 #if IDOTMATRIX_RTC_AVAILABLE && IDOTMATRIX_RTC_RETRY_INTERVAL_MS < 1000UL
   #error "IDOTMATRIX_RTC_RETRY_INTERVAL_MS must be at least 1000 ms"
+#endif
+
+#if defined(IDOTMATRIX_ACCEL_DRIVER_NONE) && (defined(IDOTMATRIX_ACCEL_DRIVER_LIS3DH) || \
+    defined(IDOTMATRIX_ACCEL_DRIVER_ICM20689) || defined(IDOTMATRIX_ACCEL_DRIVER_MPU6050))
+  #error "IDOTMATRIX_ACCEL_DRIVER_NONE cannot be combined with an accelerometer backend"
 #endif
 
 // -----------------------------------------------------------------------------

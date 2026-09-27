@@ -1,3 +1,63 @@
+## 0.5.2 / Build 190
+
+Stable packaging/tooling correction that supersedes Build 189.
+
+- Keeps the qualified 0.5.2 firmware runtime unchanged apart from the build identifier.
+- Replaces the updater's implicit `pytest` dependency with the checked-in standard-library-only `tests/run_tests.py` regression runner.
+- Forces that runner to execute from the extracted archive root, so tests using repository-relative paths cannot accidentally inspect the pre-existing checkout.
+- Allows the update workflow to run with the Python interpreter already available in the PlatformIO environment, without installing pytest into that environment.
+- Adds regression coverage that prevents the updater from reintroducing a mandatory pytest dependency.
+- Preserves all controller-board, LED-matrix and peripheral-module documentation assets.
+
+Status: **stable public release; supersedes Build 189.**
+
+## 0.5.2 / Build 189
+
+Stable release promoted from the hardware-smoke-tested 0.5.2-rc.5 / Build 188 baseline.
+
+- Promotes the completed 0.5.2 hardware and audit hardening work to stable release status.
+- Keeps the Build 188 runtime behavior unchanged apart from release/build identity.
+- Consolidates current documentation around the stable 0.5.2 release.
+- Removes intermediate 0.5.2 release-candidate audit/note files from the public package while retaining their chronology below.
+- Preserves the complete controller-board, LED-matrix and peripheral-module hardware image catalog.
+- Records the completed ESP32-C3 smoke tests for TEXT, Alarm, Carousel and Clock after the final hardening changes.
+
+Status: **stable public release.**
+
+## 0.5.2-rc.5 / Build 188
+
+Hardening candidate based on the RC4/B187 runtime.
+
+- Fixed the TEXT parser minimum-length off-by-one so a 14-byte malformed payload cannot read `data[14]`.
+- Replaced the software-clock `millis()` epoch with the 64-bit ESP timer monotonic timebase, removing the ~49.7-day fallback-clock wrap limitation.
+- Added `IDOTMATRIX_ACCEL_DRIVER_NONE` so local configuration can explicitly suppress a profile-provided accelerometer backend.
+- Pinned Adafruit LIS3DH to exact version `1.3.0`.
+- Hardened the update helper: extracted-source tests run before synchronization, dirty Git state requires explicit confirmation, and the selected PlatformIO environment build directory is invalidated before build/upload.
+- Added host-regression guards for TEXT minimum length and passive-buzzer idle polarity.
+- Recorded hardware qualification of the RC3 low-trigger HIGH-idle buzzer correction: the 3.3 V GPIO3 module remains cool at idle and sounds correctly.
+- Recorded successful on-device Alarm and Program/Schedule operation after app disconnect and board reset, plus Carousel-first boot, Countdown buzzer, BLE connection beep, RTC hot recovery and the no-Carousel/no-RTC screen-off fallback.
+- Refreshed current Wiki troubleshooting and preserved the complete controller, matrix and peripheral image catalog.
+
+## 0.5.2-rc.4 / Build 187
+
+- Packaging/documentation correction of RC4/B186; firmware runtime behavior is unchanged apart from the build signature.
+- Restores the controller-board and LED-matrix reference photographs that were accidentally omitted during earlier Wiki cleanup.
+- Restores the original image placements for MatrixPortal S3, ESP32-C3 SuperMini, 64x64 HUB75 and 16x16 WS2812 hardware.
+- Keeps the newer buzzer, DS3231/AT24C32 and GY-521 module photographs added in RC4/B186.
+- Adds the controller/matrix photographs to `docs/HARDWARE-SUPPORT.md` as well as the Wiki.
+
+Status: **RC4 packaging correction; supersedes Build 186.**
+
+## 0.5.2-rc.4 / Build 186
+
+- Documentation-only release-candidate refresh from RC3/B185; runtime behavior is intentionally unchanged apart from the release/build signature.
+- Added an exact hardware-module catalog with supplied reference photos.
+- Documented the qualified three-wire S9012 passive low-level-trigger buzzer module.
+- Documented the qualified DS3231 + AT24C32 combination board, including the fact that the firmware currently uses only the DS3231 RTC portion.
+- Added the vendor-described GY-521 / MPU-6050 board as an implemented but not yet hardware-qualified orientation candidate.
+- Clarified that `WHO_AM_I`, not board silkscreen or seller title, is authoritative for distinguishing MPU-6050 from ICM-20689.
+- Updated README, hardware support, orientation documentation and Wiki hardware pages accordingly.
+
 ## 0.5.2-rc.3 / Build 185
 
 Passive buzzer electrical-idle correction release candidate.
