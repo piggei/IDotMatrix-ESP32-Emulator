@@ -300,8 +300,8 @@ Implemented common header, 16 bytes:
 | 4 | 1 | field not identified by the current parser |
 | 5 | 4 | total payload size LE |
 | 9 | 4 | payload CRC32 LE |
-| 13..14 | 2 | GIF `timeSign` / Device Assets dwell seconds LE; observed in project captures and independently hardware-validated |
-| 15 | 1 | GIF `imageIndex`; Device Assets slot `0..11` |
+| 13..14 | 2 | media `timeSign` / Device Assets dwell seconds LE; observed with GIF/RAW Device Assets and independently hardware-validated for Carousel dwell |
+| 15 | 1 | media `imageIndex`; Device Assets slot `0..11` |
 | 16.. | - | payload chunk |
 
 Implemented types:
@@ -427,22 +427,24 @@ bytes 13..14 : timeSign, uint16 little-endian dwell seconds
 byte 15      : imageIndex / Device Assets slot
 ```
 
-Captures directly confirm `timeSign=5` and `timeSign=30` with `imageIndex=0,1,2`. A later 12-position capture additionally shows a `DataType.TEXT` Bulk between GIF `imageIndex=4` and GIF `imageIndex=6`. An earlier implementation let the live TEXT parser call the normal display-mode transition, unintentionally closing the Device Assets upload context; subsequent GIFs 6..11 were then misclassified as live GIFs. The current implementation treats a TEXT Bulk carrying a carousel-range `imageIndex` during an open Device Assets push as a stored slot instead. Mixed GIF/TEXT playback has since been hardware-tested successfully; the exact captured TEXT index/dwell remains worth recording explicitly in a future trace.
+Captures directly confirm `timeSign=5` and `timeSign=30` with `imageIndex=0,1,2`. A later 12-position capture additionally shows a `DataType.TEXT` Bulk between GIF `imageIndex=4` and GIF `imageIndex=6`. Hardware capture also established that a Device Assets entry containing one static image can be sent as Bulk **type `0x02`** using the normal Carousel `imageIndex` and dwell metadata. The reproduced 64x64 payload was a PNG container (`total=11296`, 8-bit RGBA IHDR), not plain 64x64 RGB24 (`12288` bytes). The stable implementation treats type 2 as a static-image container: exact logical RGB24 is accepted directly, while PNG is decoded on `loopTask`; receive-side filesystem publication is also deferred off `nimble_host`. Because no explicit end-of-bank frame has been observed, the emulator uses an 8-second upload-idle settle window, chosen from hardware evidence showing an inter-asset pause of about 3.8 seconds during a valid push.
+
+An earlier implementation also let the live TEXT parser call the normal display-mode transition, unintentionally closing the Device Assets upload context; subsequent GIFs 6..11 were then misclassified as live GIFs. The current implementation treats TEXT or RAW Bulk carrying a carousel-range `imageIndex` during an open Device Assets push as stored slots instead. Mixed PNG/GIF/TEXT playback, static-image persistence and TEXT-to-next-slot return are hardware-tested on the emulator.
 
 Current emulator behavior:
 
 1. `0A/01` sets Device Assets view intent. Captures show it may be sent before a later page push and is not required as a post-upload terminator.
 2. `02/01` validates the slot descriptor, stops current carousel playback, clears the declared slots, preserves any previously established Assets-view intent, opens replacement, and forces the physical LED output black (hardware-validated behavior) without modifying `screenOn` or the logical framebuffer.
-3. GIF (`type=1`) and observed TEXT (`type=3`) Bulk transfers with `imageIndex=0..11` are stored in the corresponding slot without changing the visible display during the push.
-4. Slot metadata persists content type, `timeSign`, size and CRC. GIF files and TEXT payload files are kept separately.
-5. Because no explicit end-of-push frame is present in the short-page captures, an already-requested Assets view resumes after **3000 ms** with no active Bulk and no newly committed carousel asset. The implementation always releases the temporary output blackout when the replacement settles. If Assets view is active, the first stored slot starts; otherwise the preserved framebuffer is restored. The settle timeout and blackout are emulator policies, not inferred original-device protocol behavior.
-6. GIF slots use AnimatedGIF; TEXT slots use the existing TEXT parser/renderer while preserving carousel state.
+3. GIF (`type=1`), static RAW RGB (`type=2`) and observed TEXT (`type=3`) Bulk transfers with `imageIndex=0..11` are stored in the corresponding slot without changing the visible display during the push. The legacy plain-RAW storage path is selected only when the declared size equals the active logical framebuffer RGB size; the observed `11296`-byte static-image encoding is intentionally not routed through that path until decoded.
+4. Slot metadata persists content type, `timeSign`, size and CRC. GIF, RAW and TEXT payloads are kept separately as `/carN.gif`, `/carN.raw` and `/carN.txt`.
+5. Because no explicit end-of-push frame is present in the short-page captures, an already-requested Assets view resumes after **8000 ms** with no active Bulk and no newly committed carousel asset. The implementation always releases the temporary output blackout when the replacement settles. If Assets view is active, the first stored slot starts; otherwise the preserved framebuffer is restored. The settle timeout and blackout are emulator policies, not inferred original-device protocol behavior.
+6. GIF slots use AnimatedGIF; RAW slots load one logical RGB framebuffer and hold it statically for the configured dwell; TEXT slots use the existing TEXT parser/renderer while preserving carousel state.
 7. Empty/unconfigured slots are skipped.
 8. Repeated `0A/01` while already active is idempotent; if replacement is open it only preserves view intent and does not expose the partial bank.
 9. Live/Cloud content outside an open Device Assets replacement retains the stable v0.3.1 path.
 10. Hardware testing confirms that BLE/app disconnect does not terminate an already-running carousel; playback continues autonomously on the emulator.
 
-Independent original-hardware reverse engineering corroborates the 12-slot bank, GIF slot storage, `timeSign`, `imageIndex` and autonomous playback. Its published notes currently state that persistence requires GIF data. Mixed GIF/TEXT carousel playback is **project-observed and hardware-tested on this ESP32 emulator**, but persistence/playback of TEXT assets on original iDotMatrix hardware remains unverified and is not promoted to a universal protocol rule.
+Independent original-hardware reverse engineering corroborates the 12-slot bank, GIF slot storage, `timeSign`, `imageIndex` and autonomous playback. Project captures additionally establish that the official app can encode a static Device Assets image as type `0x02`; the reproduced 64x64 case is PNG. Mixed PNG/GIF/TEXT carousel playback is **project-observed and hardware-tested on this ESP32 emulator**. Equivalent persistence/playback of every mixed slot type on original iDotMatrix hardware remains only as strong as the direct captures/observations and should not be generalized beyond them.
 
 ### TEXT - CONFIRMED for the fields currently used
 

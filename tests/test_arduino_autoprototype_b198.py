@@ -15,7 +15,7 @@ def test_custom_enum_is_still_used_for_stored_state():
     assert "DeferredAssetCommitKind kind = DEFERRED_ASSET_NONE;" in INO
 
 
-def test_b201_cache_and_prefetch_helpers_do_not_expose_custom_types_in_signatures():
+def test_b202_custom_runtime_helpers_do_not_expose_custom_types_in_signatures():
     ino = (ROOT / "src" / "IDotMatrix.ino").read_text(encoding="utf-8")
     assert "bool gifCachePathEquals(const GifCacheEntry" not in ino
     assert "bool gifCachePathEquals(uint8_t index" in ino
@@ -23,3 +23,6 @@ def test_b201_cache_and_prefetch_helpers_do_not_expose_custom_types_in_signature
         line for line in ino.splitlines() if line.lstrip().startswith(("bool ", "void ", "int8_t ", "String "))
     )
     assert "String carouselFileName(uint8_t slot, uint8_t dataType);" in ino
+    signatures = "\n".join(line for line in ino.splitlines() if line.lstrip().startswith(("bool ", "void ", "int8_t ", "String ", "uint32_t ")) )
+    assert "(CarouselBankTxnManifest" not in signatures
+    assert "(DeferredCarouselBankSetupState" not in signatures

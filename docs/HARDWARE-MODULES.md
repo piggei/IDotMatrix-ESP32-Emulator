@@ -1,6 +1,6 @@
 # Reference Hardware Modules
 
-This page records the exact peripheral modules used or considered for the 0.5.2 line. It complements [`HARDWARE-SUPPORT.md`](HARDWARE-SUPPORT.md): a module appearing here is not automatically hardware-qualified. The status column is authoritative.
+This page records the exact peripheral modules used or considered for the current stable line. It complements [`HARDWARE-SUPPORT.md`](HARDWARE-SUPPORT.md): a module appearing here is not automatically hardware-qualified. The status column is authoritative.
 
 ## Status summary
 

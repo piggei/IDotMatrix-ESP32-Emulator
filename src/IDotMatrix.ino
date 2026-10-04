@@ -23,10 +23,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.6.0-dev.3"
+#define FW_RELEASE "0.6.0"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 6
-#define FW_BUILD 201
+#define FW_BUILD 213
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -40,15 +40,20 @@ static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_REL
 #define DEVICE_INFO_PROTOCOL_DEBUG 0  // Set to 1 while studying MCU-version encoding in the 9-byte Device Info response.
 #define CAROUSEL_SLOT_COUNT 12
 #define CAROUSEL_DEFAULT_DWELL_SEC 5U
-#define CAROUSEL_UPLOAD_SETTLE_MS 3000UL
+// Device Assets has no observed explicit end-of-bank frame. Real official-app
+// uploads can pause for several seconds between items, so keep the replacement
+// transaction open long enough to bridge the longest qualified inter-asset gap.
+// This timeout is emulator policy, not a claimed wire-protocol field.
+#define CAROUSEL_UPLOAD_SETTLE_MS 8000UL
 #define PRESET_SLOT_BASE 14U
 #define PRESET_SLOT_COUNT 6U
 #define PRESET_DWELL_MS 3000UL
 
-// Build 201: retain the B199/B200 staging + persistent compressed-source LRU
-// cache and add one-item Carousel look-ahead prefetch. Prefetch is explicitly
-// enabled only on the Waveshare profiles; all other targets keep the B200
-// runtime policy unchanged.
+// Waveshare media policy: bounded PSRAM staging/cache/prefetch is best-effort;
+// LittleFS remains authoritative. Device Assets type 2 is a static-image
+// container: exact logical RGB24 is accepted directly, while app-observed PNG
+// payloads are decoded on loopTask. Carousel and Preset publication remain
+// transactional and filesystem-heavy work stays out of the BLE host callback.
 #ifndef IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES
   #define IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES 0UL
 #endif
@@ -645,11 +650,14 @@ void stopCarouselPlayback();
 void updatePreset(uint32_t now);
 void stopPresetPlayback();
 void clearPresetBank(bool removeFiles);
+int8_t nextPresetSlot(int8_t currentLocal);
+bool startPresetSlot(uint8_t localSlot);
 void clearPersistentDeviceState();
 void applyBootDisplayPolicy();
 int8_t nextCarouselSlot(int8_t current);
 bool startCarouselSlot(uint8_t slot);
 String carouselFileName(uint8_t slot, uint8_t dataType);
+bool decodeSchedulePNG(File &f, uint32_t fileSize);
 extern bool carouselActive;
 extern bool presetActive;
 extern int8_t carouselActiveSlot;
@@ -1474,17 +1482,53 @@ CRGB *gifFrame = nullptr;
 // Command 0A/01 enters/starts the asset view, but current official-app captures
 // show it may arrive before a later page push and is not necessarily repeated
 // afterwards. Assets-view intent is preserved across 02/01,
-// stores GIF and observed TEXT slots without rendering them during the push,
+// stores GIF, static IMAGE (PNG/RGB24) and observed TEXT slots without rendering them during the push,
 // then starts the completed bank after a short upload-idle settle interval.
 // Empty positions are skipped.
 // ======================================================
 struct __attribute__((packed)) CarouselSlotMeta {
   uint8_t configured = 0;
-  uint8_t dataType = 0;       // 1=GIF, 3=TEXT (observed in Device Assets)
+  uint8_t dataType = 0;       // 1=GIF, 2=static IMAGE (PNG or RGB24), 3=TEXT
   uint16_t dwellSeconds = 0;
   uint32_t mediaSize = 0;
   uint32_t mediaCRC = 0;
 };
+
+// Carousel bank transaction journal. The manifest is persisted before
+// any declared slot is destructively cleared. Old media are rename-backed up
+// (no duplicate media copy), so an interrupted Device Assets push can restore
+// the complete pre-push bank on the next boot. The manifest itself is the
+// commit marker: successful publication removes it before backup cleanup.
+constexpr uint32_t CAROUSEL_BANK_TXN_MAGIC = 0x43425458UL; // 'CBTX'
+constexpr uint16_t CAROUSEL_BANK_TXN_VERSION = 1U;
+const char *CAROUSEL_BANK_TXN_FILE = "/carbank.txn";
+const char *CAROUSEL_BANK_TXN_TMP_FILE = "/carbank.tmp";
+struct __attribute__((packed)) CarouselBankTxnManifest {
+  uint32_t magic = CAROUSEL_BANK_TXN_MAGIC;
+  uint16_t version = CAROUSEL_BANK_TXN_VERSION;
+  uint16_t bytes = 0;
+  uint16_t touchedMask = 0;
+  uint16_t mediaPresentMask = 0;
+  uint8_t orderCount = 0;
+  uint8_t order[CAROUSEL_SLOT_COUNT] = {};
+  CarouselSlotMeta slots[CAROUSEL_SLOT_COUNT];
+  uint32_t crc = 0;
+};
+
+CarouselBankTxnManifest carouselBankTxnManifest;
+bool carouselBankTxnActive = false;
+
+// Heavy 02/01 bank setup (journal write + old-media renames + slot wipe) must
+// never run on NimBLE's host task. The callback captures only the tiny command
+// descriptor; loopTask performs the filesystem work and emits the ACK after the
+// bank is ready to receive media.
+struct DeferredCarouselBankSetupState {
+  bool active = false;
+  bool viewIntent = false;
+  uint8_t count = 0;
+  uint8_t order[CAROUSEL_SLOT_COUNT] = {};
+};
+DeferredCarouselBankSetupState deferredCarouselBankSetup;
 
 CarouselSlotMeta carouselSlots[CAROUSEL_SLOT_COUNT];
 Preferences carouselPrefs;
@@ -1543,6 +1587,27 @@ bool presetTransferIndicatorActive = false;
 uint32_t presetTransferLastActivityAt = 0;
 constexpr uint32_t PRESET_TRANSFER_TIMEOUT_MS = 5000UL;
 
+// Preset/Default bank transaction. Preset media intentionally remain
+// volatile across reboot, so recovery does not need a persistent journal.
+// Instead, every completed object is published to a candidate namespace and
+// only the 06/02 activation command makes the selected bank authoritative.
+// This prevents an interrupted multi-object invocation from leaving a mixed
+// old/new Preset bank in the live namespace.
+PresetSlotMeta presetStaging[PRESET_SLOT_COUNT];
+uint16_t presetStagedMask = 0;
+bool presetBankTxnActive = false;
+bool presetBankCleanupPending = false;
+uint8_t presetBankCleanupReason = 0;
+bool presetBankPreviousActive = false;
+int8_t presetBankPreviousActiveSlot = -1;
+
+struct DeferredPresetActivationState {
+  bool active = false;
+  uint8_t count = 0;
+  uint8_t order[PRESET_SLOT_COUNT] = {};
+};
+DeferredPresetActivationState deferredPresetActivation;
+
 // ======================================================
 // PACKET / BULK
 // ======================================================
@@ -1579,6 +1644,7 @@ struct BulkTransferState {
   uint32_t chunkCount = 0;
   bool gifToFS = false;
   bool carouselToFS = false;
+  bool carouselBuffered = false;
   bool presetToFS = false;
   int8_t gifRxSlot = -1;
   int8_t carouselLocalSlot = -1;
@@ -1590,7 +1656,7 @@ struct BulkTransferState {
 
 // Final publication of Preset/Carousel files can traverse deep LittleFS and
 // flash call chains (remove/rename/NVS). Never execute that work on the
-// NimBLE host task: a real B196 field trace hit the nimble_host stack canary
+// NimBLE host task: field testing hit the nimble_host stack canary
 // while commitPresetSlot() was inside LittleFS.remove(). The BLE callback only
 // receives/stages bytes and queues this descriptor. Arduino loop() performs
 // flush/close/commit and sends the final transfer ACK afterwards.
@@ -1622,6 +1688,41 @@ uint32_t textPageChangedAt = 0;
 
 uint8_t *rawRgbData = nullptr;
 size_t rawRgbWriteOffset = 0;
+
+// Static Carousel type-2 assets are buffered in memory on the BLE host
+// task and written to LittleFS only by loopTask. This preserves the
+// callback stack/I/O safety boundary while retaining PNG support.
+uint8_t *carouselImageRxData = nullptr;
+size_t carouselImageRxWriteOffset = 0;
+
+__attribute__((noinline)) uint8_t *allocateCarouselImageRxBuffer(size_t bytes){
+#if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
+  uint8_t *p=(uint8_t*)heap_caps_malloc(bytes,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if(p) return p;
+#endif
+  return (uint8_t*)malloc(bytes);
+}
+
+__attribute__((noinline)) bool beginCarouselBufferedImageTransfer(uint32_t total, uint8_t imageIndex, uint16_t timeSign){
+  carouselImageRxData=allocateCarouselImageRxBuffer(total);
+  if(!carouselImageRxData){
+#if DEBUG_SERIAL
+    Serial.println("BULK IMAGE carousel rejected: buffer allocation failed");
+#endif
+    return false;
+  }
+  bulk.carouselLocalSlot=(int8_t)imageIndex;
+  bulk.carouselBuffered=true;
+  carouselImageRxWriteOffset=0;
+  beginCarouselTransferIndicator(total,imageIndex);
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.print("BULK IMAGE BUFFERED: CAROUSEL slot="); Serial.print(imageIndex);
+  Serial.print(" format="); Serial.print(bulk.format);
+  Serial.print(" dwell="); Serial.println(timeSign);
+#endif
+  return true;
+}
+
 
 // Graffiti full-raster transfer used by the official 64x64 Android app.
 // This is NOT the normal 16-byte Bulk protocol. Captured original hardware
@@ -1940,6 +2041,22 @@ void updateEnergySavingOutput(uint32_t now) {
 // ======================================================
 // CAROUSEL TRANSFER INDICATOR
 // ======================================================
+int8_t inferCarouselRawUploadSlot() {
+  if(!carouselUploadOpen || !carouselBankTxnActive || !carouselOrderCount) return -1;
+  int8_t lastCommittedOrdinal=-1;
+  for(uint8_t i=0;i<carouselOrderCount;i++){
+    const uint8_t slot=carouselOrder[i];
+    if(slot<CAROUSEL_SLOT_COUNT && (carouselUploadCompletedMask&(uint16_t(1U)<<slot)))
+      lastCommittedOrdinal=(int8_t)i;
+  }
+  for(uint8_t i=(uint8_t)(lastCommittedOrdinal+1); i<carouselOrderCount; i++){
+    const uint8_t slot=carouselOrder[i];
+    if(slot>=CAROUSEL_SLOT_COUNT) continue;
+    if(!(carouselUploadCompletedMask&(uint16_t(1U)<<slot))) return (int8_t)slot;
+  }
+  return -1;
+}
+
 uint8_t carouselCompletedUploadCountExcluding(uint8_t activeSlot) {
   uint16_t mask=carouselUploadCompletedMask;
   if(activeSlot<CAROUSEL_SLOT_COUNT) mask &= (uint16_t)~(uint16_t(1U)<<activeSlot);
@@ -3336,9 +3453,9 @@ bool processEffectCommand(const uint8_t *data,size_t len){
 // ======================================================
 // GIF
 // ======================================================
-// B200: complete compressed GIF sources use a two-level PSRAM policy.
+// Complete compressed GIF sources use a two-level PSRAM policy.
 // A bounded persistent LRU cache serves warm media directly from PSRAM. Cache
-// misses retain the B199 one-shot staging path, with transparent LittleFS
+// misses retain one-shot staging, with transparent LittleFS
 // fallback whenever cap/reserve/allocation/copy policy cannot be satisfied.
 uint8_t *gifStageData = nullptr;
 size_t gifStageSize = 0;
@@ -3378,7 +3495,7 @@ uint32_t gifCacheBypasses = 0;
 int8_t gifCacheActiveIndex = -1;
 
 struct GifSourceHandle {
-  uint8_t source = 0; // 0=LittleFS, 1=transient B199 stage, 2=persistent B200 cache
+  uint8_t source = 0; // 0=LittleFS, 1=transient stage, 2=persistent source cache
   int8_t cacheIndex = -1;
   File file;
 };
@@ -3778,7 +3895,7 @@ void scheduleCarouselGifPrefetch(uint8_t currentSlot){
   const CarouselSlotMeta &m=carouselSlots[(uint8_t)next];
   if(!m.configured || m.dataType!=1 || !m.mediaSize || !m.mediaCRC){
     carouselGifPrefetch.slot=(uint8_t)next;
-    skipCarouselGifPrefetch(m.dataType==3 ? "next_text" : "metadata");
+    skipCarouselGifPrefetch(m.dataType==3 ? "next_text" : (m.dataType==2 ? "next_image" : "metadata"));
     return;
   }
   String path=carouselFileName((uint8_t)next,1);
@@ -3955,8 +4072,9 @@ void freeGIF(){
   gifStoredOnFS=false;
 }
 
-// AnimatedGIF source callbacks. B200 selects a pinned persistent cache entry,
-// a transient B199 stage, or the original LittleFS file behind one callback API.
+// AnimatedGIF source callbacks.
+// Select a pinned persistent cache entry, a transient stage, or the original
+// LittleFS file behind one callback API.
 void *GIFOpenFile(const char *fname, int32_t *pSize){
   if(!pSize || !fname) return nullptr;
   GifSourceHandle *h=new GifSourceHandle();
@@ -4062,12 +4180,12 @@ bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback, u
   gifTelemetryContext = carouselPlayback ? 2 : (eventPlayback ? 1 : 0);
   gifTelemetryFirstFramePending = false;
   idotMemoryTelemetrySnapshot(carouselPlayback ? "gif.carousel.before_open" : (eventPlayback ? "gif.event.before_open" : "gif.live.before_open"));
-  // B199 first-frame latency includes the staging copy so it reflects the
+  // First-frame latency includes the staging copy so it reflects the
   // complete user-visible cold-start cost. Decoder open latency below remains
-  // separately comparable with the B196/B198 file-backed baseline.
+  // separately comparable with the file-backed baseline.
   gifTelemetryStartedAtUs = micros();
 #endif
-  // Best-effort only: failure leaves the B199/B198 file-backed fallback path intact.
+  // Best-effort only: failure leaves the file-backed fallback path intact.
   prepareGifStage(path,gifSize,expectedCRC);
   fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
@@ -4223,10 +4341,228 @@ void updateGIF(){
 // DEVICE-ASSET CAROUSEL
 // ======================================================
 String carouselFileName(uint8_t slot, uint8_t dataType) {
-  return String("/car") + slot + (dataType==3 ? ".txt" : ".gif");
+  // Keep the legacy .raw internal filename for dataType 2 so transaction
+  // journals from earlier development builds remain rollback-compatible. The stored bytes
+  // may be either raw RGB24 or a PNG container; dataType 2 means static IMAGE.
+  const char *ext=(dataType==3) ? ".txt" : ((dataType==2) ? ".raw" : ".gif");
+  return String("/car") + slot + ext;
 }
 String carouselTempFileName(uint8_t slot) { return String("/car") + slot + ".tmp"; }
 String carouselBackupFileName(uint8_t slot) { return String("/car") + slot + ".bak"; }
+String carouselBankBackupFileName(uint8_t slot, uint8_t dataType) {
+  const char *ext=(dataType==3) ? ".old.txt" : ((dataType==2) ? ".old.raw" : ".old.gif");
+  return String("/car") + slot + ext;
+}
+bool carouselDataTypeSupported(uint8_t dataType) { return dataType==1 || dataType==2 || dataType==3; }
+const char *carouselDataTypeLabel(uint8_t dataType) {
+  return dataType==3 ? "TEXT" : (dataType==2 ? "IMAGE" : "GIF");
+}
+void removeCarouselMediaFiles(uint8_t slot) {
+  if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT) return;
+  LittleFS.remove(carouselFileName(slot,1));
+  LittleFS.remove(carouselFileName(slot,2));
+  LittleFS.remove(carouselFileName(slot,3));
+}
+void removeCarouselMediaFilesExcept(uint8_t slot, uint8_t keepType) {
+  if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT) return;
+  for(uint8_t type=1; type<=3; type++) if(type!=keepType) LittleFS.remove(carouselFileName(slot,type));
+}
+
+uint32_t carouselBankTxnManifestCRC() {
+  uint32_t crc=0xFFFFFFFFUL;
+  crc=crc32Update(crc,reinterpret_cast<const uint8_t*>(&carouselBankTxnManifest),
+                  sizeof(CarouselBankTxnManifest)-sizeof(carouselBankTxnManifest.crc));
+  return crc^0xFFFFFFFFUL;
+}
+
+bool carouselBankTxnManifestIsValid() {
+  if(carouselBankTxnManifest.magic!=CAROUSEL_BANK_TXN_MAGIC ||
+     carouselBankTxnManifest.version!=CAROUSEL_BANK_TXN_VERSION ||
+     carouselBankTxnManifest.bytes!=sizeof(CarouselBankTxnManifest) ||
+     carouselBankTxnManifest.orderCount>CAROUSEL_SLOT_COUNT ||
+     (carouselBankTxnManifest.touchedMask & ~((1U<<CAROUSEL_SLOT_COUNT)-1U)) ||
+     (carouselBankTxnManifest.mediaPresentMask & ~carouselBankTxnManifest.touchedMask)) return false;
+  bool seen[CAROUSEL_SLOT_COUNT]={false};
+  for(uint8_t i=0;i<carouselBankTxnManifest.orderCount;i++){
+    const uint8_t slot=carouselBankTxnManifest.order[i];
+    if(slot>=CAROUSEL_SLOT_COUNT || seen[slot]) return false;
+    seen[slot]=true;
+  }
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++){
+    const CarouselSlotMeta &m=carouselBankTxnManifest.slots[i];
+    if(m.configured && (m.dataType!=1 && m.dataType!=2 && m.dataType!=3)) return false;
+  }
+  return carouselBankTxnManifest.crc==carouselBankTxnManifestCRC();
+}
+
+void cleanupCarouselBankBackupFiles() {
+  if(!littleFsReady) return;
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++){
+    LittleFS.remove(carouselBankBackupFileName(i,1));
+    LittleFS.remove(carouselBankBackupFileName(i,2));
+    LittleFS.remove(carouselBankBackupFileName(i,3));
+  }
+  LittleFS.remove(CAROUSEL_BANK_TXN_TMP_FILE);
+}
+
+bool loadCarouselBankTxnManifest() {
+  if(!littleFsReady || !LittleFS.exists(CAROUSEL_BANK_TXN_FILE)) return false;
+  File f=LittleFS.open(CAROUSEL_BANK_TXN_FILE,"r");
+  if(!f || (size_t)f.size()!=sizeof(CarouselBankTxnManifest)){ if(f) f.close(); return false; }
+  const size_t got=f.read(reinterpret_cast<uint8_t*>(&carouselBankTxnManifest),sizeof(CarouselBankTxnManifest));
+  f.close();
+  return got==sizeof(CarouselBankTxnManifest) && carouselBankTxnManifestIsValid();
+}
+
+bool persistCarouselBankTxnManifest() {
+  if(!littleFsReady) return false;
+  carouselBankTxnManifest.crc=carouselBankTxnManifestCRC();
+  LittleFS.remove(CAROUSEL_BANK_TXN_TMP_FILE);
+  File f=LittleFS.open(CAROUSEL_BANK_TXN_TMP_FILE,"w");
+  if(!f) return false;
+  const size_t wrote=f.write(reinterpret_cast<const uint8_t*>(&carouselBankTxnManifest),sizeof(CarouselBankTxnManifest));
+  f.flush(); f.close();
+  if(wrote!=sizeof(CarouselBankTxnManifest)){ LittleFS.remove(CAROUSEL_BANK_TXN_TMP_FILE); return false; }
+  LittleFS.remove(CAROUSEL_BANK_TXN_FILE);
+  if(!LittleFS.rename(CAROUSEL_BANK_TXN_TMP_FILE,CAROUSEL_BANK_TXN_FILE)) return false;
+  CarouselBankTxnManifest verify;
+  File vf=LittleFS.open(CAROUSEL_BANK_TXN_FILE,"r");
+  if(!vf || (size_t)vf.size()!=sizeof(verify)){ if(vf) vf.close(); return false; }
+  const size_t got=vf.read(reinterpret_cast<uint8_t*>(&verify),sizeof(verify));
+  vf.close();
+  if(got!=sizeof(verify) || memcmp(&verify,&carouselBankTxnManifest,sizeof(verify))!=0) return false;
+  return true;
+}
+
+void prepareCarouselBankTxnManifest(uint16_t touchedMask) {
+  carouselBankTxnManifest=CarouselBankTxnManifest();
+  carouselBankTxnManifest.bytes=sizeof(CarouselBankTxnManifest);
+  carouselBankTxnManifest.touchedMask=touchedMask;
+  carouselBankTxnManifest.orderCount=carouselOrderCount;
+  memcpy(carouselBankTxnManifest.order,carouselOrder,CAROUSEL_SLOT_COUNT);
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++){
+    carouselBankTxnManifest.slots[i]=carouselSlots[i];
+    const CarouselSlotMeta &m=carouselSlots[i];
+    if(!(touchedMask&(1U<<i)) || !m.configured || (m.dataType!=1 && m.dataType!=2 && m.dataType!=3)) continue;
+    if(LittleFS.exists(carouselFileName(i,m.dataType))) carouselBankTxnManifest.mediaPresentMask|=(1U<<i);
+  }
+}
+
+bool restoreCarouselBankPreferences() {
+  if(!carouselPrefsReady) return false;
+  bool ok=true;
+  carouselOrderCount=carouselBankTxnManifest.orderCount;
+  memcpy(carouselOrder,carouselBankTxnManifest.order,CAROUSEL_SLOT_COUNT);
+  if(carouselPrefs.putUChar("count",carouselOrderCount)!=1) ok=false;
+  if(carouselPrefs.putBytes("order",carouselOrder,CAROUSEL_SLOT_COUNT)!=CAROUSEL_SLOT_COUNT) ok=false;
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++){
+    carouselSlots[i]=carouselBankTxnManifest.slots[i];
+    char key[8]; snprintf(key,sizeof(key),"c%u",i);
+    if(carouselSlots[i].configured){
+      if(carouselPrefs.putBytes(key,&carouselSlots[i],sizeof(CarouselSlotMeta))!=sizeof(CarouselSlotMeta)) ok=false;
+    } else if(carouselPrefs.isKey(key) && !carouselPrefs.remove(key)) ok=false;
+  }
+  return ok;
+}
+
+bool rollbackCarouselBankTransaction(const char *reason) {
+  if(!littleFsReady || !carouselPrefsReady) return false;
+  if(!carouselBankTxnActive){
+    if(!loadCarouselBankTxnManifest()) return !LittleFS.exists(CAROUSEL_BANK_TXN_FILE);
+    carouselBankTxnActive=true;
+  }
+  bool ok=true;
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++){
+    const uint16_t bit=(uint16_t)(1U<<i);
+    if(!(carouselBankTxnManifest.touchedMask&bit)) continue;
+    const CarouselSlotMeta &old=carouselBankTxnManifest.slots[i];
+    String gifPath=carouselFileName(i,1);
+    gifCacheInvalidatePath(gifPath.c_str());
+    LittleFS.remove(carouselTempFileName(i));
+    LittleFS.remove(carouselBackupFileName(i));
+    if(carouselBankTxnManifest.mediaPresentMask&bit){
+      if(!old.configured || !carouselDataTypeSupported(old.dataType)){ ok=false; continue; }
+      String oldPath=carouselFileName(i,old.dataType);
+      String oldBak=carouselBankBackupFileName(i,old.dataType);
+      if(LittleFS.exists(oldBak)){
+        removeCarouselMediaFiles(i);
+        if(!LittleFS.rename(oldBak,oldPath)) ok=false;
+      } else if(!LittleFS.exists(oldPath)){
+        ok=false;
+      }
+      removeCarouselMediaFilesExcept(i,old.dataType);
+    } else {
+      removeCarouselMediaFiles(i);
+    }
+    for(uint8_t type=1; type<=3; type++) if(type!=old.dataType) LittleFS.remove(carouselBankBackupFileName(i,type));
+  }
+  if(ok) ok=restoreCarouselBankPreferences();
+  if(!ok){
+#if DEBUG_SERIAL
+    Serial.print("[CARBANK] state=rollback_failed reason="); Serial.println(reason ? reason : "unknown");
+#endif
+    return false;
+  }
+  // Old bank is authoritative again. Removing the manifest commits rollback;
+  // any leftover .old file after this point is disposable cleanup only.
+  if(!LittleFS.remove(CAROUSEL_BANK_TXN_FILE) && LittleFS.exists(CAROUSEL_BANK_TXN_FILE)) return false;
+  carouselBankTxnActive=false;
+  cleanupCarouselBankBackupFiles();
+#if DEBUG_SERIAL
+  Serial.print("[CARBANK] state=rollback reason="); Serial.print(reason ? reason : "unknown");
+  Serial.print(" touched=0x"); Serial.println(carouselBankTxnManifest.touchedMask,HEX);
+#endif
+  return true;
+}
+
+bool beginCarouselBankTransaction(uint16_t touchedMask) {
+  if(!littleFsReady || !carouselPrefsReady) return false;
+  if(carouselBankTxnActive || LittleFS.exists(CAROUSEL_BANK_TXN_FILE)){
+    if(!rollbackCarouselBankTransaction("restart")) return false;
+  } else {
+    cleanupCarouselBankBackupFiles();
+  }
+  prepareCarouselBankTxnManifest(touchedMask);
+  if(!persistCarouselBankTxnManifest()){
+    LittleFS.remove(CAROUSEL_BANK_TXN_FILE);
+    LittleFS.remove(CAROUSEL_BANK_TXN_TMP_FILE);
+    cleanupCarouselBankBackupFiles();
+    return false;
+  }
+  carouselBankTxnActive=true;
+  for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++){
+    const uint16_t bit=(uint16_t)(1U<<i);
+    if(!(carouselBankTxnManifest.mediaPresentMask&bit)) continue;
+    const CarouselSlotMeta &old=carouselBankTxnManifest.slots[i];
+    String src=carouselFileName(i,old.dataType);
+    String bak=carouselBankBackupFileName(i,old.dataType);
+    LittleFS.remove(bak);
+    if(!LittleFS.exists(src) || !LittleFS.rename(src,bak)){
+      rollbackCarouselBankTransaction("backup_failed");
+      return false;
+    }
+  }
+#if DEBUG_SERIAL
+  Serial.print("[CARBANK] state=begin touched=0x"); Serial.print(touchedMask,HEX);
+  Serial.print(" media=0x"); Serial.println(carouselBankTxnManifest.mediaPresentMask,HEX);
+#endif
+  return true;
+}
+
+bool finalizeCarouselBankTransaction() {
+  if(!carouselBankTxnActive) return true;
+  // Manifest removal is the publication commit point. If power disappears
+  // before this succeeds, boot recovery restores the previous complete bank.
+  // If power disappears after it succeeds, the new bank remains authoritative
+  // and any leftover .old files are harmless stale cleanup.
+  if(!LittleFS.remove(CAROUSEL_BANK_TXN_FILE) && LittleFS.exists(CAROUSEL_BANK_TXN_FILE)) return false;
+  carouselBankTxnActive=false;
+  cleanupCarouselBankBackupFiles();
+#if DEBUG_SERIAL
+  Serial.println("[CARBANK] state=commit");
+#endif
+  return true;
+}
 
 bool saveCarouselSlotMeta(uint8_t slot) {
   if(!carouselPrefsReady || slot>=CAROUSEL_SLOT_COUNT) return false;
@@ -4250,8 +4586,7 @@ void clearCarouselSlot(uint8_t slot) {
   if(littleFsReady){
     LittleFS.remove(carouselTempFileName(slot));
     LittleFS.remove(carouselBackupFileName(slot));
-    LittleFS.remove(carouselFileName(slot,1));
-    LittleFS.remove(carouselFileName(slot,3));
+    removeCarouselMediaFiles(slot);
   }
   removeCarouselSlotMeta(slot);
 }
@@ -4267,9 +4602,8 @@ void recoverCarouselSlot(uint8_t slot) {
   String tmp=carouselTempFileName(slot), bak=carouselBackupFileName(slot);
   LittleFS.remove(tmp);
   const CarouselSlotMeta &m=carouselSlots[slot];
-  if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)){
-    LittleFS.remove(carouselFileName(slot,1));
-    LittleFS.remove(carouselFileName(slot,3));
+  if(!m.configured || !m.mediaSize || !carouselDataTypeSupported(m.dataType)){
+    removeCarouselMediaFiles(slot);
     LittleFS.remove(bak);
     return;
   }
@@ -4285,12 +4619,29 @@ void recoverCarouselSlot(uint8_t slot) {
 #endif
     }
   }
-  // Never leave a stale file of the other supported slot type around.
-  LittleFS.remove(carouselFileName(slot,m.dataType==1 ? 3 : 1));
+  // Never leave stale files of the other supported slot types around.
+  removeCarouselMediaFilesExcept(slot,m.dataType);
 }
 
 void loadCarousel() {
   carouselPrefsReady=carouselPrefs.begin("idot-car",false);
+  // An on-disk manifest means the previous whole-bank replacement never
+  // reached its publication commit point. Recover the old bank before reading
+  // active order/slot metadata into runtime state.
+  if(littleFsReady && carouselPrefsReady && LittleFS.exists(CAROUSEL_BANK_TXN_FILE)){
+    if(loadCarouselBankTxnManifest()){
+      carouselBankTxnActive=true;
+      rollbackCarouselBankTransaction("boot");
+    } else {
+#if DEBUG_SERIAL
+      Serial.println("[CARBANK] state=manifest_invalid reason=boot");
+#endif
+    }
+  } else if(littleFsReady) {
+    // A successful commit removes the manifest before backup cleanup. Remove
+    // any stale .old files left by a reset in that cleanup-only window.
+    cleanupCarouselBankBackupFiles();
+  }
   carouselOrderCount=0;
   for(uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++) carouselOrder[i]=0;
   if(carouselPrefsReady){
@@ -4322,7 +4673,7 @@ void loadCarousel() {
 #if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
     if(carouselSlots[i].configured){
       Serial.print("CAROUSEL LOAD slot="); Serial.print(i);
-      Serial.print(" type="); Serial.print(carouselSlots[i].dataType==3 ? "TEXT" : "GIF");
+      Serial.print(" type="); Serial.print(carouselDataTypeLabel(carouselSlots[i].dataType));
       Serial.print(" dwell="); Serial.print(carouselSlots[i].dwellSeconds);
       Serial.print(" bytes="); Serial.print(carouselSlots[i].mediaSize);
       String path=carouselFileName(i,carouselSlots[i].dataType);
@@ -4336,6 +4687,7 @@ void loadCarousel() {
   if(littleFsReady){
     for(uint8_t i=12;i<36;i++){
       LittleFS.remove(String("/car")+i+".gif");
+      LittleFS.remove(String("/car")+i+".raw");
       LittleFS.remove(String("/car")+i+".txt");
       LittleFS.remove(String("/car")+i+".tmp");
       LittleFS.remove(String("/car")+i+".bak");
@@ -4375,10 +4727,53 @@ int8_t nextCarouselSlot(int8_t current) {
     uint8_t slot=carouselOrder[pos];
     if(slot>=CAROUSEL_SLOT_COUNT) continue;
     const CarouselSlotMeta &m=carouselSlots[slot];
-    if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) continue;
+    if(!m.configured || !m.mediaSize || !carouselDataTypeSupported(m.dataType)) continue;
     if(LittleFS.exists(carouselFileName(slot,m.dataType))) return (int8_t)slot;
   }
   return -1;
+}
+
+bool loadCarouselRawFrame(const char *path, uint32_t expectedSize) {
+  const uint32_t required=(uint32_t)NUM_LEDS*3UL;
+  if(!littleFsReady || !path || expectedSize!=required) return false;
+  File f=LittleFS.open(path,"r");
+  if(!f || (uint32_t)f.size()!=required){ if(f) f.close(); return false; }
+  uint8_t rgb[192];
+  uint16_t pixel=0;
+  while(pixel<NUM_LEDS){
+    const uint16_t pixelsThis=min((uint16_t)(sizeof(rgb)/3U),(uint16_t)(NUM_LEDS-pixel));
+    const size_t want=(size_t)pixelsThis*3U;
+    if(f.read(rgb,want)!=want){ f.close(); return false; }
+    for(uint16_t i=0;i<pixelsThis;i++){
+      const size_t o=(size_t)i*3U;
+      framebuffer[pixel+i]=CRGB(rgb[o],rgb[o+1],rgb[o+2]);
+    }
+    pixel=(uint16_t)(pixel+pixelsThis);
+  }
+  f.close();
+  refreshMatrix();
+  return true;
+}
+
+bool loadCarouselImageFrame(const char *path, uint32_t expectedSize) {
+  if(!littleFsReady || !path || !expectedSize) return false;
+  const uint32_t rawBytes=(uint32_t)NUM_LEDS*3UL;
+  if(expectedSize==rawBytes) return loadCarouselRawFrame(path,expectedSize);
+
+  File f=LittleFS.open(path,"r");
+  if(!f || (uint32_t)f.size()!=expectedSize){ if(f) f.close(); return false; }
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("image.carousel.png.before_decode");
+  const uint32_t imageStartedAtUs=micros();
+#endif
+  const bool ok=decodeSchedulePNG(f,expectedSize);
+  f.close();
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetryLatency(ok ? "image.carousel.png.decode_us" : "image.carousel.png.decode_failed_us",
+                             (uint32_t)(micros()-imageStartedAtUs));
+  idotMemoryTelemetrySnapshot(ok ? "image.carousel.png.after_decode" : "image.carousel.png.decode_failed");
+#endif
+  return ok;
 }
 
 bool startCarouselSlot(uint8_t slot) {
@@ -4395,7 +4790,7 @@ bool startCarouselSlot(uint8_t slot) {
   carouselActive=false;
   carouselActiveSlot=-1;
   CarouselSlotMeta &m=carouselSlots[slot];
-  if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) return false;
+  if(!m.configured || !m.mediaSize || !carouselDataTypeSupported(m.dataType)) return false;
   String path=carouselFileName(slot,m.dataType);
   if(!LittleFS.exists(path)) return false;
   if(m.dataType==1){
@@ -4408,6 +4803,19 @@ bool startCarouselSlot(uint8_t slot) {
     gifSize=m.mediaSize;
     started=startGIFFile(path.c_str(),false,true,m.mediaCRC);
     if(!started){ gifSize=0; gifStoredOnFS=false; }
+  } else if(m.dataType==2){
+#if IDOTMATRIX_MEMORY_TELEMETRY
+    idotMemoryTelemetrySnapshot("image.carousel.before_load");
+    const uint32_t imageCarouselStartedAtUs=micros();
+#endif
+    started=loadCarouselImageFrame(path.c_str(),m.mediaSize);
+    if(started) displayMode=DISPLAY_RAW;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+    if(started){
+      idotMemoryTelemetryLatency("image.carousel.load_render_us",(uint32_t)(micros()-imageCarouselStartedAtUs));
+      idotMemoryTelemetrySnapshot("image.carousel.after_render");
+    }
+#endif
   } else if(m.dataType==3){
     if(m.mediaSize<=MAX_TEXT_PAYLOAD){
       File f=LittleFS.open(path,"r");
@@ -4425,13 +4833,16 @@ bool startCarouselSlot(uint8_t slot) {
   carouselSlotStartedAt=millis();
   scheduleCarouselGifPrefetch(slot);
 #if IDOTMATRIX_MEMORY_TELEMETRY
-  idotMemoryTelemetryLatency(m.dataType==3 ? "carousel.text.start_us" : "carousel.gif.start_us",
-                             (uint32_t)(micros() - carouselTelemetryStartedAtUs));
-  idotMemoryTelemetrySnapshot(m.dataType==3 ? "carousel.text.started" : "carousel.gif.opened");
+  const char *carouselStartTag=m.dataType==3 ? "carousel.text.start_us" :
+                               (m.dataType==2 ? "carousel.image.start_us" : "carousel.gif.start_us");
+  const char *carouselMemTag=m.dataType==3 ? "carousel.text.started" :
+                             (m.dataType==2 ? "carousel.image.started" : "carousel.gif.opened");
+  idotMemoryTelemetryLatency(carouselStartTag,(uint32_t)(micros() - carouselTelemetryStartedAtUs));
+  idotMemoryTelemetrySnapshot(carouselMemTag);
 #endif
 #if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
   Serial.print("CAROUSEL PLAY slot="); Serial.print(slot);
-  Serial.print(" type="); Serial.print(m.dataType==3 ? "TEXT" : "GIF");
+  Serial.print(" type="); Serial.print(carouselDataTypeLabel(m.dataType));
   Serial.print(" dwell="); Serial.print(m.dwellSeconds ? m.dwellSeconds : CAROUSEL_DEFAULT_DWELL_SEC);
   Serial.print("s bytes="); Serial.println(m.mediaSize);
 #endif
@@ -4447,6 +4858,13 @@ void updateCarousel(uint32_t now) {
   // not a claimed original-device protocol timing.
   if(carouselUploadOpen && carouselLastAssetCommitAt && !bulk.active &&
      (uint32_t)(now-carouselLastAssetCommitAt)>=CAROUSEL_UPLOAD_SETTLE_MS){
+    if(carouselBankTxnActive && !finalizeCarouselBankTransaction()){
+#if DEBUG_SERIAL
+      Serial.println("[CARBANK] state=commit_retry reason=manifest_remove");
+#endif
+      carouselLastAssetCommitAt=now;
+      return;
+    }
     carouselUploadOpen=false;
     carouselUploadBlackout=false;
     endCarouselTransferIndicator();
@@ -4474,12 +4892,12 @@ void updateCarousel(uint32_t now) {
 }
 
 bool commitCarouselSlot(uint8_t slot, uint8_t dataType, uint16_t dwellSeconds, uint32_t size, uint32_t crc) {
-  if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT || !size || (dataType!=1 && dataType!=3)) return false;
+  if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT || !size || !carouselDataTypeSupported(dataType)) return false;
   String tmp=carouselTempFileName(slot), dst=carouselFileName(slot,dataType), bak=carouselBackupFileName(slot);
   if(!fileMatchesMedia(tmp,size,crc)) return false;
 
   CarouselSlotMeta oldMeta=carouselSlots[slot];
-  String oldDst=(oldMeta.configured && (oldMeta.dataType==1 || oldMeta.dataType==3)) ? carouselFileName(slot,oldMeta.dataType) : String();
+  String oldDst=(oldMeta.configured && carouselDataTypeSupported(oldMeta.dataType)) ? carouselFileName(slot,oldMeta.dataType) : String();
   if(oldDst.length()) gifCacheInvalidatePath(oldDst.c_str());
   gifCacheInvalidatePath(dst.c_str());
   bool hadOld=oldDst.length() && LittleFS.exists(oldDst);
@@ -4502,15 +4920,71 @@ bool commitCarouselSlot(uint8_t slot, uint8_t dataType, uint16_t dwellSeconds, u
     return false;
   }
   LittleFS.remove(bak);
-  LittleFS.remove(carouselFileName(slot,dataType==1 ? 3 : 1));
+  removeCarouselMediaFilesExcept(slot,dataType);
   carouselLastAssetCommitAt=millis();
 #if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
   Serial.print("CAROUSEL STORE slot="); Serial.print(slot);
-  Serial.print(" type="); Serial.print(dataType==3 ? "TEXT" : "GIF");
+  Serial.print(" type="); Serial.print(carouselDataTypeLabel(dataType));
   Serial.print(" dwell="); Serial.print(dwellSeconds);
   Serial.print("s bytes="); Serial.println(size);
 #endif
   return true;
+}
+
+bool queueDeferredCarouselBankSetup(const uint8_t *slots, uint8_t count, bool viewIntent) {
+  if(!slots || count>CAROUSEL_SLOT_COUNT || deferredCarouselBankSetup.active) return false;
+  deferredCarouselBankSetup=DeferredCarouselBankSetupState();
+  deferredCarouselBankSetup.active=true;
+  deferredCarouselBankSetup.viewIntent=viewIntent;
+  deferredCarouselBankSetup.count=count;
+  memcpy(deferredCarouselBankSetup.order,slots,count);
+  return true;
+}
+
+void processDeferredCarouselBankSetup() {
+  if(!deferredCarouselBankSetup.active) return;
+  const uint8_t count=deferredCarouselBankSetup.count;
+  const bool hadAssetView=deferredCarouselBankSetup.viewIntent;
+  uint8_t order[CAROUSEL_SLOT_COUNT]={0};
+  memcpy(order,deferredCarouselBankSetup.order,CAROUSEL_SLOT_COUNT);
+
+  // Playback/temporary live-GIF cleanup is loop-side for the same reason as
+  // final asset publication: avoid deep decoder/LittleFS activity on
+  // nimble_host.
+  if(carouselActive || gifCarouselPlaybackFileActive || displayMode==DISPLAY_TEXT) stopCarouselPlayback();
+  if(pendingGifStart){
+    if(littleFsReady && pendingGifSlot>=0 && pendingGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)pendingGifSlot]);
+    pendingGifStart=false; pendingGifSlot=-1; pendingGifSize=0; pendingGifCRC=0; pendingGifStartAt=0;
+  }
+  carouselEnterRequested=hadAssetView;
+  carouselStartPending=false;
+
+  uint16_t touchedMask=0;
+  for(uint8_t i=0;i<count;i++) touchedMask|=(uint16_t)(1U<<order[i]);
+  const bool bankProtected=beginCarouselBankTransaction(touchedMask);
+#if DEBUG_SERIAL
+  if(!bankProtected) Serial.println("[CARBANK] state=fallback reason=journal_unavailable");
+#endif
+
+  carouselUploadOpen=true;
+  carouselUploadBlackout=true;
+  carouselUploadCompletedMask=0;
+  endCarouselTransferIndicator();
+  carouselLastAssetCommitAt=0;
+  carouselOrderCount=count;
+  memcpy(carouselOrder,order,CAROUSEL_SLOT_COUNT);
+
+  for(uint8_t i=0;i<count;i++) clearCarouselSlot(order[i]);
+  saveCarouselOrder();
+  refreshMatrix();
+#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
+  Serial.print("CAROUSEL SLOT SETUP count="); Serial.print(count); Serial.print(" slots=");
+  for(uint8_t i=0;i<count;i++){ if(i) Serial.print(','); Serial.print(order[i]); }
+  Serial.print(" playback=SUSPENDED matrix=BLACK viewIntent=");
+  Serial.println(carouselEnterRequested ? "YES" : "NO");
+#endif
+  deferredCarouselBankSetup=DeferredCarouselBankSetupState();
+  sendCommandAck(0x02,0x01);
 }
 
 bool handleCarouselCommand(const uint8_t *data, size_t len) {
@@ -4530,45 +5004,16 @@ bool handleCarouselCommand(const uint8_t *data, size_t len) {
       seen[slot]=true;
     }
 
-    // A material wipe starts a replacement transaction. Captures from the
-    // official app show that 0A/01 may have established the Assets view before
-    // this push and that no second 0A/01 is necessarily sent afterwards. Keep
-    // that view intent, but stop playback so no partially replaced bank is
-    // rendered while slots are still arriving.
+    // Capture the command only. Filesystem journal/backup/wipe work is
+    // deferred to loopTask; its ACK is emitted only after the bank is ready for
+    // the first Bulk object, preserving app pacing without blocking nimble_host.
     bool hadAssetView=carouselEnterRequested || carouselActive || gifCarouselPlaybackFileActive;
-    if(carouselActive || gifCarouselPlaybackFileActive || displayMode==DISPLAY_TEXT) stopCarouselPlayback();
-    // A page push supersedes any deferred live-GIF promotion that could
-    // otherwise start in the middle of the Device Assets replacement.
-    if(pendingGifStart){
-      if(littleFsReady && pendingGifSlot>=0 && pendingGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)pendingGifSlot]);
-      pendingGifStart=false; pendingGifSlot=-1; pendingGifSize=0; pendingGifCRC=0; pendingGifStartAt=0;
-    }
-    carouselEnterRequested=hadAssetView;
-    carouselStartPending=false;
-    carouselUploadOpen=true;
-    carouselUploadBlackout=true;
-    carouselUploadCompletedMask=0;
-    endCarouselTransferIndicator();
-    carouselLastAssetCommitAt=0;
-    carouselOrderCount=count;
-    for(uint8_t i=0;i<count;i++) carouselOrder[i]=data[5+i];
-    for(uint8_t i=count;i<CAROUSEL_SLOT_COUNT;i++) carouselOrder[i]=0;
-
-    // Clear exactly the declared device slots. The app can then repopulate any
-    // subset; missing/empty positions are skipped during playback.
-    for(uint8_t i=0;i<count;i++) clearCarouselSlot(data[5+i]);
-    saveCarouselOrder();
-    // Blank the physical matrix immediately while preserving framebuffer and
-    // screenOn. Every refresh during the push remains black until playback is
-    // armed from updateCarousel().
-    refreshMatrix();
-#if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
-    Serial.print("CAROUSEL SLOT SETUP count="); Serial.print(count); Serial.print(" slots=");
-    for(uint8_t i=0;i<count;i++){ if(i) Serial.print(','); Serial.print(data[5+i]); }
-    Serial.print(" playback=SUSPENDED matrix=BLACK viewIntent=");
-    Serial.println(carouselEnterRequested ? "YES" : "NO");
+    if(!queueDeferredCarouselBankSetup(data+5,count,hadAssetView)){
+#if DEBUG_SERIAL
+      Serial.println("[CARBANK] state=setup_queue_busy");
 #endif
-    sendCommandAck(0x02,0x01);
+      return true;
+    }
     return true;
   }
 
@@ -4597,6 +5042,82 @@ String presetFileName(uint8_t localSlot, uint8_t dataType) {
   return String("/pre") + localSlot + (dataType==3 ? ".txt" : ".gif");
 }
 String presetTempFileName(uint8_t localSlot) { return String("/pre") + localSlot + ".tmp"; }
+String presetStagedFileName(uint8_t localSlot, uint8_t dataType) {
+  return String("/pre") + localSlot + (dataType==3 ? ".new.txt" : ".new.gif");
+}
+String presetBackupFileName(uint8_t localSlot, uint8_t dataType) {
+  return String("/pre") + localSlot + (dataType==3 ? ".old.txt" : ".old.gif");
+}
+
+const char *presetBankCleanupReasonText(uint8_t reason) {
+  switch(reason){
+    case 1: return "disconnect";
+    case 2: return "bulk_abort";
+    case 3: return "activation_reject";
+    case 4: return "device_reset";
+    default: return "cleanup";
+  }
+}
+
+void resetPresetBankTxnState() {
+  presetStagedMask=0;
+  presetBankTxnActive=false;
+  presetBankCleanupPending=false;
+  presetBankCleanupReason=0;
+  presetBankPreviousActive=false;
+  presetBankPreviousActiveSlot=-1;
+  for(uint8_t i=0;i<PRESET_SLOT_COUNT;i++) presetStaging[i]=PresetSlotMeta();
+}
+
+void cleanupPresetCandidateFiles() {
+  if(!littleFsReady) return;
+  for(uint8_t i=0;i<PRESET_SLOT_COUNT;i++){
+    LittleFS.remove(presetTempFileName(i));
+    LittleFS.remove(presetStagedFileName(i,1));
+    LittleFS.remove(presetStagedFileName(i,3));
+    LittleFS.remove(presetBackupFileName(i,1));
+    LittleFS.remove(presetBackupFileName(i,3));
+  }
+}
+
+void beginPresetBankTransaction(uint8_t previousActive, int8_t previousSlot) {
+  // Starting a fresh invocation only changes RAM here. Any stale candidate
+  // files from an interrupted older invocation are overwritten slot-by-slot
+  // on loopTask and are never authoritative without presetStaging metadata.
+  presetStagedMask=0;
+  presetBankTxnActive=true;
+  presetBankCleanupPending=false;
+  presetBankCleanupReason=0;
+  presetBankPreviousActive=previousActive!=0;
+  presetBankPreviousActiveSlot=previousSlot;
+  deferredPresetActivation=DeferredPresetActivationState();
+  for(uint8_t i=0;i<PRESET_SLOT_COUNT;i++) presetStaging[i]=PresetSlotMeta();
+#if DEBUG_SERIAL
+  Serial.print("[PREBANK] state=begin previousActive="); Serial.println(presetBankPreviousActive ? 1 : 0);
+#endif
+}
+
+void requestPresetBankCleanup(uint8_t reason) {
+  if(!presetBankTxnActive && !presetStagedMask) return;
+  presetBankCleanupPending=true;
+  presetBankCleanupReason=reason;
+}
+
+void abortPresetBankTransaction(uint8_t reason) {
+  const bool resumePrevious=presetBankPreviousActive;
+  const int8_t previousSlot=presetBankPreviousActiveSlot;
+  cleanupPresetCandidateFiles();
+  resetPresetBankTxnState();
+  bool resumed=false;
+  if(resumePrevious){
+    if(previousSlot>=0 && previousSlot<PRESET_SLOT_COUNT) resumed=startPresetSlot((uint8_t)previousSlot);
+    if(!resumed){ int8_t first=nextPresetSlot(-1); if(first>=0) resumed=startPresetSlot((uint8_t)first); }
+  }
+#if DEBUG_SERIAL
+  Serial.print("[PREBANK] state=abort reason="); Serial.print(presetBankCleanupReasonText(reason));
+  Serial.print(" resumed="); Serial.println(resumed ? 1 : 0);
+#endif
+}
 
 void clearPresetSlot(uint8_t localSlot) {
   if(localSlot>=PRESET_SLOT_COUNT) return;
@@ -4606,8 +5127,14 @@ void clearPresetSlot(uint8_t localSlot) {
     LittleFS.remove(presetTempFileName(localSlot));
     LittleFS.remove(presetFileName(localSlot,1));
     LittleFS.remove(presetFileName(localSlot,3));
+    LittleFS.remove(presetStagedFileName(localSlot,1));
+    LittleFS.remove(presetStagedFileName(localSlot,3));
+    LittleFS.remove(presetBackupFileName(localSlot,1));
+    LittleFS.remove(presetBackupFileName(localSlot,3));
   }
   presetSlots[localSlot]=PresetSlotMeta();
+  presetStaging[localSlot]=PresetSlotMeta();
+  presetStagedMask&=(uint16_t)~(1U<<localSlot);
 }
 
 void clearPresetBank(bool removeFiles) {
@@ -4616,11 +5143,13 @@ void clearPresetBank(bool removeFiles) {
   presetOrderCount=0;
   presetSlotHoldMs=PRESET_DWELL_MS;
   gifPresetPlaybackFileActive=false;
+  deferredPresetActivation=DeferredPresetActivationState();
   for(uint8_t i=0;i<PRESET_SLOT_COUNT;i++){
     presetOrder[i]=0;
     if(removeFiles) clearPresetSlot(i);
-    else presetSlots[i]=PresetSlotMeta();
+    else { presetSlots[i]=PresetSlotMeta(); presetStaging[i]=PresetSlotMeta(); }
   }
+  resetPresetBankTxnState();
 }
 
 void stopPresetPlayback() {
@@ -4638,9 +5167,33 @@ bool commitPresetSlot(uint8_t localSlot, uint8_t dataType, uint16_t timeSign, ui
   String tmp=presetTempFileName(localSlot);
   if(!fileMatchesMedia(tmp,size,crc)) return false;
 
-  // Never replace the file currently being decoded/rendered.
-  if(presetActive && presetActiveSlot==(int8_t)localSlot) stopPresetPlayback();
+  // While an invocation transaction is open, a completed object becomes
+  // a candidate only. The currently authoritative /preN.* file remains intact
+  // until the later 06/02 command commits the complete selected bank.
+  if(presetBankTxnActive){
+    String staged=presetStagedFileName(localSlot,dataType);
+    LittleFS.remove(presetStagedFileName(localSlot,1));
+    LittleFS.remove(presetStagedFileName(localSlot,3));
+    if(!LittleFS.rename(tmp,staged)) return false;
+    PresetSlotMeta m;
+    m.configured=1;
+    m.dataType=dataType;
+    m.timeSign=timeSign;
+    m.mediaSize=size;
+    m.mediaCRC=crc;
+    presetStaging[localSlot]=m;
+    presetStagedMask|=(uint16_t)(1U<<localSlot);
+#if DEBUG_SERIAL
+    Serial.print("[PREBANK] state=stage slot="); Serial.print((unsigned)(PRESET_SLOT_BASE+localSlot));
+    Serial.print(" type="); Serial.print(dataType==3 ? "TEXT" : "GIF");
+    Serial.print(" bytes="); Serial.println(size);
+#endif
+    return true;
+  }
 
+  // Compatibility fallback for a caller that reaches this helper without a
+  // bank transaction. This is the legacy per-slot publication behavior.
+  if(presetActive && presetActiveSlot==(int8_t)localSlot) stopPresetPlayback();
   String dst=presetFileName(localSlot,dataType);
   gifCacheInvalidatePath(dst.c_str());
   if(dataType!=1){ String oldGif=presetFileName(localSlot,1); gifCacheInvalidatePath(oldGif.c_str()); }
@@ -4654,13 +5207,186 @@ bool commitPresetSlot(uint8_t localSlot, uint8_t dataType, uint16_t timeSign, ui
   m.timeSign=timeSign;
   m.mediaSize=size;
   m.mediaCRC=crc;
+  return true;
+}
+
+bool applyPresetOrderAndStart(const uint8_t *order, uint8_t count) {
+  if((count && !order) || count>PRESET_SLOT_COUNT) return false;
+  stopPresetPlayback();
+  presetOrderCount=count;
+  for(uint8_t i=0;i<count;i++) presetOrder[i]=order[i];
+  for(uint8_t i=count;i<PRESET_SLOT_COUNT;i++) presetOrder[i]=0;
+  if(count){
+    int8_t first=nextPresetSlot(-1);
+    if(first>=0) startPresetSlot((uint8_t)first);
 #if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
-  Serial.print("PRESET STORE slot="); Serial.print((unsigned)(PRESET_SLOT_BASE+localSlot));
-  Serial.print(" type="); Serial.print(dataType==3 ? "TEXT" : "GIF");
-  Serial.print(" timeSign="); Serial.print(timeSign);
-  Serial.print(" bytes="); Serial.println(size);
+    else Serial.println("PRESET ACT: no valid uploaded slots");
+#endif
+  }
+  return true;
+}
+
+bool rollbackPresetBankPublication(const uint8_t *order, uint8_t count,
+                                   uint16_t backedMask, uint16_t hadGifMask, uint16_t hadTxtMask) {
+  if(!littleFsReady) return false;
+  bool ok=true;
+  for(uint8_t i=0;i<count;i++){
+    const uint8_t slot=order[i];
+    const uint16_t bit=(uint16_t)(1U<<slot);
+    if(!(backedMask&bit)) continue;
+    String gif=presetFileName(slot,1), txt=presetFileName(slot,3);
+    String gifBak=presetBackupFileName(slot,1), txtBak=presetBackupFileName(slot,3);
+    gifCacheInvalidatePath(gif.c_str());
+    LittleFS.remove(gif);
+    LittleFS.remove(txt);
+    if(hadGifMask&bit){ if(!LittleFS.exists(gifBak) || !LittleFS.rename(gifBak,gif)) ok=false; }
+    else LittleFS.remove(gifBak);
+    if(hadTxtMask&bit){ if(!LittleFS.exists(txtBak) || !LittleFS.rename(txtBak,txt)) ok=false; }
+    else LittleFS.remove(txtBak);
+  }
+  return ok;
+}
+
+bool commitPresetBankActivation(const uint8_t *order, uint8_t count) {
+  if((count && !order) || count>PRESET_SLOT_COUNT || !littleFsReady) return false;
+  if(!presetBankTxnActive) return applyPresetOrderAndStart(order,count);
+
+  uint16_t declaredMask=0;
+  for(uint8_t i=0;i<count;i++){
+    const uint8_t slot=order[i];
+    if(slot>=PRESET_SLOT_COUNT) return false;
+    const uint16_t bit=(uint16_t)(1U<<slot);
+    declaredMask|=bit;
+    const PresetSlotMeta &m=presetStaging[slot];
+    if(!(presetStagedMask&bit) || !m.configured || (m.dataType!=1 && m.dataType!=3) ||
+       !fileMatchesMedia(presetStagedFileName(slot,m.dataType),m.mediaSize,m.mediaCRC)){
+#if DEBUG_SERIAL
+      Serial.print("[PREBANK] state=reject reason=incomplete slot="); Serial.println((unsigned)(PRESET_SLOT_BASE+slot));
+#endif
+      return false;
+    }
+  }
+
+  // count=0 is a valid empty activation. No staged media becomes authoritative.
+  if(!count){
+    cleanupPresetCandidateFiles();
+    resetPresetBankTxnState();
+    applyPresetOrderAndStart(order,count);
+#if DEBUG_SERIAL
+    Serial.println("[PREBANK] state=commit count=0");
+#endif
+    return true;
+  }
+
+  uint16_t backedMask=0, hadGifMask=0, hadTxtMask=0;
+  // Phase 1: move the currently authoritative selected files aside. Rename-only
+  // backups keep the old bank recoverable without duplicating flash payloads.
+  for(uint8_t i=0;i<count;i++){
+    const uint8_t slot=order[i];
+    const uint16_t bit=(uint16_t)(1U<<slot);
+    String gif=presetFileName(slot,1), txt=presetFileName(slot,3);
+    String gifBak=presetBackupFileName(slot,1), txtBak=presetBackupFileName(slot,3);
+    LittleFS.remove(gifBak); LittleFS.remove(txtBak);
+    const bool hadGif=LittleFS.exists(gif), hadTxt=LittleFS.exists(txt);
+    bool gifMoved=true, txtMoved=true;
+    if(hadGif) gifMoved=LittleFS.rename(gif,gifBak);
+    if(hadTxt) txtMoved=LittleFS.rename(txt,txtBak);
+    if(!gifMoved || !txtMoved){
+      if(gifMoved && hadGif && LittleFS.exists(gifBak)) LittleFS.rename(gifBak,gif);
+      if(txtMoved && hadTxt && LittleFS.exists(txtBak)) LittleFS.rename(txtBak,txt);
+      rollbackPresetBankPublication(order,count,backedMask,hadGifMask,hadTxtMask);
+      return false;
+    }
+    backedMask|=bit;
+    if(hadGif) hadGifMask|=bit;
+    if(hadTxt) hadTxtMask|=bit;
+  }
+
+  // Phase 2: publish every declared candidate. Metadata/order are still old at
+  // this point, so a failure can restore the old files without mixed runtime state.
+  uint16_t publishedMask=0;
+  for(uint8_t i=0;i<count;i++){
+    const uint8_t slot=order[i];
+    const uint16_t bit=(uint16_t)(1U<<slot);
+    const PresetSlotMeta &m=presetStaging[slot];
+    String staged=presetStagedFileName(slot,m.dataType);
+    String dst=presetFileName(slot,m.dataType);
+    gifCacheInvalidatePath(presetFileName(slot,1).c_str());
+    LittleFS.remove(dst);
+    LittleFS.remove(presetFileName(slot,m.dataType==1 ? 3 : 1));
+    if(!LittleFS.rename(staged,dst)){
+      for(uint8_t j=0;j<count;j++){
+        const uint8_t publishedSlot=order[j];
+        const uint16_t publishedBit=(uint16_t)(1U<<publishedSlot);
+        if(!(publishedMask&publishedBit)) continue;
+        LittleFS.remove(presetFileName(publishedSlot,1));
+        LittleFS.remove(presetFileName(publishedSlot,3));
+      }
+      rollbackPresetBankPublication(order,count,backedMask,hadGifMask,hadTxtMask);
+      return false;
+    }
+    publishedMask|=bit;
+  }
+
+  // File publication succeeded for the full declared bank. Only now switch RAM
+  // metadata/order, then remove backups/candidate leftovers. Presets remain
+  // volatile and will still be cleared on reboot.
+  for(uint8_t i=0;i<count;i++) presetSlots[order[i]]=presetStaging[order[i]];
+  for(uint8_t i=0;i<count;i++){
+    const uint8_t slot=order[i];
+    LittleFS.remove(presetBackupFileName(slot,1));
+    LittleFS.remove(presetBackupFileName(slot,3));
+  }
+  for(uint8_t slot=0;slot<PRESET_SLOT_COUNT;slot++){
+    if(!(declaredMask&(1U<<slot))){
+      LittleFS.remove(presetStagedFileName(slot,1));
+      LittleFS.remove(presetStagedFileName(slot,3));
+    }
+  }
+  resetPresetBankTxnState();
+  applyPresetOrderAndStart(order,count);
+#if DEBUG_SERIAL
+  Serial.print("[PREBANK] state=commit count="); Serial.println(count);
 #endif
   return true;
+}
+
+bool queueDeferredPresetActivation(const uint8_t *order, uint8_t count) {
+  if((count && !order) || count>PRESET_SLOT_COUNT || deferredPresetActivation.active) return false;
+  deferredPresetActivation=DeferredPresetActivationState();
+  deferredPresetActivation.active=true;
+  deferredPresetActivation.count=count;
+  if(count) memcpy(deferredPresetActivation.order,order,count);
+  return true;
+}
+
+void processDeferredPresetActivation() {
+  if(!deferredPresetActivation.active) return;
+  const uint8_t count=deferredPresetActivation.count;
+  uint8_t order[PRESET_SLOT_COUNT]={0};
+  memcpy(order,deferredPresetActivation.order,PRESET_SLOT_COUNT);
+
+  if(presetTransferIndicatorActive){
+    presetTransferIndicatorActive=false;
+    endCarouselTransferIndicator();
+  }
+  const bool committed=commitPresetBankActivation(order,count);
+  if(!committed && presetBankTxnActive){
+    abortPresetBankTransaction(3);
+  }
+  deferredPresetActivation=DeferredPresetActivationState();
+  sendCommandAck(0x06,0x02);
+}
+
+void processPresetBankCleanup() {
+  if(!presetBankCleanupPending) return;
+  // Let an already-complete media object and/or a received 06/02 command reach
+  // their loopTask commit boundary first. A disconnect after the final object
+  // therefore cannot strand an unflushed temp file in the cleanup path.
+  if((deferredAssetCommit.active && deferredAssetCommit.kind==DEFERRED_ASSET_PRESET) ||
+     deferredPresetActivation.active || bulk.presetToFS) return;
+  const uint8_t reason=presetBankCleanupReason;
+  abortPresetBankTransaction(reason ? reason : 1);
 }
 
 int8_t nextPresetSlot(int8_t currentLocal) {
@@ -4792,23 +5518,15 @@ bool handlePresetCommand(const uint8_t *data, size_t len) {
   Serial.println();
 #endif
 
-  if(presetTransferIndicatorActive){
-    presetTransferIndicatorActive=false;
-    endCarouselTransferIndicator();
-  }
-  stopPresetPlayback();
-  presetOrderCount=count;
-  for(uint8_t i=0;i<count;i++) presetOrder[i]=localOrder[i];
-  for(uint8_t i=count;i<PRESET_SLOT_COUNT;i++) presetOrder[i]=0;
-
-  if(count){
-    int8_t first=nextPresetSlot(-1);
-    if(first>=0) startPresetSlot((uint8_t)first);
-#if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
-    else Serial.println("PRESET ACT: no valid uploaded slots");
+  // Activation may publish multiple staged files and start a decoder.
+  // Capture only the tiny order descriptor on nimble_host; loopTask performs
+  // validation/publication/start and emits the historical ACK afterwards.
+  if(!queueDeferredPresetActivation(localOrder,count)){
+#if DEBUG_SERIAL
+    Serial.println("[PREBANK] state=activation_queue_busy");
 #endif
+    return true;
   }
-  sendCommandAck(0x06,0x02);
   return true;
 }
 
@@ -4816,9 +5534,14 @@ bool handlePresetCommand(const uint8_t *data, size_t len) {
 // BULK
 // ======================================================
 bool startsWithGIF(const uint8_t *data,size_t len){ return len>=6 && (!memcmp(data,"GIF87a",6)||!memcmp(data,"GIF89a",6)); }
+bool startsWithPNG(const uint8_t *data,size_t len){
+  static const uint8_t sig[8]={0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
+  return len>=sizeof(sig) && !memcmp(data,sig,sizeof(sig));
+}
 void resetBulkTransfer(bool removePartialGif=false){
   int8_t rxSlot=bulk.gifRxSlot;
-  const bool abortedCarouselTransfer=removePartialGif && bulk.carouselToFS;
+  const bool abortedCarouselTransfer=removePartialGif && (bulk.carouselToFS || bulk.carouselBuffered);
+  const bool abortedPresetTransfer=removePartialGif && bulk.presetToFS;
   if(gifBulkFile) gifBulkFile.close();
   if(littleFsReady && removePartialGif){
     if(bulk.carouselToFS && bulk.carouselLocalSlot>=0 && bulk.carouselLocalSlot<CAROUSEL_SLOT_COUNT){
@@ -4835,7 +5558,10 @@ void resetBulkTransfer(bool removePartialGif=false){
   textPayloadReceived=0;
   if(rawRgbData){ free(rawRgbData); rawRgbData=nullptr; }
   rawRgbWriteOffset=0;
+  if(carouselImageRxData){ free(carouselImageRxData); carouselImageRxData=nullptr; }
+  carouselImageRxWriteOffset=0;
   if(abortedCarouselTransfer) endCarouselTransferIndicator();
+  if(abortedPresetTransfer) requestPresetBankCleanup(2);
 }
 
 bool queueDeferredAssetCommit(uint8_t kindValue, uint8_t dataType, uint8_t localSlot,
@@ -4873,14 +5599,31 @@ void processDeferredAssetCommit(){
 #endif
 
   // File finalization and every operation below intentionally run on loopTask,
-  // never on nimble_host. This is the B197/B198 stack-safety boundary.
+  // never on nimble_host. This is the stack-safety boundary.
   if(gifBulkFile){
     gifBulkFile.flush();
     gifBulkFile.close();
   }
 
   bool stored=false;
-  if(job.integrityOk){
+  bool stagedForCommit=job.integrityOk;
+  if(stagedForCommit && job.kind==DEFERRED_ASSET_CAROUSEL && job.dataType==2){
+    // Stack-safety boundary: type-2 static-image bytes are accumulated
+    // in memory by nimble_host. Perform all LittleFS work here on loopTask.
+    stagedForCommit=false;
+    if(littleFsReady && carouselImageRxData && carouselImageRxWriteOffset==job.size){
+      const String tmp=carouselTempFileName(job.localSlot);
+      LittleFS.remove(tmp);
+      File out=LittleFS.open(tmp,"w");
+      if(out){
+        const size_t written=out.write(carouselImageRxData,job.size);
+        out.flush();
+        out.close();
+        stagedForCommit=(written==job.size);
+      }
+    }
+  }
+  if(stagedForCommit){
     if(job.kind==DEFERRED_ASSET_CAROUSEL && job.localSlot<CAROUSEL_SLOT_COUNT){
       stored=commitCarouselSlot(job.localSlot,job.dataType,job.timeSign,job.size,job.crc);
       if(stored) carouselUploadCompletedMask |= (uint16_t)(1U<<job.localSlot);
@@ -5072,6 +5815,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     resetBulkTransfer(); bulk.active=true; bulk.dataType=type; bulk.expectedSize=total; bulk.expectedCRC=crc; bulk.runningCRC=0xFFFFFFFF;
     bulk.timeSign=timeSign; bulk.imageIndex=imageIndex;
     if(startsWithGIF(payload,payloadSize)) bulk.format="GIF";
+    else if(type==2 && startsWithPNG(payload,payloadSize)) bulk.format="PNG";
     else if(type==2 && total==(uint32_t)NUM_LEDS*3UL) bulk.format="RAW RGB";
     else if(type==3) bulk.format="TEXT";
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
@@ -5081,10 +5825,19 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     if(type==1 || type==3){ Serial.print(" timeSign="); Serial.print(timeSign); Serial.print(" imageIndex="); Serial.print(imageIndex); }
     Serial.print(" format="); Serial.println(bulk.format.length() ? bulk.format : "UNKNOWN");
 #endif
+    if(carouselUploadOpen && carouselBankTxnActive && (type==1 || type==2 || type==3) &&
+       imageIndex<CAROUSEL_SLOT_COUNT && !(carouselBankTxnManifest.touchedMask&(1U<<imageIndex))){
+#if DEBUG_SERIAL
+      Serial.print("[CARBANK] state=reject reason=undeclared_slot slot="); Serial.println(imageIndex);
+#endif
+      resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+    }
     if((type==1 || type==3) && presetTraceSlot){
       // A new preset invocation re-sends the whole selected bank. Freeze the
-      // previous preset on its last framebuffer while replacement assets arrive
-      // so old/new files can never be mixed during a long multi-chunk upload.
+      // previous preset on its last framebuffer while replacement assets arrive.
+      // Remember an active old Preset so abort/disconnect can resume it.
+      const bool previousPresetActive=presetActive;
+      const int8_t previousPresetSlot=presetActiveSlot;
       if(presetActive) stopPresetPlayback();
       if(!littleFsReady){
 #if DEBUG_SERIAL
@@ -5102,6 +5855,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
 #endif
         resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
       }
+      if(!presetBankTxnActive) beginPresetBankTransaction(previousPresetActive ? 1U : 0U,previousPresetSlot);
       uint8_t localSlot=(uint8_t)(imageIndex-PRESET_SLOT_BASE);
       bulk.presetLocalSlot=(int8_t)localSlot;
       bulk.presetToFS=true;
@@ -5119,7 +5873,8 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       Serial.print(" timeSign="); Serial.println(timeSign);
 #endif
     }
-    if(type==3 && !bulk.presetToFS && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT){
+    if(type==3 && !bulk.presetToFS && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
+       (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
       if(!littleFsReady){
 #if DEBUG_SERIAL
         Serial.println("BULK TEXT carousel rejected: LittleFS unavailable");
@@ -5168,7 +5923,8 @@ bool processBulkPacket(const uint8_t *data,size_t len){
         resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
       }
 
-      if(carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT){
+      if(carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
+         (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
         // Device Assets use imageIndex directly as persistent slot 0..11.
         uint8_t localSlot=imageIndex;
         // Never replace a file while AnimatedGIF is decoding that same slot.
@@ -5204,7 +5960,16 @@ bool processBulkPacket(const uint8_t *data,size_t len){
 #endif
       }
     }
-    if(type==2 && bulk.format=="RAW RGB"){
+    if(type==2 && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
+       (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
+      // Hardware capture proved that the official app sends static Carousel slot 0 as a
+      // PNG in Bulk type 0x02. Do not touch LittleFS from nimble_host here:
+      // buffer the exact payload, verify CRC, then let loopTask stage+commit it.
+      if(!beginCarouselBufferedImageTransfer(total,imageIndex,timeSign)){
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
+    }
+    if(type==2 && bulk.format=="RAW RGB" && !bulk.carouselBuffered){
       idotMemoryTelemetrySnapshot("raw.before_alloc");
       rawRgbData=(uint8_t*)malloc(total);
       idotMemoryTelemetrySnapshot(rawRgbData ? "raw.after_alloc" : "raw.alloc_failed");
@@ -5212,9 +5977,10 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       rawRgbWriteOffset=0;
     }
   }
+  if(type==2 && bulk.format=="UNKNOWN" && startsWithPNG(payload,payloadSize)) bulk.format="PNG";
   bulkLastRxMs=millis();
   if(type!=bulk.dataType || total!=bulk.expectedSize || crc!=bulk.expectedCRC ||
-     ((type==1 || bulk.carouselToFS || bulk.presetToFS) && (timeSign!=bulk.timeSign || imageIndex!=bulk.imageIndex))){
+     ((type==1 || bulk.carouselToFS || bulk.carouselBuffered || bulk.presetToFS) && (timeSign!=bulk.timeSign || imageIndex!=bulk.imageIndex))){
 #if DEBUG_SERIAL
     Serial.println("BULK header mismatch; aborting transaction");
 #endif
@@ -5232,7 +5998,11 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
     }
   }
-  if(type==2 && rawRgbData && rawRgbWriteOffset+useful<=bulk.expectedSize){
+  if(type==2 && bulk.carouselBuffered && carouselImageRxData && carouselImageRxWriteOffset+useful<=bulk.expectedSize){
+    ::memcpy(carouselImageRxData+carouselImageRxWriteOffset,payload,useful);
+    carouselImageRxWriteOffset+=useful;
+  }
+  if(type==2 && !bulk.carouselBuffered && rawRgbData && rawRgbWriteOffset+useful<=bulk.expectedSize){
     ::memcpy(rawRgbData+rawRgbWriteOffset,payload,useful);
     rawRgbWriteOffset+=useful;
   }
@@ -5241,7 +6011,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     if(off<MAX_TEXT_PAYLOAD){ size_t cp=min(useful,(size_t)MAX_TEXT_PAYLOAD-off); ::memcpy(textPayload+off,payload,cp); textPayloadReceived=off+cp; }
   }
   bulk.receivedSize+=useful; bulk.chunkCount++;
-  if(bulk.carouselToFS || bulk.presetToFS) {
+  if(bulk.carouselToFS || bulk.carouselBuffered || bulk.presetToFS) {
     updateCarouselTransferIndicatorProgress(bulk.receivedSize,bulk.expectedSize);
     if(bulk.presetToFS) presetTransferLastActivityAt=millis();
   }
@@ -5254,13 +6024,16 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
     }
 #endif
-    if(bulk.carouselToFS || bulk.presetToFS){
-      const bool isCarousel=bulk.carouselToFS;
+    if(bulk.carouselToFS || bulk.carouselBuffered || bulk.presetToFS){
+      const bool isCarousel=bulk.carouselToFS || bulk.carouselBuffered;
       uint8_t localSlot=isCarousel
           ? ((bulk.carouselLocalSlot>=0) ? (uint8_t)bulk.carouselLocalSlot : 0xFF)
           : ((bulk.presetLocalSlot>=0) ? (uint8_t)bulk.presetLocalSlot : 0xFF);
       const bool slotValid=isCarousel ? (localSlot<CAROUSEL_SLOT_COUNT) : (localSlot<PRESET_SLOT_COUNT);
-      const bool integrityOk=ok && slotValid && gifRxWriteOffset==bulk.expectedSize;
+      const bool payloadComplete=bulk.carouselBuffered
+          ? (carouselImageRxData && carouselImageRxWriteOffset==bulk.expectedSize)
+          : (gifRxWriteOffset==bulk.expectedSize);
+      const bool integrityOk=ok && slotValid && payloadComplete;
       const DeferredAssetCommitKind kind=isCarousel ? DEFERRED_ASSET_CAROUSEL : DEFERRED_ASSET_PRESET;
       if(!queueDeferredAssetCommit(kind,type,localSlot,bulk.timeSign,bulk.expectedSize,bulk.expectedCRC,integrityOk)){
 #if DEBUG_SERIAL
@@ -5301,7 +6074,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
         }
       }
     }
-    if(type==2 && ok && rawRgbData && rawRgbWriteOffset==bulk.expectedSize){
+    if(type==2 && !bulk.carouselBuffered && ok && rawRgbData && rawRgbWriteOffset==bulk.expectedSize){
       switchDisplayMode(DISPLAY_RAW);
       for(uint8_t y=0;y<MATRIX_HEIGHT;y++) for(uint8_t x=0;x<MATRIX_WIDTH;x++){
         const uint16_t pix=(uint16_t)y*MATRIX_WIDTH+x;
@@ -5314,9 +6087,10 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     Serial.print("BULK END type="); Serial.print(type);
     Serial.print(" total="); Serial.print(bulk.receivedSize);
     Serial.print(" chunks="); Serial.print(bulk.chunkCount);
-    if(bulk.carouselToFS){
+    if(bulk.carouselToFS || bulk.carouselBuffered){
       Serial.print(" storage=CAROUSEL slot="); Serial.print((int)bulk.carouselLocalSlot);
-      Serial.print(" type="); Serial.print(type==3 ? "TEXT" : "GIF");
+      Serial.print(" type="); Serial.print(carouselDataTypeLabel(type));
+      Serial.print(bulk.carouselBuffered ? " mode=BUFFERED" : " mode=FS");
       Serial.print(" dwell="); Serial.print(bulk.timeSign);
     } else if(bulk.presetToFS){
       Serial.print(" storage=PRESET slot="); Serial.print((int)(PRESET_SLOT_BASE+bulk.presetLocalSlot));
@@ -6266,6 +7040,10 @@ void handleBleDisconnected(){
 #endif
   if(!lockRuntimeState()) return;
   deviceConnected=false;
+  // A queued 02/01 has not touched storage yet; if BLE disappears before
+  // loopTask publishes it, simply discard the descriptor. Active bank journals
+  // are intentionally left on disk for reboot/restart recovery.
+  if(deferredCarouselBankSetup.active) deferredCarouselBankSetup=DeferredCarouselBankSetupState();
   packetReceived=packetExpected=0;
   packetLastRxMs=0;
   resetAudioReassembly();
@@ -6274,6 +7052,10 @@ void handleBleDisconnected(){
   // finish the already-received transaction; sendFA03() will simply no-op
   // while disconnected. Partial transfers keep the historical abort path.
   if(!deferredAssetCommit.active) resetBulkTransfer(true);
+  // Preset candidates are not authoritative until 06/02. If the link
+  // disappears before activation, let loopTask finish any already-queued final
+  // asset commit and then discard the candidate bank, preserving /preN.*.
+  if(presetBankTxnActive) requestPresetBankCleanup(1);
   resetGraffitiRaster();
   // Do not sleep inside the BLE callback. Preserve the historical 300 ms
   // restart delay by deferring advertising restart to the Arduino loop.
@@ -7287,10 +8069,17 @@ void clearPersistentDeviceState() {
     }
     for (uint8_t i=0;i<CAROUSEL_SLOT_COUNT;i++) {
       LittleFS.remove(carouselFileName(i,1));
+      LittleFS.remove(carouselFileName(i,2));
       LittleFS.remove(carouselFileName(i,3));
       LittleFS.remove(carouselTempFileName(i));
       LittleFS.remove(carouselBackupFileName(i));
+      LittleFS.remove(carouselBankBackupFileName(i,1));
+      LittleFS.remove(carouselBankBackupFileName(i,2));
+      LittleFS.remove(carouselBankBackupFileName(i,3));
     }
+    LittleFS.remove(CAROUSEL_BANK_TXN_FILE);
+    LittleFS.remove(CAROUSEL_BANK_TXN_TMP_FILE);
+    carouselBankTxnActive=false;
     LittleFS.remove(GIF_PLAY_FILE); LittleFS.remove(GIF_PLAY_BACKUP_FILE);
     LittleFS.remove(GIF_RX_FILES[0]); LittleFS.remove(GIF_RX_FILES[1]);
     LittleFS.remove(EVENT_GIF_PLAY_FILE);
@@ -7948,10 +8737,18 @@ void loop(){
   // can update packetLastRxMs/bulkLastRxMs to a newer value while loop() waits.
   // Unsigned subtraction would then wrap and falsely look like a huge timeout.
   uint32_t now=millis();
-  // B197/B198: publish completed Preset/Carousel assets on loopTask before any
+  // Publish completed Preset/Carousel assets on loopTask before any
   // timeout or playback work. This keeps LittleFS remove/rename/NVS activity
   // off nimble_host and preserves ACK pacing for the next bulk transfer.
   processDeferredAssetCommit();
+  // 06/02 may publish a complete Preset candidate bank and start its
+  // first decoder. Keep that work on loopTask as well, then perform any
+  // disconnect/bulk-abort cleanup only after pending publication has settled.
+  processDeferredPresetActivation();
+  processPresetBankCleanup();
+  // Perform 02/01 Carousel bank journaling/backup/wipe on loopTask, never
+  // on the NimBLE host callback stack. ACK is sent by the finalizer.
+  processDeferredCarouselBankSetup();
   now=millis();
 #if IDOTMATRIX_RTC_AVAILABLE
   updateRtcRecovery(now);
@@ -8066,7 +8863,7 @@ void loop(){
   updatePreset(now);
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_GIF) updateGIF();
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_TEXT) updateTextAnimation();
-  // B201: copy at most one prefetch chunk after the active media has had its
+  // Copy at most one prefetch chunk after the active media has had its
   // loop-time rendering opportunity. The cached source remains authoritative
   // only after complete size/CRC verification.
   if(!carouselTransferIndicatorActive) serviceCarouselGifPrefetch(now);

@@ -25,11 +25,11 @@ esp32c3_ws2812_16
 - dedicated two-slot OTA partition table;
 - LittleFS media partition after both OTA slots;
 - BOOT/GPIO0 physical trigger for the local OTA maintenance AP;
-- Build 201 PSRAM cache + Carousel prefetch targets; the 64x64 environment remains the primary/default Waveshare profile.
+- The stable Waveshare profiles enable guarded GIF PSRAM staging, bounded compressed-source caching, one-item Carousel prefetch, crash-recoverable Carousel replacement, invocation-atomic Preset replacement and static-image Carousel slots; the 64x64 environment is the primary/default profile.
 - `IDOTMATRIX_MEMORY_TELEMETRY=1` is enabled only on these three Waveshare profiles; other profiles compile the telemetry API to no-ops.
-- Build 201 retains `IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES=2097152UL`, `IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES=4194304UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES=1048576UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES=524288UL` and `IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES=12`, and adds `IDOTMATRIX_CAROUSEL_GIF_PREFETCH=1` only on the three Waveshare profiles.
+- The three Waveshare profiles use `IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES=2097152UL`, `IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES=4194304UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES=1048576UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES=524288UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES=12` and `IDOTMATRIX_CAROUSEL_GIF_PREFETCH=1`.
 
-Build 201 intentionally does not enable the board's PCF85063, QMI8658, SHTC3, MicroSD or audio hardware.
+The stable release intentionally does not enable the board's PCF85063, QMI8658, SHTC3, MicroSD or audio hardware.
 
 ### `matrixportal_s3_hub75_64`
 
@@ -72,9 +72,9 @@ This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-
 
 This is a diagnostic environment and is not part of the main release qualification.
 
-For the active 0.6.0 development line, the checked-in `default_envs` value points at the Waveshare S3 / 64x64 bring-up target. The stable 0.5.2 MatrixPortal and ESP32-C3 environments remain available explicitly. For reproducible work on another profile, pass `-e <environment>` explicitly.
+For stable 0.6.0, the checked-in `default_envs` value points at the Waveshare S3 / 64x64 target. MatrixPortal and ESP32-C3 environments remain available explicitly. For reproducible work on another profile, pass `-e <environment>` explicitly.
 
-Build 201 keeps the same board/toolchain/partition policy across all three Waveshare environments. Only `IDOTMATRIX_SCREEN_TYPE` changes: `1` for logical 16x16, `3` for logical 32x32 and `4` for logical 64x64. `PHYSICAL_MATRIX_WIDTH` and `PHYSICAL_MATRIX_HEIGHT` remain 64 in every case. See [`WAVESHARE-B195-SCALING-QUALIFICATION.md`](WAVESHARE-B195-SCALING-QUALIFICATION.md). The B195 scaling gate is physically qualified; Build 196 added serial memory/latency instrumentation; B198 physically qualified the deferred Preset/Carousel publication path; Build 199 added and physically qualified guarded transient GIF source staging in PSRAM; Build 200 retained it and physically qualified the bounded persistent compressed-source cache; Build 201 adds immediate-next Carousel GIF prefetch. See [`WAVESHARE-B196-MEMORY-BASELINE.md`](WAVESHARE-B196-MEMORY-BASELINE.md), [`WAVESHARE-B198-COMPILE-CORRECTION.md`](WAVESHARE-B198-COMPILE-CORRECTION.md) and [`WAVESHARE-B199-GIF-PSRAM-STAGING.md`](WAVESHARE-B199-GIF-PSRAM-STAGING.md), plus [`WAVESHARE-B200-GIF-SOURCE-CACHE.md`](WAVESHARE-B200-GIF-SOURCE-CACHE.md) and [`WAVESHARE-B201-CAROUSEL-GIF-PREFETCH.md`](WAVESHARE-B201-CAROUSEL-GIF-PREFETCH.md).
+All three Waveshare environments share the same board/toolchain/partition policy; only the logical `IDOTMATRIX_SCREEN_TYPE` changes. `PHYSICAL_MATRIX_WIDTH` and `PHYSICAL_MATRIX_HEIGHT` remain 64 in every case.
 
 ## Reference toolchain
 
@@ -89,7 +89,7 @@ ESP-IDF       5.5.5
 https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip
 ```
 
-The active Waveshare bring-up deliberately uses the already-qualified WLED board stack instead:
+The Waveshare profiles deliberately use the already-qualified WLED board stack:
 
 ```text
 Tasmota Arduino Core 3.3.8
@@ -98,7 +98,7 @@ platform-espressif32  2026.05.50
 NimBLE-Arduino        2.5.1
 ```
 
-The Waveshare environment pins NimBLE because the Tasmota platform does not expose the legacy `BLEDevice.h` compatibility library used by the older standalone profiles. This BLE backend selection is target-local; MatrixPortal, ESP32-C3 and classic ESP32 behavior is intentionally unchanged in Build 201.
+The Waveshare environment pins NimBLE because the Tasmota platform does not expose the legacy `BLEDevice.h` compatibility library used by the older standalone profiles. This BLE backend selection is target-local; MatrixPortal, ESP32-C3 and classic ESP32 behavior remain on their existing backends.
 
 Primary libraries:
 
@@ -113,7 +113,7 @@ Preferences and LittleFS come from the selected Arduino-ESP32 framework.
 
 ## Build
 
-From the repository root, Waveshare Build 201 PSRAM-cache/prefetch profiles:
+From the repository root, Waveshare profiles:
 
 ```bash
 pio run -e waveshare_s3_rgbmatrix_16x16
@@ -155,7 +155,7 @@ Waveshare ESP32-S3 RGB Matrix initial USB flash:
 pio run -e waveshare_s3_rgbmatrix_64x64 -t upload
 ```
 
-After the initial USB flash, the Waveshare Build 201 profiles retain the B194 OTA maintenance flow documented in [`OTA.md`](OTA.md).
+After the initial USB flash, the Waveshare profiles provide the maintenance OTA flow documented in [`OTA.md`](OTA.md).
 
 MatrixPortal S3:
 
@@ -175,7 +175,7 @@ Do not commit machine-specific serial ports to `platformio.ini`.
 
 The Waveshare profiles also pin `h2zero/NimBLE-Arduino @ 2.5.1` and defines `IDOTMATRIX_USE_NIMBLE=1`. The Tasmota Arduino 3.3.8 stack used by the WLED-qualified board target does not provide the legacy `BLEDevice.h` compatibility headers expected by the standalone emulator. Other profiles retain their previous BLE backend.
 
-The Build 201 Waveshare profiles enable native USB CDC. The repository helper defaults to:
+The Waveshare profiles enable native USB CDC. The repository helper defaults to:
 
 ```text
 /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00
@@ -197,7 +197,7 @@ Runtime monitor:
 
 The JTAG identity appears only after the upload process has already initiated the programming transition. Therefore the repository update helper intentionally runs the PlatformIO upload target directly instead of waiting for JTAG before starting `pio`.
 
-After upload, the helper uses a target-specific runtime pattern. For Waveshare Build 201 the default is the Espressif USB JTAG/serial debug runtime identity; override `MONITOR_SERIAL_PATTERN` or `MONITOR_SERIAL_PORT` if the local OS exposes a different persistent name.
+After upload, the helper uses a target-specific runtime pattern. For Waveshare the default is the Espressif USB JTAG/serial debug runtime identity; override `MONITOR_SERIAL_PATTERN` or `MONITOR_SERIAL_PORT` if the local OS exposes a different persistent name.
 
 ## Serial monitor
 
@@ -211,7 +211,7 @@ The reference speed is 115200 baud. Under Linux/WSL, prefer persistent `/dev/ser
 
 ## Waveshare 32 MB OTA partition layout
 
-Build 201 uses:
+The Waveshare profiles use:
 
 ```text
 partitions/idotmatrix_waveshare_s3_32mb_ota.csv

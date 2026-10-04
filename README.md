@@ -10,22 +10,20 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.6.0-dev.3`
-- **Build:** `201`
+- **Release:** `0.6.0`
+- **Build:** `213`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.6.0-dev.3-B201
+IDOTMATRIX_FW=0.6.0-B213
 ```
 
-The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
+Release 0.6.0 promotes the hardware-qualified 0.6.0 development line to stable. It adds the Waveshare ESP32-S3 RGB Matrix target, dual-slot maintenance OTA, logical 16x16/32x32/64x64 scaling on a 64x64 HUB75 panel, guarded GIF PSRAM staging/cache/prefetch, transactional Carousel and Preset replacement, static PNG Device Assets support, mixed PNG/GIF/TEXT Carousel playback, and the BLE-host stack hardening validated by repeated Carousel replacement on real hardware.
 
-Development notes: [`docs/RELEASE-NOTES-0.6.0-dev.3.md`](docs/RELEASE-NOTES-0.6.0-dev.3.md).
+The stable runtime is the qualified Build 212 behavior with release/build identity and documentation cleanup only; Build 213 introduces no new protocol or media semantics.
 
-`0.6.0-dev.3 / Build 201` is the current development build. The stable public baseline remains `0.5.2 / Build 190`.
-
-Build 191 failed its first Waveshare hardware gate with a USB reset loop. Build 192 corrected the framework/partition baseline, Build 193 made the Waveshare NimBLE backend reproducible, Build 194 qualified OTA/captive-portal operation and Build 195 qualified logical 16x16/32x32/64x64 scaling. Build 196 added Waveshare-only memory/latency telemetry and exposed a `nimble_host` stack-canary while final Preset filesystem publication was running inside the BLE callback. Build 197 moved final Preset/Carousel publication to the Arduino loop task; Build 198 corrected an Arduino `.ino` prototype-order compile issue and the resulting deferred-commit path was then qualified on hardware for both Preset and Carousel. Build 199 physically qualified guarded whole-GIF source staging in PSRAM on Carousel and live GIF paths. Build 200 then physically qualified the bounded persistent compressed-source LRU cache, including real LRU eviction. Build 201 adds conservative one-item Carousel GIF look-ahead prefetch.
+See [`docs/RELEASE-NOTES-0.6.0.md`](docs/RELEASE-NOTES-0.6.0.md) and [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md).
 
 ## What the emulator supports
 
@@ -54,11 +52,15 @@ Protocol details, confidence levels and original-device observations are documen
 
 ### Waveshare ESP32-S3 RGB Matrix + 64x64 HUB75
 
-Build 201 continues the standalone-emulator development profile for the Waveshare ESP32-S3 RGB Matrix (`ESP32-S3-N32R16`, 32 MB flash, 16 MB PSRAM). The profile uses the official/WLED-qualified HUB75 GPIO mapping and a dedicated dual-slot OTA partition table. Board/HUB75/OTA, 16x16/32x32/64x64 scaling, the B198 deferred Preset/Carousel commit path, and B199 Carousel/live GIF PSRAM staging are physically qualified. B200 physically qualified a bounded 1 MiB persistent compressed-GIF source cache with 512 KiB per-entry cap, 12-entry limit, LRU eviction and active-entry protection while retaining the B199 2 MiB transient stage and 4 MiB reserve. B201 adds immediate-next GIF prefetch in 4 KiB loop-time chunks after a 250 ms grace period. On-board PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio devices are deliberately not enabled yet.
+Stable 0.6.0 adds the Waveshare ESP32-S3 RGB Matrix (`ESP32-S3-N32R16`, 32 MB flash, 16 MB PSRAM) as the primary high-memory target. The three checked-in profiles expose logical 16x16, 32x32 or 64x64 iDotMatrix identities while driving one physical 64x64 HUB75 panel with the official/WLED-qualified GPIO mapping.
 
-Build 201 retains the B194 OTA maintenance service for this profile. Hold the on-board BOOT button (GPIO0) for about two seconds **after normal firmware boot** to start a temporary Wi-Fi access point and local upload page. Wi-Fi remains off during normal operation until the physical trigger is used. The maintenance AP now provides captive DNS/HTTP redirects so supported Windows, Android and Apple clients can offer the upload page automatically after connection; `http://192.168.4.1/` remains the manual fallback. See [`docs/OTA.md`](docs/OTA.md), [`docs/WAVESHARE-B194-QUALIFICATION.md`](docs/WAVESHARE-B194-QUALIFICATION.md) and [`docs/WAVESHARE-B195-SCALING-QUALIFICATION.md`](docs/WAVESHARE-B195-SCALING-QUALIFICATION.md).
+The Waveshare path is hardware-qualified for OTA maintenance, all three logical scaling profiles, guarded whole-GIF PSRAM staging, bounded compressed-source LRU caching, one-item Carousel prefetch, crash-recoverable Carousel-bank replacement, invocation-atomic Preset replacement, static type-2 PNG Device Assets, mixed PNG/GIF/TEXT Carousel playback and repeated Carousel replacement with an 8 KiB NimBLE host-task stack. The Device Assets settle window is 8 seconds because the official app was observed to pause for about 3.8 seconds between items in one valid push.
 
-Build 201 retains `[MEM]`, `[LAT]`, `[GIFSTAGE]` and `[GIFCACHE]` telemetry and adds `[GIFPREFETCH]` plus `gif.prefetch.*` measurements for one-item look-ahead scheduling, copy, validation and cancellation. See [`docs/WAVESHARE-B196-MEMORY-BASELINE.md`](docs/WAVESHARE-B196-MEMORY-BASELINE.md), [`docs/WAVESHARE-B199-GIF-PSRAM-STAGING.md`](docs/WAVESHARE-B199-GIF-PSRAM-STAGING.md), [`docs/WAVESHARE-B200-GIF-SOURCE-CACHE.md`](docs/WAVESHARE-B200-GIF-SOURCE-CACHE.md) and [`docs/WAVESHARE-B201-CAROUSEL-GIF-PREFETCH.md`](docs/WAVESHARE-B201-CAROUSEL-GIF-PREFETCH.md).
+Hold the on-board BOOT button (GPIO0) for about two seconds **after normal firmware boot** to start the temporary OTA maintenance access point. Wi-Fi remains off during normal operation. See [`docs/OTA.md`](docs/OTA.md).
+
+Structured `[MEM]`, `[LAT]`, `[GIFSTAGE]`, `[GIFCACHE]`, `[GIFPREFETCH]`, `[CARBANK]` and `[PREBANK]` diagnostics remain available for runtime qualification and troubleshooting.
+
+The board's PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio devices are deliberately not enabled or claimed as qualified in 0.6.0.
 
 ### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
@@ -184,7 +186,7 @@ Upload the initial image over USB with:
 pio run -e waveshare_s3_rgbmatrix_64x64 -t upload
 ```
 
-After the first USB flash, Build 201 can enter the retained B194 OTA maintenance mode through the on-board BOOT button; see [`docs/OTA.md`](docs/OTA.md).
+After the first USB flash, the Waveshare target can enter the physically triggered OTA maintenance mode through the on-board BOOT button; see [`docs/OTA.md`](docs/OTA.md).
 
 Build the MatrixPortal target with:
 
@@ -254,7 +256,7 @@ A=18   B=8    C=3    D=42   E=9
 LAT=40 OE=2   CLK=41
 ```
 
-The Build 201 Waveshare profiles use the same 32 MB partition table stored in `partitions/idotmatrix_waveshare_s3_32mb_ota.csv`. It deliberately matches the WLED 32 MB Waveshare geometry: two 3 MiB OTA application slots, a 25.875 MiB LittleFS partition, and a final 64 KiB coredump partition.
+The Waveshare profiles use the 32 MB partition table stored in `partitions/idotmatrix_waveshare_s3_32mb_ota.csv`. It deliberately matches the WLED 32 MB Waveshare geometry: two 3 MiB OTA application slots, a 25.875 MiB LittleFS partition, and a final 64 KiB coredump partition.
 
 ## MatrixPortal S3 reference pinout
 
@@ -275,7 +277,7 @@ These differences are documented explicitly rather than presented as protocol fa
 
 ## Repository update helper
 
-[`update_idotmatrix_emulator.sh`](update_idotmatrix_emulator.sh) synchronizes a source archive into a local Git checkout, invokes the selected PlatformIO upload target, and can wait for a target-specific runtime serial endpoint before opening the monitor. Build 201 defaults to the Waveshare 64x64 logical development environment; `PIO_ENV`, `MONITOR_SERIAL_PATTERN` and `MONITOR_SERIAL_PORT` remain overridable.
+[`update_idotmatrix_emulator.sh`](update_idotmatrix_emulator.sh) synchronizes a source archive into a local Git checkout, invokes the selected PlatformIO upload target, and can wait for a target-specific runtime serial endpoint before opening the monitor. The helper defaults to the Waveshare 64x64 logical environment; `PIO_ENV`, `MONITOR_SERIAL_PATTERN` and `MONITOR_SERIAL_PORT` remain overridable.
 
 The helper deliberately does not wait for a programming/JTAG endpoint before starting PlatformIO upload, because PlatformIO owns that transition.
 
@@ -292,29 +294,21 @@ Do not expose the device in environments where unauthenticated BLE control would
 ## Documentation
 
 - [`PROTOCOL.md`](PROTOCOL.md) — protocol reference and confidence levels
-- [`HISTORY.md`](HISTORY.md) — public release history
+- [`HISTORY.md`](HISTORY.md) — release and development history
 - [`FUTURE-WORK.md`](FUTURE-WORK.md) — non-blocking research and possible extensions
 - [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) — supported hardware and qualification policy
-- [`docs/HARDWARE-MODULES.md`](docs/HARDWARE-MODULES.md) — exact peripheral modules, supplied photos and qualification state
+- [`docs/HARDWARE-MODULES.md`](docs/HARDWARE-MODULES.md) — exact peripheral modules and qualification state
 - [`docs/HARDWARE-CONFIGURATION.md`](docs/HARDWARE-CONFIGURATION.md) — local sensor/I2C override file and precedence
-- [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md) — accelerometer driver abstraction and orientation diagnostics
+- [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md) — accelerometer architecture and diagnostics
 - [`docs/PLATFORMIO.md`](docs/PLATFORMIO.md) — reproducible PlatformIO build/upload guide
+- [`docs/OTA.md`](docs/OTA.md) — Waveshare OTA maintenance workflow and safety model
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
-- [`docs/WAVESHARE-B194-QUALIFICATION.md`](docs/WAVESHARE-B194-QUALIFICATION.md) — Build 194 Waveshare OTA/captive-portal qualification history
-- [`docs/WAVESHARE-B195-SCALING-QUALIFICATION.md`](docs/WAVESHARE-B195-SCALING-QUALIFICATION.md) — Build 195 qualified three-profile scaling gate
-- [`docs/WAVESHARE-B196-MEMORY-BASELINE.md`](docs/WAVESHARE-B196-MEMORY-BASELINE.md) — Build 196 memory/latency baseline and field findings
-- [`docs/WAVESHARE-B197-BLE-FS-HARDENING.md`](docs/WAVESHARE-B197-BLE-FS-HARDENING.md) — Build 197 deferred BLE/filesystem commit hardening
-- [`docs/WAVESHARE-B198-COMPILE-CORRECTION.md`](docs/WAVESHARE-B198-COMPILE-CORRECTION.md) — Build 198 Arduino `.ino` compile correction and physical deferred-commit result
-- [`docs/WAVESHARE-B199-GIF-PSRAM-STAGING.md`](docs/WAVESHARE-B199-GIF-PSRAM-STAGING.md) — Build 199 transient GIF PSRAM staging policy and hardware evidence
-- [`docs/WAVESHARE-B200-GIF-SOURCE-CACHE.md`](docs/WAVESHARE-B200-GIF-SOURCE-CACHE.md) — Build 200 persistent compressed-GIF source cache policy and hardware qualification
-- [`docs/WAVESHARE-B201-CAROUSEL-GIF-PREFETCH.md`](docs/WAVESHARE-B201-CAROUSEL-GIF-PREFETCH.md) — Build 201 one-item Carousel GIF prefetch policy and qualification plan
-- [`docs/OTA.md`](docs/OTA.md) — Waveshare OTA maintenance workflow and safety model
-- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — stable 0.5.2 release validation scope
-- [`docs/RELEASE-NOTES-0.6.0-dev.3.md`](docs/RELEASE-NOTES-0.6.0-dev.3.md) — current development build notes
-- [`docs/RELEASE-AUDIT-0.6.0-dev.3.md`](docs/RELEASE-AUDIT-0.6.0-dev.3.md) — Build 201 static/package audit and Carousel GIF prefetch scope
-- [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md) — stable 0.5.2 release notes and qualification summary
-- [`docs/RELEASE-AUDIT-0.5.2.md`](docs/RELEASE-AUDIT-0.5.2.md) — 0.5.2 final source/documentation/package audit
+- [`docs/RELEASE-NOTES-0.6.0.md`](docs/RELEASE-NOTES-0.6.0.md) — stable 0.6.0 release notes
+- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — stable 0.6.0 qualification scope
+- [`docs/RELEASE-AUDIT-0.6.0.md`](docs/RELEASE-AUDIT-0.6.0.md) — final package audit
+- [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md) — historical stable 0.5.2 release notes
+- [`docs/RELEASE-AUDIT-0.5.2.md`](docs/RELEASE-AUDIT-0.5.2.md) — historical 0.5.2 release audit
 - [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — historical 0.5.1 release audit
 
 ## Related project

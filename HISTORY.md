@@ -1,3 +1,132 @@
+## 0.6.0 / Build 213
+
+Stable promotion of the hardware-qualified 0.6.0 development line.
+
+- Runtime semantics are inherited from Build 212; Build 213 changes release/build identity plus documentation/comment cleanup only.
+- Waveshare ESP32-S3 RGB Matrix is promoted to supported stable hardware with qualified 16x16/32x32/64x64 logical scaling on a physical 64x64 HUB75 panel.
+- Stable Waveshare media stack includes guarded GIF PSRAM staging, bounded compressed-source cache, one-item Carousel prefetch, crash-recoverable Carousel-bank replacement and invocation-atomic Preset replacement.
+- Static type-2 Device Assets images include the app-observed 64x64 RGBA PNG form; mixed PNG/GIF/TEXT Carousel playback is hardware-qualified.
+- Device Assets settle remains 8000 ms, covering the observed inter-asset app pause.
+- Waveshare NimBLE host-task stack remains 8192 bytes; repeated Carousel replacement passed on hardware without the earlier `nimble_host` stack-canary.
+- Development-only release/qualification documents were consolidated into stable release notes, validation, audit and this history.
+
+## 0.6.0-dev.3 / Build 212
+
+- B211 hardware testing closed the mixed-Carousel lifecycle bug: PNG, GIF and TEXT all render as Carousel items and TEXT returns to the next slot after its dwell.
+- The same repeated-replacement session exposed a separate intermittent `Stack canary watchpoint triggered (nimble_host)` panic while a new Device Assets bank was being prepared. Transactional boot recovery then correctly rolled the interrupted bank back.
+- B212 is a narrow Waveshare BLE-host hardening build: all three Waveshare profiles set `MYNEWT_VAL_NIMBLE_HOST_TASK_STACK_SIZE=8192` instead of the NimBLE-Arduino default 4096-byte host-task stack.
+- The 8 KiB setting costs roughly 4 KiB of additional internal task-stack allocation on a platform that still showed about 170 KiB minimum internal free memory in the captured workload. No media format, BLE framing, Carousel/Preset transaction, B210 buffer or B211 settle behavior is changed.
+- Added a host regression guard ensuring the override is Waveshare-only and the 8000 ms settle window remains intact. Hardware qualification subsequently passed: repeated Carousel replacement completed normally with no reproduced `nimble_host` stack-canary, Guru Meditation or spontaneous reboot.
+
+## 0.6.0-dev.3 / Build 211
+
+- Hardware B210 testing confirmed the static PNG path now renders, but exposed a separate Device Assets timing regression: an approximately 3.8 s inter-asset pause exceeded the old 3 s upload-settle heuristic.
+- The premature bank commit closed `carouselUploadOpen`; subsequent GIF/TEXT payloads therefore fell through to the live paths (`gif_play.gif` / `text.live`) and the live TEXT renderer permanently displaced the Carousel.
+- Increased `CAROUSEL_UPLOAD_SETTLE_MS` from 3000 ms to 8000 ms so the same bank remains classified as Carousel across the observed pause.
+- GIF/TEXT parsers, type-2 PNG buffering, bank journal/rollback, Preset transactions and media cache/prefetch remain otherwise unchanged.
+- Added a host regression guard for the widened settle window and unchanged Carousel routing predicates. Hardware qualification subsequently confirmed mixed PNG/GIF/TEXT playback and normal TEXT-to-next-slot return.
+
+## 0.6.0-dev.3 / Build 210
+
+- Hardware evidence from B209 confirmed a regression introduced after the B203-qualified baseline: `nimble_host` still hit a stack-canary during Carousel upload even after the temporary B208 payload probes were removed.
+- The B203->B209 audit isolated the new type-2 static-image filesystem branch inside `processBulkPacket()` as the relevant callback-path delta.
+- Static Carousel type-2 bytes are now accumulated in a temporary memory buffer; Waveshare prefers PSRAM. The BLE callback performs only validation, CRC and memcpy for this new path.
+- Type-2 LittleFS create/write/flush and final slot publication now execute only from `processDeferredAssetCommit()` on `loopTask`. Existing GIF/TEXT receive paths are intentionally unchanged from the previously qualified design.
+- PNG/RGB24 static-image playback semantics from B209 are retained.
+- Host regression suite: 129 tests PASS before packaging. Hardware qualification pending.
+
+## 0.6.0-dev.3 / Build 209
+
+Evidence-based static Carousel PNG compatibility fix.
+
+- B208 hardware capture proved the reproduced static-first item is Bulk type `0x02`, normal `imageIndex=0`, `timeSign=5`, `total=11296`, with a PNG 64x64 RGBA signature/IHDR.
+- Replaces the B204 RAW-only and B205 transient-index hypotheses: Carousel type 2 is now a static `IMAGE` container and is persisted using the normal slot.
+- Reuses the existing Schedule PNG decoder on `loopTask`; exact logical RGB24 type-2 assets retain the direct raw loader.
+- Removes the B206-B208 diagnostic buffers after B208 reproduced a `nimble_host` stack-canary during a later Carousel GIF `LittleFS.open()`.
+- Retains the legacy `.raw` internal filename for type 2 so B202 rollback journals/backups remain compatible.
+- B201 prefetch remains GIF-only and skips type-2 static images as `next_image`.
+
+Status: **host regression qualified; Waveshare hardware qualification pending.**
+
+## 0.6.0-dev.3 / Build 208
+
+Measurement-only type-2 payload signature probe over Build 207. Hardware B207 finally captured the unresolved static-first Carousel transfer as Bulk type `0x02` with `imageIndex=0`, `timeSign=5` and declared `total=11296`, disproving both the B205 transient-index hypothesis and the B204 assumption that the payload is raw `64x64x3` RGB24 (`12288` bytes).
+
+- Keeps B207/B205 runtime routing, storage and playback behavior unchanged.
+- Emits the type-2 header as one atomic line to avoid telemetry interleaving.
+- Waits for the first non-empty type-2 media chunk and logs up to 32 payload bytes once per transfer.
+- Classifies common signatures (`PNG`, `JPEG`, `BMP`, `GIF`, probable `ZLIB`) only for diagnostics; no decoder or routing decision is changed.
+- Adds host compile-stubs for both the atomic header block and payload-probe block.
+
+Status: **hardware diagnostic capture complete; runtime not qualified.** Hardware identified the type-2 payload as PNG 64x64 RGBA, and the same run reproduced a `nimble_host` stack-canary while a later Carousel GIF entered LittleFS with the temporary probe buffers present.
+
+## 0.6.0-dev.3 / Build 207
+
+Compile-only correction over Build 206. The B206 type-2 Carousel diagnostic referenced the nonexistent `CarouselBankTxnManifest.mediaMask`; the actual persisted field is `mediaPresentMask`. Build 207 corrects that field reference and adds a C++ compile-stub for the exact diagnostic block. Runtime routing, storage, playback, transactions and B205/B206 behavior are unchanged.
+
+Status: **hardware protocol-header capture complete.** The build compiled and established type `0x02`, `imageIndex=0`, `timeSign=5`, `total=11296`; payload identity was resolved by B208.
+
+## 0.6.0-dev.3 / Build 206
+
+Measurement-only Carousel type-2 protocol capture.
+
+- Physical B205 testing still skipped the static first Carousel item and produced no `[CAROUSEL RAW ROUTE]` line, disproving the 12/13 transient-index hypothesis.
+- Keeps B205 routing, storage, playback, rollback and live RAW behavior unchanged.
+- Logs every Bulk type `0x02` header while a Carousel upload is open, before format/index routing, including `imageIndex`, `timeSign`, total bytes, expected logical RGB bytes, detected format, transaction state, masks and first payload size.
+- Dumps the exact 16-byte bulk header as `[CAROUSEL TYPE2 RAW16]` for protocol reconstruction.
+
+Status: **superseded diagnostic build.** Hardware testing disproved the transient-index hypothesis and led to the corrected B207/B208 capture path.
+
+## 0.6.0-dev.3 / Build 205
+
+Transient-index RAW Carousel routing correction.
+
+- Physical B204 testing showed the static-first Device Assets payload still followed live RAW even though the Carousel bank transaction was open.
+- The only remaining routing explanation is an out-of-range/transient `imageIndex`; B205 handles the documented transient indices 12/13 only while a Carousel transaction is active.
+- Resolves the RAW to the upload-order slot immediately after the latest successfully committed Carousel item, then reuses the B204 `/carN.raw` deferred commit, dwell and B202 rollback path.
+- Adds `[CAROUSEL RAW ROUTE]` diagnostics exposing source index, inferred slot, dwell, byte count and completed-slot mask.
+- Live RAW outside Device Assets and unknown indices above 13 remain unchanged.
+
+Status: **host regression qualified; hardware qualification pending.** The dependency-free suite passes 128 tests.
+
+## 0.6.0-dev.3 / Build 204
+
+Device Assets single-image Carousel compatibility fix.
+
+- Corrects a long-standing protocol mismatch identified on hardware: the official app sends a Carousel entry containing a single/static image as Bulk type `0x02` RAW RGB rather than Bulk type `0x01` GIF.
+- Persists those transfers as `/carN.raw` with the normal Carousel dwell/order metadata instead of treating them as transient live RAW frames.
+- Integrates RAW slots into the B202 whole-bank journal/rollback path via `.old.raw` backups and the existing deferred B198 publication boundary.
+- Loads RAW slots directly into the logical framebuffer and holds the static image for the normal Carousel dwell; GIF and TEXT paths remain unchanged.
+- Keeps live RAW behavior outside an open Device Assets replacement unchanged.
+- Keeps B201 prefetch GIF-only; a RAW next slot is explicitly skipped as `next_raw`.
+
+Status: **awaiting hardware qualification.** The regression suite passes 123 tests; physical qualification should confirm a static first Carousel item now displays/persists and the following animated slots still play normally.
+
+## 0.6.0-dev.3 / Build 203
+
+Invocation-atomic Preset/Default bank replacement hardening on top of the hardware-qualified B202 Carousel transaction baseline.
+
+- Keeps Presets intentionally volatile across reboot while separating candidate `.new.*` media from authoritative `/preN.*` files during upload.
+- Uses `06/02` as the live-session Preset bank commit point: all declared candidates must be size/CRC valid before publication.
+- Defers `06/02` validation, rename-only backup/publication, decoder start and ACK to `loopTask`, preserving the B198 NimBLE stack-safety boundary.
+- Restores selected old files from `.old.*` backups if publication fails before metadata/order switches.
+- Defers disconnect/partial-transfer cleanup to `loopTask`; when a previous Preset was active, an aborted candidate bank resumes that old Preset automatically.
+- Retains B199-B202 GIF staging/cache/prefetch and Carousel bank recovery unchanged.
+
+Status: **hardware-qualified.** Normal activation passed, and Bluetooth disconnect after multiple staged replacement items produced `state=abort reason=disconnect resumed=1` with the previous complete Preset restored.
+
+## 0.6.0-dev.3 / Build 202
+
+Crash-recoverable whole-Carousel-bank replacement hardening.
+
+- Adds a small CRC-protected persistent bank journal plus rename-only `.old.*` backups for the slots declared by `02/01`.
+- Defers `02/01` journal/backup/wipe/NVS work from `nimble_host` to `loopTask` and sends the setup ACK only after publication setup is ready.
+- Restores the complete pre-push bank at boot when the journal shows the replacement never reached its commit point.
+- Uses journal removal as the whole-bank commit point and cleans old backups afterwards.
+- Keeps B198 per-slot deferred commits and B199/B200/B201 staging/cache/prefetch behavior unchanged.
+
+Status: **hardware-qualified.** Normal whole-bank replacement committed successfully, and an intentionally interrupted pre-commit replacement restored the complete previous Carousel after reset with no old/new mixture.
+
 ## 0.6.0-dev.3 / Build 201
 
 One-item Carousel GIF look-ahead prefetch on top of the hardware-qualified B200 persistent compressed-source cache.
@@ -10,7 +139,7 @@ One-item Carousel GIF look-ahead prefetch on top of the hardware-qualified B200 
 - Cancels partial work on Carousel stop/advance or target metadata change; normal B200 cold playback remains the fallback.
 - Adds `[GIFPREFETCH]`, `gif.prefetch.*` memory snapshots and `gif.prefetch.total_us` telemetry.
 
-Status: **development build; host regression/compile-stub qualified, requires Waveshare PlatformIO compile and physical prefetch-transition qualification.**
+Status: **hardware-qualified for normal/mixed one-item Carousel prefetch behavior; deliberate partial-prefetch cancellation was not physically forced.**
 
 ## 0.6.0-dev.3 / Build 200
 

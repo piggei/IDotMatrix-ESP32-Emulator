@@ -1,6 +1,6 @@
 # Hardware Support Status
 
-This document describes the hardware targets and current qualification status for the v0.5.x emulator line.
+This document describes the hardware targets and qualification status for the stable 0.6.0 emulator line.
 
 ## Support policy
 
@@ -10,9 +10,17 @@ A target is considered **supported** only after end-to-end physical validation o
 
 ### Waveshare ESP32-S3 RGB Matrix + 64x64 HUB75
 
-Build `0.6.0-dev.1 / 191` adds the first standalone-emulator profile for the Waveshare ESP32-S3 RGB Matrix / ESP32-S3-N32R16.
+Primary high-memory ESP32-S3 target for the 0.6.0 line:
 
-Reference capabilities for this board are 32 MB flash and 16 MB PSRAM. Build 197 uses one physical 64x64 HUB75 panel with the official/WLED-qualified pin mapping:
+- ESP32-S3-N32R16;
+- 32 MB flash and 16 MB PSRAM;
+- one physical 64x64 HUB75 panel;
+- logical 16x16, 32x32 or 64x64 profiles;
+- NimBLE-Arduino backend with an 8 KiB host-task stack;
+- dual-slot maintenance OTA;
+- LittleFS media storage plus bounded PSRAM GIF staging/cache/prefetch.
+
+Reference HUB75 pin mapping:
 
 ```text
 R1=4   G1=5   B1=6
@@ -21,11 +29,22 @@ A=18   B=8    C=3    D=42   E=9
 LAT=40 OE=2   CLK=41
 ```
 
-The base Waveshare target is physically operational. The B194 OTA upload path is field-confirmed, including interrupted-upload recovery to the previous firmware and persistence of stored state. Build 195 physically passed logical 16x16, 32x32 and 64x64 rendering on the same physical 64x64 panel. Build 196 added measurement-only memory/latency telemetry; Build 197 retains it while moving final Preset/Carousel filesystem publication out of `nimble_host`. The board's PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio hardware remain deliberately disabled and must not be described as standalone-emulator qualified yet.
+Hardware qualification covers:
 
-OTA uses two 3 MiB application slots, a 25.875 MiB LittleFS media partition and a final 64 KiB coredump partition. Wi-Fi remains disabled until the on-board BOOT button is held for about two seconds after normal startup.
+- native HUB75 output and stable USB/BLE operation;
+- logical 16x16 -> 64x64, 32x32 -> 64x64 and 64x64 -> 64x64 scaling;
+- successful OTA, interrupted-upload recovery to the previous firmware and persistence of stored state;
+- GIF whole-source PSRAM staging, bounded persistent compressed-source cache and one-item Carousel prefetch;
+- deferred loop-task publication for filesystem-heavy Carousel/Preset commits;
+- crash-recoverable whole-Carousel-bank replacement;
+- invocation-atomic volatile Preset/Default replacement;
+- static type-2 Device Assets images, including the app-observed 64x64 RGBA PNG form;
+- mixed PNG/GIF/TEXT Carousel playback and correct TEXT-to-next-slot return;
+- repeated Carousel replacement without the previously observed `nimble_host` stack-canary after the Waveshare host-task stack was increased to 8 KiB.
 
-See [`WAVESHARE-B194-QUALIFICATION.md`](WAVESHARE-B194-QUALIFICATION.md), [`WAVESHARE-B195-SCALING-QUALIFICATION.md`](WAVESHARE-B195-SCALING-QUALIFICATION.md), [`WAVESHARE-B196-MEMORY-BASELINE.md`](WAVESHARE-B196-MEMORY-BASELINE.md), [`WAVESHARE-B197-BLE-FS-HARDENING.md`](WAVESHARE-B197-BLE-FS-HARDENING.md) and [`OTA.md`](OTA.md).
+The on-board PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio devices remain deliberately disabled and are not claimed as standalone-emulator-qualified in 0.6.0.
+
+OTA uses two 3 MiB application slots, a 25.875 MiB LittleFS media partition and a final 64 KiB coredump partition. Wi-Fi remains disabled until the on-board BOOT button is held for about two seconds after normal startup. See [`OTA.md`](OTA.md).
 
 ### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
@@ -99,7 +118,7 @@ The output stage supports:
 - nearest-neighbor upscaling;
 - box-average downscaling.
 
-Native 64x64 HUB75 and native 16x16 WS2812 are established baselines. Build 195 physically qualified the Waveshare 16x16->64x64, 32x32->64x64 and 64x64->64x64 paths.
+Native 64x64 HUB75 and native 16x16 WS2812 are established baselines. The Waveshare 16x16->64x64, 32x32->64x64 and 64x64->64x64 paths are physically qualified.
 
 ## Reference toolchain
 

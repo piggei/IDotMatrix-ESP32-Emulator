@@ -51,7 +51,7 @@ Local official-app captures add two sequencing/content observations that matter 
 - `0A/01` can be observed before a later page push and is not necessarily repeated after that push. An earlier implementation incorrectly treated it as a mandatory post-upload transaction terminator.
 - A full 12-position push contains a `DataType.TEXT` Bulk between GIF indices 4 and 6. An earlier implementation parsed it as live TEXT, which cleared the carousel upload context and caused subsequent GIF indices 6..11 to be handled as live GIFs. The final implementation stores carousel-range TEXT as a slot and preserves the replacement transaction; mixed GIF/TEXT playback was hardware-tested successfully.
 
-The public RE currently documents persistent carousel slots as GIF-only. Mixed TEXT slot persistence/playback is therefore a **project-observed and emulator-hardware-tested extension**. Equivalent TEXT persistence/playback on original iDotMatrix hardware remains unverified and is not generalized into a universal protocol claim. The implementation uses a 3-second upload-idle settle only because no explicit post-push frame has been observed in the local short-page captures; that timer is emulator policy rather than protocol evidence. It also forces the physical matrix black during replacement as an emulator UX policy, without altering `screenOn`; this blackout was hardware-tested successfully.
+The public RE currently documents persistent carousel slots as GIF-only. Mixed TEXT slot persistence/playback is therefore a **project-observed and emulator-hardware-tested extension**. Equivalent TEXT persistence/playback on original iDotMatrix hardware remains unverified and is not generalized into a universal protocol claim. The implementation uses an 8-second upload-idle settle because no explicit post-push frame has been observed and hardware captured an approximately 3.8-second inter-asset pause inside one valid bank push; that timer is emulator policy rather than protocol evidence. It also forces the physical matrix black during replacement as an emulator UX policy, without altering `screenOn`; this blackout was hardware-tested successfully.
 
 ## ACK semantics
 
@@ -73,7 +73,7 @@ Public clients support or discuss 16x16, 32x32 and 64x64 displays, but this does
 - firmware-specific features;
 - clock/text rendering behavior.
 
-The emulator supports app profiles `0x01` (16x16), `0x03` (32x32) and `0x04` (64x64). Logical profile and physical panel dimensions are independent. Native 64x64 operation is hardware validated on MatrixPortal ESP32-S3 + HUB75, while native 16x16 operation is hardware validated on ESP32-C3 + WS2812. Other logical/physical scaling combinations remain useful test configurations but are not all separately hardware-qualified.
+The emulator supports app profiles `0x01` (16x16), `0x03` (32x32) and `0x04` (64x64). Logical profile and physical panel dimensions are independent. Native 64x64 operation is hardware validated on MatrixPortal ESP32-S3 + HUB75, while native 16x16 operation is hardware validated on ESP32-C3 + WS2812. On the Waveshare 64x64 panel, logical 16x16, 32x32 and 64x64 profiles are physically qualified. Other physical-panel combinations remain useful test configurations but are not all separately hardware-qualified.
 
 ## Research policy
 

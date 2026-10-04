@@ -16,7 +16,7 @@ def test_prefetch_is_one_immediate_carousel_item_only():
     schedule = INO[INO.index("void scheduleCarouselGifPrefetch"):INO.index("bool beginCarouselGifPrefetch")]
     assert "int8_t next=nextCarouselSlot((int8_t)currentSlot);" in schedule
     assert "m.dataType!=1" in schedule
-    assert 'skipCarouselGifPrefetch(m.dataType==3 ? "next_text" : "metadata")' in schedule
+    assert 'skipCarouselGifPrefetch(m.dataType==3 ? "next_text" : (m.dataType==2 ? "next_image" : "metadata"))' in schedule
     assert "for(" not in schedule and "while(" not in schedule
 
 

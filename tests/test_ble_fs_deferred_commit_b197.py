@@ -37,7 +37,7 @@ def test_final_ack_is_deferred_until_after_runtime_state_reset():
     assert reset_at < ack_at
 
     bulk = _between("bool processBulkPacket", "// ======================================================\n// AUDIO / RHYTHM RENDERER")
-    branch = bulk[bulk.index("if(bulk.carouselToFS || bulk.presetToFS){"):]
+    branch = bulk[bulk.index("if(bulk.carouselToFS || bulk.carouselBuffered || bulk.presetToFS){"):]
     branch = branch[:branch.index("} else {")]
     assert "queueDeferredAssetCommit(" in branch
     assert "sendTransferAck" not in branch
