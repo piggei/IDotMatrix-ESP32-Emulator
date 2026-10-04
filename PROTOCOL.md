@@ -254,7 +254,7 @@ A VERIFY transaction is strongly indicated by original-hardware Android logcat a
 
 The Android capture showed two 7-byte GATT writes followed by 5-byte FA03 notifications during wrong/correct password submissions, and the app logged a cached `pwdByMac.<value>` entry. This strongly indicates per-device/MAC password caching in the app and a separate verification exchange. The captured logcat did not expose binary payload bytes, so the exact VERIFY response status semantics remain unconfirmed in this project.
 
-Historical development builds experimentally implemented SET/VERIFY and several ACK timing strategies. On hardware, the official app remained on the Set Password screen after SET, and no additional app command was observed. The release firmware therefore does not implement password handling in the emulator runtime. The framing and observations remain documented for future reverse engineering, but password support must not be described as implemented or compatible.
+Earlier internal experiments implemented SET/VERIFY and several ACK timing strategies. On hardware, the official app remained on the Set Password screen after SET, and no additional app command was observed. The release firmware therefore does not implement password handling in the emulator runtime. The framing and observations remain documented for future reverse engineering, but password support must not be described as implemented or compatible.
 
 Direct testing on the original 64x64 unit also showed that device reset clears the stored password association/state. Whether command enforcement is performed fully by the original device, partly by the app, or by both remains open.
 
@@ -958,7 +958,7 @@ The emulator implements destructive clearing of emulator-managed persistent stat
 
 ## Historical password timing experiment
 
-Historical development builds explored password SET/VERIFY acknowledgements and timing, but those runtime experiments were removed because the official app never completed the SET-password flow. Source review also showed that the nominal “deferred main-loop” timing was not implemented as independently as originally described. Those builds are historical experiments only and must not be treated as protocol evidence.
+Earlier internal experiments explored password SET/VERIFY acknowledgements and timing, but those runtime experiments were removed because the official app never completed the SET-password flow. Source review also showed that the nominal “deferred main-loop” timing was not implemented as independently as originally described. Those experiments are historical only and must not be treated as protocol evidence.
 
 Current firmware does **not** implement password SET/VERIFY runtime behavior. The observed packet framing, decimal-pair encoding, app-side `pwdByMac` caching, and 7-byte-write / 5-byte-notification evidence remain documented as partial reverse-engineering findings.
 

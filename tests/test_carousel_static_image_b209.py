@@ -27,7 +27,7 @@ def test_b210_carousel_type2_routes_by_context_not_rgb24_size():
     route = route[:route.index('if(type==2 && bulk.format=="RAW RGB" && !bulk.carouselBuffered)')]
     assert 'total==(uint32_t)NUM_LEDS*3UL' not in route
     assert 'imageIndex==12 || imageIndex==13' not in route
-    # B210 must not perform any filesystem work in the new type-2 BLE branch.
+    # The release must not perform any filesystem work in the new type-2 BLE branch.
     assert 'LittleFS.' not in route
     assert 'String tmp' not in route
 

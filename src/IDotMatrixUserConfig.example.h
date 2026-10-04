@@ -87,16 +87,32 @@
 // #define IDOTMATRIX_CONNECTION_BUZZER_ENABLED 1
 
 // -----------------------------------------------------------------------------
+
+// Optional synthesized codec-audio output (Waveshare ES8311 profile).
+// No WAV/PCM assets are used; notification tones are generated at runtime.
+// #define IDOTMATRIX_AUDIO_CODEC_ENABLED 1
+// #define IDOTMATRIX_AUDIO_CODEC_I2C_ADDRESS 0x18
+// #define IDOTMATRIX_AUDIO_I2C_SDA_PIN 47
+// #define IDOTMATRIX_AUDIO_I2C_SCL_PIN 48
+// #define IDOTMATRIX_AUDIO_I2S_BCLK_PIN 43
+// #define IDOTMATRIX_AUDIO_I2S_WS_PIN 38
+// #define IDOTMATRIX_AUDIO_I2S_DOUT_PIN 21
+// #define IDOTMATRIX_AUDIO_I2S_MCLK_PIN 12
+// #define IDOTMATRIX_AUDIO_PA_ENABLE_PIN 11
+// #define IDOTMATRIX_AUDIO_CODEC_VOLUME 100
+
 // Optional OTA maintenance override.
 //
-// The Waveshare 0.6.0 development profile enables OTA by default and uses the
+// The Waveshare 0.6.0 profile enables OTA by default and uses the
 // on-board BOOT button (GPIO0). Hold the button for about two seconds while the
 // firmware is already running to start a temporary Wi-Fi AP and HTTP upload
-// page. The AP is never started during normal operation unless this physical
+// page. A short press/release before the hold threshold performs a software
+// reboot, which is useful when a serial monitor must stay attached. The AP is never started during normal operation unless this physical
 // trigger is used.
 // -----------------------------------------------------------------------------
 // #define IDOTMATRIX_OTA_ENABLED 1
 // #define IDOTMATRIX_OTA_TRIGGER_PIN 0
 // #define IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW 1
 // #define IDOTMATRIX_OTA_TRIGGER_HOLD_MS 2000UL
+// #define IDOTMATRIX_OTA_TRIGGER_DEBOUNCE_MS 40UL
 // #define IDOTMATRIX_OTA_AP_PASSWORD "idotmatrix"  // minimum 8 characters

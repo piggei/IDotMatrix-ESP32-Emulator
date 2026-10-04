@@ -62,7 +62,7 @@ assert '#define IDOTMATRIX_I2C_SCL_PIN 9' in macros
 assert '#define IDOTMATRIX_USER_CONFIG_PRESENT 1' in macros
 
 # With no local override, the checked-in profile defaults still resolve to the
-# same effective backend/address/mount values used by Build 173.
+# same effective backend/address/mount values used by the qualified reference configuration.
 with tempfile.TemporaryDirectory() as tmp:
     td = Path(tmp)
     probe = td / 'probe.cpp'

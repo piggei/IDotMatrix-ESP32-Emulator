@@ -10,18 +10,17 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.6.0`
-- **Build:** `213`
+- **Release candidate:** `0.6.0-rc.1`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.6.0-B213
+IDOTMATRIX_FW=0.6.0-rc.1
 ```
 
-Release 0.6.0 promotes the hardware-qualified 0.6.0 development line to stable. It adds the Waveshare ESP32-S3 RGB Matrix target, dual-slot maintenance OTA, logical 16x16/32x32/64x64 scaling on a 64x64 HUB75 panel, guarded GIF PSRAM staging/cache/prefetch, transactional Carousel and Preset replacement, static PNG Device Assets support, mixed PNG/GIF/TEXT Carousel playback, and the BLE-host stack hardening validated by repeated Carousel replacement on real hardware.
+Release candidate 0.6.0-rc.1 consolidates the complete hardware-qualified 0.6.0 feature set into a publication candidate. It includes the Waveshare ESP32-S3 RGB Matrix target, dual-slot maintenance OTA, logical 16x16/32x32/64x64 scaling on a 64x64 HUB75 panel, guarded GIF PSRAM staging/cache/prefetch, transactional Carousel and Preset replacement, static PNG Device Assets, mixed PNG/GIF/TEXT Carousel playback, NimBLE host-stack hardening, and the synthesized ES8311/I2S notification backend.
 
-The stable runtime is the qualified Build 212 behavior with release/build identity and documentation cleanup only; Build 213 introduces no new protocol or media semantics.
+On Waveshare, notification audio is generated at runtime as the same 2 kHz buzzer-equivalent pattern used by the existing notification state machine; no WAV/PCM assets are stored. BLE connection, Countdown, Program/Schedule and Alarm notification paths are hardware-qualified on the physical 64x64 target. The codec default is 100% and remains compile-time configurable.
 
 See [`docs/RELEASE-NOTES-0.6.0.md`](docs/RELEASE-NOTES-0.6.0.md) and [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md).
 
@@ -44,7 +43,8 @@ The current implementation includes:
 - independent logical and physical display resolutions with nearest-neighbor upscaling and box-average downscaling;
 - hardware-qualified automatic orientation with the MatrixPortal S3 LIS3DH and an external ICM-20689 validated on ESP32-C3 with a shared I2C bus;
 - generic orientation mount compensation and optional compile-time I2C pin overrides for external sensors;
-- active and passive buzzer backends with configurable passive trigger polarity and non-blocking Alarm, Countdown, Schedule and connection notification patterns.
+- active and passive buzzer backends with configurable passive trigger polarity and non-blocking Alarm, Countdown, Schedule and connection notification patterns;
+- Waveshare ES8311/I2S synthesized speaker notifications using the same event state machine, with no stored audio samples.
 
 Protocol details, confidence levels and original-device observations are documented in [`PROTOCOL.md`](PROTOCOL.md).
 
@@ -52,15 +52,15 @@ Protocol details, confidence levels and original-device observations are documen
 
 ### Waveshare ESP32-S3 RGB Matrix + 64x64 HUB75
 
-Stable 0.6.0 adds the Waveshare ESP32-S3 RGB Matrix (`ESP32-S3-N32R16`, 32 MB flash, 16 MB PSRAM) as the primary high-memory target. The three checked-in profiles expose logical 16x16, 32x32 or 64x64 iDotMatrix identities while driving one physical 64x64 HUB75 panel with the official/WLED-qualified GPIO mapping.
+The 0.6.0 release-candidate line adds the Waveshare ESP32-S3 RGB Matrix (`ESP32-S3-N32R16`, 32 MB flash, 16 MB PSRAM) as the primary high-memory target. The three checked-in profiles expose logical 16x16, 32x32 or 64x64 iDotMatrix identities while driving one physical 64x64 HUB75 panel with the official/WLED-qualified GPIO mapping.
 
 The Waveshare path is hardware-qualified for OTA maintenance, all three logical scaling profiles, guarded whole-GIF PSRAM staging, bounded compressed-source LRU caching, one-item Carousel prefetch, crash-recoverable Carousel-bank replacement, invocation-atomic Preset replacement, static type-2 PNG Device Assets, mixed PNG/GIF/TEXT Carousel playback and repeated Carousel replacement with an 8 KiB NimBLE host-task stack. The Device Assets settle window is 8 seconds because the official app was observed to pause for about 3.8 seconds between items in one valid push.
 
-Hold the on-board BOOT button (GPIO0) for about two seconds **after normal firmware boot** to start the temporary OTA maintenance access point. Wi-Fi remains off during normal operation. See [`docs/OTA.md`](docs/OTA.md).
+Press and release the on-board BOOT button (GPIO0) briefly **after normal firmware boot** for a software reboot; hold it for at least two seconds to start the temporary OTA maintenance access point. Wi-Fi remains off during normal operation. See [`docs/OTA.md`](docs/OTA.md).
 
 Structured `[MEM]`, `[LAT]`, `[GIFSTAGE]`, `[GIFCACHE]`, `[GIFPREFETCH]`, `[CARBANK]` and `[PREBANK]` diagnostics remain available for runtime qualification and troubleshooting.
 
-The board's PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio devices are deliberately not enabled or claimed as qualified in 0.6.0.
+The board's PCF85063 RTC, QMI8658 IMU, SHTC3 and MicroSD remain outside the qualified 0.6.0 release scope. The on-board ES8311 speaker path is qualified on the physical 64x64 target: codec control uses dedicated I2C1 on GPIO47/48, I2S1 uses MCLK12/BCLK43/WS38/DOUT21, the PA is enabled on GPIO11, and notification tones are synthesized at runtime with no stored audio samples. The default codec volume is 100% and can be overridden in the local hardware configuration.
 
 ### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
@@ -294,7 +294,7 @@ Do not expose the device in environments where unauthenticated BLE control would
 ## Documentation
 
 - [`PROTOCOL.md`](PROTOCOL.md) — protocol reference and confidence levels
-- [`HISTORY.md`](HISTORY.md) — release and development history
+- [`HISTORY.md`](HISTORY.md) — concise public release history
 - [`FUTURE-WORK.md`](FUTURE-WORK.md) — non-blocking research and possible extensions
 - [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) — supported hardware and qualification policy
 - [`docs/HARDWARE-MODULES.md`](docs/HARDWARE-MODULES.md) — exact peripheral modules and qualification state
@@ -304,12 +304,9 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/OTA.md`](docs/OTA.md) — Waveshare OTA maintenance workflow and safety model
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
-- [`docs/RELEASE-NOTES-0.6.0.md`](docs/RELEASE-NOTES-0.6.0.md) — stable 0.6.0 release notes
-- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — stable 0.6.0 qualification scope
-- [`docs/RELEASE-AUDIT-0.6.0.md`](docs/RELEASE-AUDIT-0.6.0.md) — final package audit
-- [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md) — historical stable 0.5.2 release notes
-- [`docs/RELEASE-AUDIT-0.5.2.md`](docs/RELEASE-AUDIT-0.5.2.md) — historical 0.5.2 release audit
-- [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — historical 0.5.1 release audit
+- [`docs/RELEASE-NOTES-0.6.0.md`](docs/RELEASE-NOTES-0.6.0.md) — 0.6.0-rc.1 release notes
+- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — 0.6.0-rc.1 validation checklist
+- [`docs/RELEASE-AUDIT-0.6.0.md`](docs/RELEASE-AUDIT-0.6.0.md) — 0.6.0-rc.1 package audit
 
 ## Related project
 

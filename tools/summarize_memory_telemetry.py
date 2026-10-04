@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize Build 196 [MEM]/[LAT] serial telemetry without dependencies."""
+"""Summarize [MEM]/[LAT] serial telemetry without dependencies."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def as_int(values, key):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("log", type=Path, help="serial log containing Build 196 [MEM]/[LAT] lines")
+    parser.add_argument("log", type=Path, help="serial log containing [MEM]/[LAT] lines")
     args = parser.parse_args()
 
     mem_by_tag = defaultdict(list)
@@ -56,7 +56,7 @@ def main() -> int:
                 lat_by_tag[values["tag"]].append(us)
 
     if not mem_by_tag and not lat_by_tag:
-        print("No Build 196 telemetry found.")
+        print("No runtime telemetry found.")
         return 1
 
     print("MEMORY BY TAG")

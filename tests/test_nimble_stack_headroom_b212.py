@@ -12,8 +12,7 @@ def _env_block(name: str) -> str:
     return PIO[start:] if next_env < 0 else PIO[start:next_env]
 
 
-def test_b212_identity_and_b211_settle_are_preserved():
-    assert '#define FW_BUILD 213' in INO
+def test_b212_stack_hardening_and_b211_settle_are_preserved():
     assert '#define CAROUSEL_UPLOAD_SETTLE_MS 8000UL' in INO
 
 

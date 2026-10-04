@@ -1,6 +1,6 @@
 # Hardware Support Status
 
-This document describes the hardware targets and qualification status for the stable 0.6.0 emulator line.
+This document describes the hardware targets and qualification status for the 0.6.0 release-candidate emulator line.
 
 ## Support policy
 
@@ -40,11 +40,12 @@ Hardware qualification covers:
 - invocation-atomic volatile Preset/Default replacement;
 - static type-2 Device Assets images, including the app-observed 64x64 RGBA PNG form;
 - mixed PNG/GIF/TEXT Carousel playback and correct TEXT-to-next-slot return;
-- repeated Carousel replacement without the previously observed `nimble_host` stack-canary after the Waveshare host-task stack was increased to 8 KiB.
+- repeated Carousel replacement without the previously observed `nimble_host` stack-canary after the Waveshare host-task stack was increased to 8 KiB;
+- on-board ES8311 speaker output on the 64x64 target, including BLE connection beep, Countdown completion, Program/Schedule notification and repeating Alarm patterns, all synthesized at runtime without stored audio samples.
 
-The on-board PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio devices remain deliberately disabled and are not claimed as standalone-emulator-qualified in 0.6.0.
+The on-board PCF85063 RTC, QMI8658 IMU, SHTC3 and MicroSD remain deliberately disabled and are not claimed as standalone-emulator-qualified in 0.6.0.
 
-OTA uses two 3 MiB application slots, a 25.875 MiB LittleFS media partition and a final 64 KiB coredump partition. Wi-Fi remains disabled until the on-board BOOT button is held for about two seconds after normal startup. See [`OTA.md`](OTA.md).
+OTA uses two 3 MiB application slots, a 25.875 MiB LittleFS media partition and a final 64 KiB coredump partition. Wi-Fi remains disabled in normal operation. After startup, a short BOOT press software-reboots the firmware and holding BOOT for at least two seconds starts OTA maintenance. See [`OTA.md`](OTA.md).
 
 ### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
@@ -136,6 +137,11 @@ See [`PLATFORMIO.md`](PLATFORMIO.md) for build and upload details.
 ### Buzzer backends
 
 The firmware supports both self-oscillating active buzzers and passive buzzers. Passive output uses the ESP32 LEDC hardware peripheral and therefore does not depend on timing loops in the main firmware. Passive trigger polarity is configurable with `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW`. The reference ESP32-C3 profile selects the qualified three-wire transistor module on GPIO3 at 2000 Hz with low-level triggering and 3.3 V module supply; while silent, GPIO3 is held HIGH so the module transistor is off and the buzzer is not DC-biased. Buzzer backend, GPIO, frequency, trigger polarity and per-event policies can be overridden in `IDotMatrixUserConfig.h`.
+
+
+### Waveshare ES8311 synthesized audio
+
+The Waveshare profiles compile an optional codec backend using the on-board ES8311 at `0x18`. The qualified 64x64 target uses dedicated I2C1 control on SDA47/SCL48 and I2S1 master TX at 48 kHz / 16-bit stereo with MCLK12, BCLK43, WS38 and DOUT21; GPIO11 enables the external amplifier. The notification waveform is generated in real time as a 2 kHz square wave, so no WAV/PCM assets are required. The default codec volume is 100% and can be overridden with `IDOTMATRIX_AUDIO_CODEC_VOLUME`.
 
 
 ## Qualified peripheral modules

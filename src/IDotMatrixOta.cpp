@@ -19,8 +19,11 @@ bool otaActive = false;
 bool dnsActive = false;
 bool rebootPending = false;
 uint32_t rebootAt = 0;
+bool triggerRawPressed = false;
+bool triggerStablePressed = false;
+bool triggerLongActionDone = false;
+uint32_t triggerDebounceSince = 0;
 uint32_t triggerSince = 0;
-bool triggerLatched = false;
 bool uploadCommitted = false;
 String releaseText;
 uint32_t buildNumber = 0;
@@ -219,10 +222,10 @@ void idotOtaBegin(const char *release, uint32_t build) {
           IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW ? INPUT_PULLUP : INPUT_PULLDOWN);
   WiFi.mode(WIFI_OFF);
 #if DEBUG_SERIAL
-  Serial.print("OTA: enabled, hold GPIO"); Serial.print(IDOTMATRIX_OTA_TRIGGER_PIN);
-  Serial.print(IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW ? " LOW" : " HIGH");
-  Serial.print(" for "); Serial.print(IDOTMATRIX_OTA_TRIGGER_HOLD_MS);
-  Serial.println(" ms to start maintenance AP");
+  Serial.print("BOOT BUTTON: GPIO"); Serial.print(IDOTMATRIX_OTA_TRIGGER_PIN);
+  Serial.print(IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW ? " active LOW" : " active HIGH");
+  Serial.print(", short press=reboot, hold >= "); Serial.print(IDOTMATRIX_OTA_TRIGGER_HOLD_MS);
+  Serial.println(" ms=OTA maintenance AP");
 #endif
 }
 
@@ -239,17 +242,45 @@ void idotOtaLoop(uint32_t nowMs) {
     return;
   }
 
-  const bool pressed = triggerPressed();
-  if (!pressed) {
-    triggerSince = 0;
-    triggerLatched = false;
-    return;
+  const bool rawPressed = triggerPressed();
+  if (rawPressed != triggerRawPressed) {
+    triggerRawPressed = rawPressed;
+    triggerDebounceSince = nowMs;
   }
 
-  if (triggerLatched) return;
-  if (triggerSince == 0) triggerSince = nowMs;
-  if ((uint32_t)(nowMs - triggerSince) >= IDOTMATRIX_OTA_TRIGGER_HOLD_MS) {
-    triggerLatched = true;
+  if (rawPressed != triggerStablePressed &&
+      (uint32_t)(nowMs - triggerDebounceSince) >= IDOTMATRIX_OTA_TRIGGER_DEBOUNCE_MS) {
+    triggerStablePressed = rawPressed;
+    if (triggerStablePressed) {
+      triggerSince = nowMs;
+      triggerLongActionDone = false;
+#if DEBUG_SERIAL
+      Serial.println("BOOT BUTTON: pressed");
+#endif
+    } else {
+      const bool shortPress = !triggerLongActionDone;
+      triggerSince = 0;
+      if (shortPress) {
+#if DEBUG_SERIAL
+        Serial.println("BOOT BUTTON: short press -> reboot");
+        Serial.flush();
+#endif
+        delay(30);
+        ESP.restart();
+        return;
+      }
+#if DEBUG_SERIAL
+      Serial.println("BOOT BUTTON: released after OTA hold");
+#endif
+    }
+  }
+
+  if (triggerStablePressed && !triggerLongActionDone && triggerSince != 0 &&
+      (uint32_t)(nowMs - triggerSince) >= IDOTMATRIX_OTA_TRIGGER_HOLD_MS) {
+    triggerLongActionDone = true;
+#if DEBUG_SERIAL
+    Serial.println("BOOT BUTTON: long press -> OTA maintenance");
+#endif
     startAccessPoint();
   }
 }

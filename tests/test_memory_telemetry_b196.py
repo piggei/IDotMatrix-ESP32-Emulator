@@ -92,7 +92,7 @@ def test_b196_records_latency_without_changing_media_storage_policy():
     ):
         assert tag in INO
 
-    # Measurement-only means the B195 malloc/file-backed paths remain present.
+    # Measurement-only telemetry must preserve the existing malloc/file-backed paths.
     assert "framebuffer = (CRGB*)malloc(LOGICAL_FRAME_BYTES);" in INO
     assert "gifFrame = (CRGB*)malloc(LOGICAL_FRAME_BYTES);" in INO
     assert "scheduleSavedFrame = (CRGB*)malloc(LOGICAL_FRAME_BYTES);" in INO

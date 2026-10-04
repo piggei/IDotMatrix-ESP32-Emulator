@@ -1,46 +1,48 @@
-# 0.6.0 Final Release Audit
+# Release Audit - iDotMatrix ESP32 Emulator 0.6.0-rc.1
 
-**Release:** `0.6.0`  
-**Build:** `213`  
-**Firmware signature:** `IDOTMATRIX_FW=0.6.0-B213`
+## Purpose
 
-## Scope
+This audit covers the first 0.6.0 release candidate. The RC packages the hardware-qualified runtime as a publication candidate and removes internal development chronology from user-facing documentation.
 
-This audit finalizes the qualified 0.6.0 development line as the stable 0.6.0 release. Build 213 is a promotion/cleanup build over hardware-qualified Build 212: runtime semantics are intentionally unchanged.
+## Public identity
 
-## Release-critical findings closed
+- Release candidate: `0.6.0-rc.1`
+- Firmware signature: `IDOTMATRIX_FW=0.6.0-rc.1`
+- Default PlatformIO environment: `waveshare_s3_rgbmatrix_64x64`
 
-- Static Device Assets compatibility: app-observed type-2 PNG is supported and physically rendered in Carousel.
-- Mixed Carousel ownership: PNG/GIF/TEXT remain inside Carousel ownership and TEXT advances normally to the next slot.
-- Inter-asset timing: the settle window is 8 seconds, covering the observed ~3.8-second valid app pause.
-- BLE-host stack exhaustion: Waveshare uses an 8 KiB NimBLE host-task stack; repeated real Carousel replacement completed without the prior `nimble_host` stack-canary.
-- Filesystem work in latency-sensitive receive paths: final Carousel/Preset publication and static type-2 LittleFS work execute on `loopTask`.
-- Carousel replacement safety: journal/rollback protects the previous complete bank across interrupted replacement.
-- Preset replacement safety: candidate staging keeps the previous complete live-session Preset authoritative until activation succeeds.
+Internal numeric revision identifiers may still exist in source-level diagnostics and regression-test filenames for engineering traceability; they are not part of the public release documentation or compatibility contract.
 
-## Documentation cleanup
+## Hardware evidence
 
-- Public identity is `0.6.0 / Build 213`.
-- Development release notes/audits and per-build Waveshare qualification notes are removed from the stable package; their chronology remains summarized in `HISTORY.md`.
-- `README.md`, hardware support, PlatformIO, OTA, protocol comparison and future-work documents are aligned to the stable state.
-- Stale 3-second Carousel-settle wording is removed; the qualified value is 8 seconds.
-- The obsolete RAW-only/transient-index interpretation of static Device Assets is removed from current-facing documentation and code comments.
+The release candidate carries the following physically verified results:
 
-## Code cleanup
+- Waveshare logical 16x16/32x32/64x64 scaling on a physical 64x64 HUB75 panel: PASS.
+- Static image, GIF and TEXT operation: PASS.
+- Mixed PNG/GIF/TEXT Carousel lifecycle: PASS.
+- Repeated Carousel replacement with hardened NimBLE host stack: PASS.
+- Transactional recovery after interrupted Carousel replacement: PASS.
+- Maintenance OTA and interrupted-upload recovery: PASS.
+- BOOT short press software reboot: PASS.
+- Waveshare ES8311/I2S1 speaker initialization: PASS.
+- Synthesized BLE connection beep: PASS.
+- Synthesized Countdown completion notification: PASS.
+- Synthesized Program/Schedule notification: PASS.
+- Synthesized repeating Alarm notification: PASS.
+- 100% codec-volume default on the tested Waveshare speaker path: PASS.
+- Notification backend requires no stored WAV/PCM assets: PASS by design.
 
-- Development-build chronology comments in runtime code are replaced with behavior-oriented comments where practical.
-- Diagnostic switches remain disabled by default.
-- No qualified runtime path is intentionally redesigned in the stable promotion.
+## Documentation/package cleanup
 
-## Verification requirements/results
+- Public documentation is organized around current behavior, hardware support, protocol evidence, configuration, validation and future work.
+- Internal development-build chronology has been removed from the release history and current release documents.
+- Historical per-release audit/note files that duplicated `HISTORY.md` have been removed from the RC package.
+- Temporary codec bring-up dumps are not part of normal release diagnostics.
+- Generated firmware, `.pio`, Python caches and local user hardware configuration are excluded from the source package.
 
-- dependency-free host regression suite: **135/135 PASS**;
-- shell syntax for `update_idotmatrix_emulator.sh`: **PASS**;
-- stable release/build identity scan: **PASS**;
-- relative Markdown link scan: **55 local targets checked, 0 broken**;
-- package hygiene before archive creation: **PASS**; no `.pio`, Python cache, local `src/IDotMatrixUserConfig.h` or generated firmware artifacts;
-- fresh all-environment PlatformIO compile: not available in the packaging environment and therefore not claimed.
+## Remaining exclusions
 
-## Final assessment
+Password completion/enforcement, complete iOS/RCSP compatibility, automatic post-boot OTA rollback, the supplied GY-521 qualification, MatrixPortal plus external ICM-20689 qualification, and Waveshare PCF85063/QMI8658/SHTC3/MicroSD support remain outside the RC scope.
 
-Given the recorded hardware qualification of Build 212 and the stable promotion policy above, Build 213 is suitable as the 0.6.0 stable source package once the final-tree checks listed in this audit pass.
+## RC decision
+
+The source tree is suitable for RC validation. Publication as final `v0.6.0` should follow successful compilation of the intended targets and a final physical smoke test using the checklist in `RELEASE-VALIDATION.md`.

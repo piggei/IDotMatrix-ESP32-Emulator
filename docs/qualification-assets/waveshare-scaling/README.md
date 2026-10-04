@@ -1,6 +1,6 @@
 # Waveshare scaling qualification assets
 
-These PNG files are deterministic visual probes for Build 195. Load the file that matches the logical iDotMatrix profile exposed by the firmware.
+These PNG files are deterministic visual probes for the Waveshare scaling qualification. Load the file that matches the logical iDotMatrix profile exposed by the firmware.
 
 - `waveshare-scaling-16x16.png`: each logical source pixel must occupy exactly 4x4 physical pixels on the 64x64 HUB75 panel.
 - `waveshare-scaling-32x32.png`: each logical source pixel must occupy exactly 2x2 physical pixels.

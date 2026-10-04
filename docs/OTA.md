@@ -2,7 +2,7 @@
 
 ## Scope
 
-OTA support is available in stable `0.6.0 / Build 213` for the Waveshare ESP32-S3 RGB Matrix profiles only. It is intentionally a maintenance service, not a permanently exposed Wi-Fi control interface.
+OTA support is available in `0.6.0-rc.1` for the Waveshare ESP32-S3 RGB Matrix profiles only. It is intentionally a maintenance service, not a permanently exposed Wi-Fi control interface.
 
 The normal emulator runtime keeps Wi-Fi disabled. BLE, HUB75 rendering and all existing iDotMatrix behavior continue to run without a Wi-Fi connection.
 
@@ -112,3 +112,8 @@ Automatic captive-window opening remains client/OS controlled and should only be
 ## Security model
 
 The stable release retains the physically triggered OTA maintenance service. It is not intended for exposure on an untrusted routed network. The AP password should be changed for deployed devices.
+
+
+## BOOT button runtime behavior
+
+After normal firmware startup, a debounced short press/release of BOOT/GPIO0 performs a software reboot with `ESP.restart()`. Holding the same button for at least two seconds starts OTA maintenance. The long-press action is consumed, so releasing after OTA activation does not also reboot. Do not hold GPIO0 during power-up or an external reset because it is also a ROM boot strap.

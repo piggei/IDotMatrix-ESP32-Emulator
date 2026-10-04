@@ -1,70 +1,56 @@
-# 0.6.0 Release Validation
+# 0.6.0-rc.1 Release Validation
 
-**Release:** `0.6.0`  
-**Build:** `213`  
-**Firmware signature:** `IDOTMATRIX_FW=0.6.0-B213`
+## Identity gate
 
-Build 213 is the stable promotion of the hardware-qualified Build 212 runtime. The stable promotion changes release/build identity and documentation only; it does not introduce new protocol, media, storage or scheduling behavior.
+The publication candidate must report:
 
-## Qualified reference targets
+```text
+IDOTMATRIX_FW=0.6.0-rc.1
+```
 
-### Waveshare ESP32-S3 RGB Matrix + 64x64 HUB75
+## Automated repository gate
 
-Hardware-qualified in the 0.6.0 line for:
+From the repository root:
 
-- native 64x64 HUB75 output;
-- logical 16x16, 32x32 and 64x64 profiles on the physical 64x64 panel;
-- BLE operation with NimBLE-Arduino;
-- physically triggered OTA, successful update and interrupted-upload recovery;
-- persistence of stored state across OTA interruption;
-- GIF PSRAM staging, bounded compressed-source cache and Carousel prefetch;
-- deferred filesystem publication outside `nimble_host`;
-- crash-recoverable whole-Carousel-bank replacement;
-- invocation-atomic live-session Preset replacement;
-- static PNG Device Assets plus animated GIF and TEXT items;
-- TEXT-to-next-slot Carousel continuation;
-- repeated Carousel replacement with the Waveshare NimBLE host-task stack set to 8 KiB and no reproduced stack-canary/reboot in the qualification run.
+```bash
+python3 tests/run_tests.py
+bash -n update_idotmatrix_emulator.sh
+```
 
-### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
+The package must not contain `.pio`, `.pytest_cache`, `__pycache__`, `.pyc`, generated firmware or a local `src/IDotMatrixUserConfig.h`.
 
-Carries forward the established hardware-qualified large-panel baseline, including representative BLE control, media/storage, Clock/TEXT, timers, automation, Audio/Rhythm and LIS3DH automatic orientation.
+## Build gate
 
-### ESP32-C3 + 16x16 WS2812
+Compile the intended publication target:
 
-Carries forward the 0.5.2 hardware-qualified compact baseline, including DS3231 persistent timekeeping, passive low-level-trigger buzzer support, autonomous Alarm/Schedule behavior and the qualified external ICM-20689 orientation configuration.
+```bash
+pio run -e waveshare_s3_rgbmatrix_64x64
+```
 
-## Functional scope
+For full cross-target assurance, compile the remaining checked-in environments before final promotion.
 
-The stable release includes:
+## Waveshare physical smoke gate
 
-- BLE advertising, services, characteristics and Device Info;
-- time synchronization, screen power, brightness and app-controlled flip;
-- Clock, Countdown, Stopwatch and Scoreboard;
-- TEXT static/multiline and scrolling modes;
-- Solid, live Graffiti/DIY, full-raster Graffiti, static image and GIF;
-- persistent Device Assets Carousel and volatile Preset/Default;
-- Alarm and Program/Schedule multipart media;
-- LEVEL and FFT Audio/Rhythm framing and effects;
-- LittleFS media ownership and persistence rules;
-- automatic orientation at the final logical-to-physical output stage;
-- deterministic boot priority: persisted Carousel, then valid RTC Clock, otherwise screen off.
+1. Confirm normal BLE discovery and connection from the official app.
+2. Confirm the connection beep is audible.
+3. Run a Countdown and confirm the completion trill.
+4. Exercise Program/Schedule notification.
+5. Exercise an Alarm and confirm repeated trill behavior and correct stop behavior.
+6. Confirm normal PNG/GIF/TEXT Carousel playback, including TEXT returning to the next slot.
+7. Replace a Carousel repeatedly and confirm stable BLE operation with no spontaneous reboot.
+8. Briefly press BOOT and confirm a software reboot while the serial monitor remains usable.
+9. Hold BOOT for at least two seconds and confirm OTA maintenance mode only when intentionally testing OTA.
 
-## Explicit exclusions
+## Regression expectations
 
-The following are not release blockers and are not claimed as qualified by 0.6.0:
+The RC must preserve existing Clock, TEXT, image/GIF, Graffiti, Preset, Alarm, Program/Schedule, timers, Audio/Rhythm visualization, RTC, orientation and non-Waveshare GPIO-buzzer behavior.
 
-- password SET/VERIFY runtime enforcement;
-- complete iOS/RCSP compatibility;
-- automatic rollback after a successfully written but non-bootable OTA image;
-- exact supplied GY-521 / MPU-6050 hardware qualification;
-- MatrixPortal + external ICM-20689 hardware qualification;
-- Waveshare on-board PCF85063, QMI8658, SHTC3, MicroSD and audio support;
-- every possible logical/physical panel combination.
+## Final promotion gate
 
-## Repository validation
+After the automated, build and physical smoke gates pass:
 
-The final stable tree must pass the dependency-free `tests/run_tests.py` suite from the extracted archive. Repository tests complement but do not replace real-device qualification.
-
-## Toolchain note
-
-The packaging environment used for Build 213 does not provide PlatformIO or Arduino CLI. A fresh all-environment PlatformIO compile is therefore not claimed from the packaging environment. The Waveshare 64x64 Build 212 predecessor was successfully compiled/uploaded and physically exercised before stable promotion; Build 213 changes only release/build identity and documentation/comments.
+1. update the public identity from `0.6.0-rc.1` to `0.6.0` only;
+2. do not change qualified runtime behavior during that promotion;
+3. rerun the automated gate;
+4. compile the publication target again;
+5. tag the final tree as `v0.6.0`.

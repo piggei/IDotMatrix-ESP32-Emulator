@@ -94,7 +94,7 @@ The LIS3DH backend currently uses:
 - 0.55 g minimum dominant horizontal-axis threshold;
 - 0.12 g X/Y diagonal hysteresis.
 
-Hardware testing of Build 163 confirmed the complete clockwise sequence:
+Hardware testing confirmed the complete clockwise sequence:
 
 ```text
 +Y -> +X -> -Y -> -X -> +Y

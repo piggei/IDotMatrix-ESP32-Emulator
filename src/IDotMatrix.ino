@@ -6,6 +6,7 @@
 #include "IDotMatrixHardwareConfig.h"
 #include "IDotMatrixProtocolGuards.h"
 #include "IDotMatrixBuzzerPolicy.h"
+#include "IDotMatrixAudioOutput.h"
 #include "IDotMatrixOta.h"
 #include "IDotMatrixMemoryTelemetry.h"
 #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
@@ -21,16 +22,16 @@
 // ======================================================
 // FIRMWARE RELEASE / BUILD ID
 // FW_RELEASE identifies the public project release.
-// FW_BUILD is the internal incremental build identifier.
+// FW_BUILD is an internal diagnostic identifier and is not part of the public RC documentation.
 // ======================================================
-#define FW_RELEASE "0.6.0"
+#define FW_RELEASE "0.6.0-rc.1"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 6
-#define FW_BUILD 213
+#define FW_BUILD 220
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
-static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_RELEASE "-B" IDOT_STRINGIFY(FW_BUILD);
+static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_RELEASE;
 #define PNG_DIAG_SERIAL 0
 #define TEXT_PROTOCOL_DEBUG 0
 #define BULK_PROTOCOL_DEBUG 0
@@ -149,7 +150,7 @@ uint8_t unknownCommandStored = 0;
 #else
   #error "miniz header not found: required for Schedule PNG decoding"
 #endif
-#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE
+#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE || IDOTMATRIX_AUDIO_CODEC_AVAILABLE
   #include <Wire.h>
 #endif
 #if IDOTMATRIX_RTC_AVAILABLE
@@ -965,7 +966,7 @@ bool loadAlarmMedia(uint8_t slot){
 // ======================================================
 // BUZZER - NON-BLOCKING TRILL (ACTIVE OR PASSIVE)
 // ======================================================
-#if IDOTMATRIX_BUZZER_AVAILABLE
+#if IDOTMATRIX_BUZZER_AVAILABLE || IDOTMATRIX_AUDIO_CODEC_AVAILABLE
 static bool buzzerHardwareReady = false;
 static bool buzzerOutputOn = false;
 static bool buzzerPatternRunning = false;
@@ -981,7 +982,9 @@ static inline void setBuzzerOutput(bool on) {
     return;
   }
   buzzerOutputOn = on;
-#if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
+#if IDOTMATRIX_AUDIO_CODEC_AVAILABLE
+  idotAudioOutputSetTone(on);
+#elif IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
   // Passive outputs use a 50% LEDC tone while active. At rest, keep the GPIO
   // at the module's inactive logic level. This is critical for three-wire
   // transistor modules marked "low level trigger": leaving the pin LOW would
@@ -4342,7 +4345,7 @@ void updateGIF(){
 // ======================================================
 String carouselFileName(uint8_t slot, uint8_t dataType) {
   // Keep the legacy .raw internal filename for dataType 2 so transaction
-  // journals from earlier development builds remain rollback-compatible. The stored bytes
+  // journals from earlier firmware revisions remain rollback-compatible. The stored bytes
   // may be either raw RGB24 or a PNG container; dataType 2 means static IMAGE.
   const char *ext=(dataType==3) ? ".txt" : ((dataType==2) ? ".raw" : ".gif");
   return String("/car") + slot + ext;
@@ -8322,7 +8325,7 @@ void printStartupHardwareSummary() {
   Serial.println("disabled");
 #endif
   Serial.print("USER CONFIG: "); Serial.println(IDOTMATRIX_USER_CONFIG_PRESENT ? "present" : "not present");
-#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE
+#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE || IDOTMATRIX_AUDIO_CODEC_AVAILABLE
   Serial.print("I2C BUS: ");
   #if defined(IDOTMATRIX_I2C_SDA_PIN) && defined(IDOTMATRIX_I2C_SCL_PIN)
     Serial.print("SDA=GPIO"); Serial.print(IDOTMATRIX_I2C_SDA_PIN);
@@ -8462,12 +8465,16 @@ void setup(){
 #endif
 #endif
 
-#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE
+#if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE || IDOTMATRIX_AUDIO_CODEC_AVAILABLE
   #if defined(IDOTMATRIX_I2C_SDA_PIN) && defined(IDOTMATRIX_I2C_SCL_PIN)
     Wire.begin(IDOTMATRIX_I2C_SDA_PIN, IDOTMATRIX_I2C_SCL_PIN);
   #else
     Wire.begin();
   #endif
+#endif
+#if IDOTMATRIX_AUDIO_CODEC_AVAILABLE
+  buzzerHardwareReady = idotAudioOutputBegin();
+  if (!buzzerHardwareReady) Serial.println("AUDIO: notification backend unavailable");
 #endif
 #if IDOTMATRIX_ORIENTATION_SENSOR
   idotOrientationBegin();

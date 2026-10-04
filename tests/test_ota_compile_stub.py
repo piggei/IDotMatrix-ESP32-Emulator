@@ -45,6 +45,7 @@ struct SerialClass {
   template<class T> void print(const T&) {}
   template<class T> void println(const T&) {}
   void println() {}
+  void flush() {}
 };
 extern SerialClass Serial;
 struct ESPClass { uint64_t getEfuseMac() const { return 0; } void restart() {} };

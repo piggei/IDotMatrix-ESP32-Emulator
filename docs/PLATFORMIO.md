@@ -29,7 +29,7 @@ esp32c3_ws2812_16
 - `IDOTMATRIX_MEMORY_TELEMETRY=1` is enabled only on these three Waveshare profiles; other profiles compile the telemetry API to no-ops.
 - The three Waveshare profiles use `IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES=2097152UL`, `IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES=4194304UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES=1048576UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES=524288UL`, `IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES=12` and `IDOTMATRIX_CAROUSEL_GIF_PREFETCH=1`.
 
-The stable release intentionally does not enable the board's PCF85063, QMI8658, SHTC3, MicroSD or audio hardware.
+The stable release intentionally does not enable the board's PCF85063, QMI8658, SHTC3 or MicroSD hardware. The Waveshare profiles do enable the synthesized ES8311/I2S notification backend; the physical 64x64 target is hardware-qualified for BLE connection, Countdown, Program/Schedule and Alarm notification audio.
 
 ### `matrixportal_s3_hub75_64`
 
@@ -72,7 +72,7 @@ This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-
 
 This is a diagnostic environment and is not part of the main release qualification.
 
-For stable 0.6.0, the checked-in `default_envs` value points at the Waveshare S3 / 64x64 target. MatrixPortal and ESP32-C3 environments remain available explicitly. For reproducible work on another profile, pass `-e <environment>` explicitly.
+For 0.6.0 release-candidate, the checked-in `default_envs` value points at the Waveshare S3 / 64x64 target. MatrixPortal and ESP32-C3 environments remain available explicitly. For reproducible work on another profile, pass `-e <environment>` explicitly.
 
 All three Waveshare environments share the same board/toolchain/partition policy; only the logical `IDOTMATRIX_SCREEN_TYPE` changes. `PHYSICAL_MATRIX_WIDTH` and `PHYSICAL_MATRIX_HEIGHT` remain 64 in every case.
 

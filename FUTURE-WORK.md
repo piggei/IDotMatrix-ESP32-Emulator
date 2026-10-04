@@ -1,6 +1,6 @@
 # Future Work
 
-Stable baseline: **0.6.0 / Build 213**.
+Baseline: **0.6.0 release-candidate line**.
 
 The items below are intentionally outside the 0.6.0 release boundary. None is required for the qualified hardware/runtime paths documented in `README.md` and `docs/RELEASE-VALIDATION.md`.
 
@@ -20,7 +20,7 @@ Password support remains intentionally disabled because the complete transaction
 
 ## OTA hardening
 
-The Waveshare maintenance OTA path is hardware-qualified for successful upload, interrupted-upload recovery to the previous firmware, and persistence of stored state. Automatic rollback after a fully written but non-bootable image is **not** claimed.
+The Waveshare maintenance OTA path is hardware-qualified for successful upload, interrupted-upload recovery to the previous firmware and persistence of stored state. Automatic rollback after a fully written but non-bootable image is not claimed.
 
 - Evaluate explicit post-boot validation/rollback only if that additional failure mode needs to be covered.
 - Keep OTA physically triggered and Wi-Fi disabled during normal runtime.
@@ -38,14 +38,14 @@ The Waveshare maintenance OTA path is hardware-qualified for successful upload, 
 - Hardware-qualify the MatrixPortal + external ICM-20689 profile if that exact combination is needed.
 - Add further accelerometer backends only through the normalized X/Y/Z interface and common orientation engine.
 - Evaluate additional RTC backends only when real hardware is available; keep the qualified DS3231 path unchanged unless new evidence requires it.
-- Evaluate the Waveshare on-board PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio hardware as separate features; none is enabled or claimed by 0.6.0.
-- Qualify additional logical/physical scaling combinations beyond the currently exercised reference paths when matching hardware is available.
-- Extend PSRAM placement beyond the bounded GIF source cache only when measured benefit and reserve policy justify it.
+- Evaluate the Waveshare on-board PCF85063 RTC, QMI8658 IMU, SHTC3 and MicroSD as separate features.
+- Qualify additional logical/physical scaling combinations when matching hardware is available.
+- Extend PSRAM placement only when measured benefit and reserve policy justify it.
 - Continue moving heavyweight work out of latency-sensitive BLE callbacks only when profiling identifies a concrete need.
 
 ## Documentation discipline
 
 - Keep user-facing documentation in English.
-- Record public release and internal build identifiers separately.
+- Keep internal engineering revision identifiers out of public release documentation.
 - Treat raw captures as evidence; do not rewrite packet bytes to fit a later interpretation.
 - Distinguish direct original-hardware observations, emulator policy and inference.
