@@ -6,6 +6,7 @@
 #include "IDotMatrixHardwareConfig.h"
 #include "IDotMatrixProtocolGuards.h"
 #include "IDotMatrixBuzzerPolicy.h"
+#include "IDotMatrixOta.h"
 #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
   #include <esp32-hal-ledc.h>
 #endif
@@ -21,10 +22,10 @@
 // FW_RELEASE identifies the public project release.
 // FW_BUILD is the internal incremental build identifier.
 // ======================================================
-#define FW_RELEASE "0.5.2"
+#define FW_RELEASE "0.6.0-dev.3"
 #define FW_RELEASE_MAJOR 0
-#define FW_RELEASE_MINOR 5
-#define FW_BUILD 190
+#define FW_RELEASE_MINOR 6
+#define FW_BUILD 194
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -84,9 +85,14 @@ uint16_t unknownCommandLen = 0;
 uint8_t unknownCommandData[OLED_UNKNOWN_BYTES] = {0};
 uint8_t unknownCommandStored = 0;
 
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
+#if IDOTMATRIX_USE_NIMBLE
+  #include <NimBLEDevice.h>
+  #include <string>
+#else
+  #include <BLEDevice.h>
+  #include <BLEServer.h>
+  #include <BLEUtils.h>
+#endif
 #include <FastLED.h>
 #include <AnimatedGIF.h>
 #include <Preferences.h>
@@ -202,11 +208,22 @@ bool littleFsReady = false;
 // instead of pre-scaling the framebuffer to the local brightness ceiling.
 #if DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
   #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+  #if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
+  // Waveshare ESP32-S3-RGB-Matrix official/WLED-qualified HUB75 wiring.
+  // Order: R1,G1,B1,R2,G2,B2,A,B,C,D,E,LAT,OE,CLK.
+  HUB75_I2S_CFG::i2s_pins hub75Pins = {
+    4, 5, 6, 7, 15, 16,
+    18, 8, 3, 42, 9,
+    40, 2, 41
+  };
+  #else
+  // Adafruit MatrixPortal S3 HUB75 wiring.
   HUB75_I2S_CFG::i2s_pins hub75Pins = {
     42, 41, 40, 38, 39, 37, // R1, G1, B1, R2, G2, B2
     45, 36, 48, 35, 21,     // A, B, C, D, E
     47, 14, 2                // LAT, OE, CLK
   };
+  #endif
   #define HUB75_COLOR_DEPTH 8
   MatrixPanel_I2S_DMA *hub75Matrix = nullptr;
 #endif
@@ -350,11 +367,19 @@ static constexpr uint32_t BUZZER_LEDC_MAX_DUTY = (1u << BUZZER_LEDC_RESOLUTION_B
 #define AE01_UUID       "0000ae01-0000-1000-8000-00805f9b34fb"
 #define AE02_UUID       "0000ae02-0000-1000-8000-00805f9b34fb"
 
+#if IDOTMATRIX_USE_NIMBLE
+NimBLEServer *server = nullptr;
+NimBLECharacteristic *fa02 = nullptr;
+NimBLECharacteristic *fa03 = nullptr;
+NimBLECharacteristic *ae01 = nullptr;
+NimBLECharacteristic *ae02 = nullptr;
+#else
 BLEServer *server = nullptr;
 BLECharacteristic *fa02 = nullptr;
 BLECharacteristic *fa03 = nullptr;
 BLECharacteristic *ae01 = nullptr;
 BLECharacteristic *ae02 = nullptr;
+#endif
 bool deviceConnected = false;
 
 // BLE callbacks and Arduino loop() run on different FreeRTOS tasks
@@ -5351,6 +5376,64 @@ void processFA02Write(const uint8_t *data, size_t len) {
   processNormalFA02Bytes(data,len,now);
 }
 
+void handleBleConnected(){
+#if PNG_DIAG_SERIAL
+  Serial.println("BLE C");
+#endif
+  if(!lockRuntimeState()) return;
+  deviceConnected=true;
+  // BLE connection must not change display power/state. The boot policy or
+  // the latest app command remains authoritative, avoiding ON+black state.
+  triggerConnectionBuzzer();
+  pendingAdvertisingRestart=false;
+  pendingDeviceInfoPush=true;
+  deviceInfoPushAt=millis()+1200;
+  unlockRuntimeState();
+}
+
+void handleBleDisconnected(){
+#if PNG_DIAG_SERIAL
+  Serial.println("BLE D");
+#endif
+  if(!lockRuntimeState()) return;
+  deviceConnected=false;
+  packetReceived=packetExpected=0;
+  packetLastRxMs=0;
+  resetAudioReassembly();
+  resetBulkTransfer(true);
+  resetGraffitiRaster();
+  // Do not sleep inside the BLE callback. Preserve the historical 300 ms
+  // restart delay by deferring advertising restart to the Arduino loop.
+  pendingAdvertisingRestart=true;
+  advertisingRestartAt=millis()+300;
+  unlockRuntimeState();
+}
+
+#if IDOTMATRIX_USE_NIMBLE
+class FA02Callbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *c, NimBLEConnInfo&) override {
+    const std::string value=c->getValue(); if(value.empty()) return;
+    if(!lockRuntimeState()) return;
+    processFA02Write(reinterpret_cast<const uint8_t*>(value.data()),value.size());
+    unlockRuntimeState();
+  }
+};
+
+class AE01Callbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *c, NimBLEConnInfo&) override {
+#if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
+    const std::string v=c->getValue(); if(v.empty()) return; Serial.print("RX AE01 [");Serial.print(v.size());Serial.print("]: ");dumpHex(reinterpret_cast<const uint8_t*>(v.data()),v.size());
+#else
+    (void)c;
+#endif
+  }
+};
+
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer*, NimBLEConnInfo&) override { handleBleConnected(); }
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override { handleBleDisconnected(); }
+};
+#else
 class FA02Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
     String value=c->getValue(); if(!value.length()) return;
@@ -5364,43 +5447,21 @@ class AE01Callbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) override {
 #if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE
     String v=c->getValue(); if(!v.length()) return; Serial.print("RX AE01 [");Serial.print(v.length());Serial.print("]: ");dumpHex((const uint8_t*)v.c_str(),v.length());
+#else
+    (void)c;
 #endif
   }
 };
 
 class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer*) override {
-#if PNG_DIAG_SERIAL
-    Serial.println("BLE C");
-#endif
-    if(!lockRuntimeState()) return;
-    deviceConnected=true;
-    // BLE connection must not change display power/state. The boot policy or
-    // the latest app command remains authoritative, avoiding ON+black state.
-    triggerConnectionBuzzer();
-    pendingAdvertisingRestart=false;
-    pendingDeviceInfoPush=true;
-    deviceInfoPushAt=millis()+1200;
-    unlockRuntimeState();
-  }
-  void onDisconnect(BLEServer*) override {
-#if PNG_DIAG_SERIAL
-    Serial.println("BLE D");
-#endif
-    if(!lockRuntimeState()) return;
-    deviceConnected=false;
-    packetReceived=packetExpected=0;
-    packetLastRxMs=0;
-    resetAudioReassembly();
-    resetBulkTransfer(true);
-    resetGraffitiRaster();
-    // Do not sleep inside the BLE callback. Preserve the historical 300 ms
-    // restart delay by deferring advertising restart to the Arduino loop.
-    pendingAdvertisingRestart=true;
-    advertisingRestartAt=millis()+300;
-    unlockRuntimeState();
-  }
+  void onConnect(BLEServer*) override { handleBleConnected(); }
+  void onDisconnect(BLEServer*) override { handleBleDisconnected(); }
 };
+#endif
+
+static FA02Callbacks fa02CallbacksInstance;
+static AE01Callbacks ae01CallbacksInstance;
+static ServerCallbacks serverCallbacksInstance;
 
 // ======================================================
 // OTA
@@ -6568,6 +6629,27 @@ void printStartupHardwareSummary() {
 #else
   Serial.println("MCU: ESP32");
 #endif
+  Serial.print("BOARD: ");
+#if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
+  Serial.println("Waveshare ESP32-S3 RGB Matrix");
+#elif defined(ARDUINO_ADAFRUIT_MATRIXPORTAL_ESP32S3)
+  Serial.println("Adafruit MatrixPortal ESP32-S3");
+#else
+  Serial.println("generic/custom");
+#endif
+  Serial.print("FLASH: "); Serial.print(ESP.getFlashChipSize()); Serial.println(" bytes");
+#if defined(BOARD_HAS_PSRAM)
+  Serial.print("PSRAM: total="); Serial.print(ESP.getPsramSize());
+  Serial.print(" free="); Serial.println(ESP.getFreePsram());
+#else
+  Serial.println("PSRAM: not compiled");
+#endif
+  Serial.print("OTA: ");
+#if IDOTMATRIX_OTA_AVAILABLE
+  Serial.print("enabled / "); Serial.println(idotOtaStateText());
+#else
+  Serial.println("disabled");
+#endif
   Serial.print("USER CONFIG: "); Serial.println(IDOTMATRIX_USER_CONFIG_PRESENT ? "present" : "not present");
 #if IDOTMATRIX_ORIENTATION_SENSOR || IDOTMATRIX_RTC_AVAILABLE
   Serial.print("I2C BUS: ");
@@ -6807,6 +6889,10 @@ void setup(){
   FastLED.addLeds<LED_TYPE,MATRIX_PIN,COLOR_ORDER>(leds,PHYSICAL_NUM_LEDS);
 #elif DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
   {
+#if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX) && DEBUG_SERIAL
+    Serial.println("BOOT CHECKPOINT: entering HUB75 initialization");
+    Serial.flush();
+#endif
     HUB75_I2S_CFG mxconfig(PHYSICAL_MATRIX_WIDTH, PHYSICAL_MATRIX_HEIGHT, 1, hub75Pins);
     mxconfig.double_buff=false;
     // WLED maps its normal (non-reversed) MatrixPortal configuration to the
@@ -6816,6 +6902,9 @@ void setup(){
     hub75Matrix=new MatrixPanel_I2S_DMA(mxconfig);
     const bool ok=hub75Matrix && hub75Matrix->begin();
 #if DEBUG_SERIAL
+#if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
+    Serial.println("BOOT CHECKPOINT: returned from HUB75 initialization");
+#endif
     Serial.print("HUB75 MatrixPanel I2S DMA begin="); Serial.println(ok?"OK":"FAILED");
     Serial.print("HUB75 double buffer: OFF, clkphase: false, max brightness: "); Serial.println(MAX_LED_BRIGHTNESS);
 #endif
@@ -6849,6 +6938,67 @@ void setup(){
 
   applyBootDisplayPolicy();
 
+#if IDOTMATRIX_USE_NIMBLE
+  // The WLED-qualified Waveshare/Tasmota stack does not bundle the legacy
+  // Arduino BLE compatibility headers. Use the same NimBLE-Arduino 2.x family
+  // already qualified by the iDotMatrix WLED Usermod on this board.
+  if(!NimBLEDevice::init(DEVICE_NAME)){
+#if DEBUG_SERIAL
+    Serial.println("FATAL: NimBLE initialization failed");
+#endif
+    while(true) delay(1000);
+  }
+  NimBLEDevice::setMTU(517);
+#if DEBUG_SERIAL
+  Serial.println("BLE backend: NimBLE-Arduino 2.x");
+  Serial.println("BLE local MTU configured: 517");
+#endif
+  server=NimBLEDevice::createServer();
+  if(!server){
+#if DEBUG_SERIAL
+    Serial.println("FATAL: NimBLE server allocation failed");
+#endif
+    while(true) delay(1000);
+  }
+  server->setCallbacks(&serverCallbacksInstance, false);
+  NimBLEService *fas=server->createService(FA_SERVICE_UUID);
+  NimBLEService *aes=server->createService(AE_SERVICE_UUID);
+  if(!fas || !aes){
+#if DEBUG_SERIAL
+    Serial.println("FATAL: NimBLE service allocation failed");
+#endif
+    while(true) delay(1000);
+  }
+  fa02=fas->createCharacteristic(FA02_UUID,NIMBLE_PROPERTY::WRITE|NIMBLE_PROPERTY::WRITE_NR); fa02->setCallbacks(&fa02CallbacksInstance);
+  fa03=fas->createCharacteristic(FA03_UUID,NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::NOTIFY);
+  ae01=aes->createCharacteristic(AE01_UUID,NIMBLE_PROPERTY::WRITE|NIMBLE_PROPERTY::WRITE_NR); ae01->setCallbacks(&ae01CallbacksInstance);
+  ae02=aes->createCharacteristic(AE02_UUID,NIMBLE_PROPERTY::READ|NIMBLE_PROPERTY::NOTIFY);
+  if(!fa02 || !fa03 || !ae01 || !ae02 || !server->start()){
+#if DEBUG_SERIAL
+    Serial.println("FATAL: NimBLE GATT database start failed");
+#endif
+    while(true) delay(1000);
+  }
+
+  NimBLEAdvertising *adv=NimBLEDevice::getAdvertising();
+  NimBLEAdvertisementData ad;
+  ad.setFlags(BLE_HS_ADV_F_DISC_GEN|BLE_HS_ADV_F_BREDR_UNSUP);
+  ad.setName(DEVICE_NAME);
+  ad.setCompleteServices(NimBLEUUID(uint16_t(0x00FA)));
+  const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR};
+  ad.setManufacturerData(std::string(mb,sizeof(mb)));
+  adv->setAdvertisementData(ad);
+  NimBLEAdvertisementData scan;
+  scan.setCompleteServices(NimBLEUUID(uint16_t(0xAE00)));
+  adv->setScanResponseData(scan);
+  adv->enableScanResponse(true);
+  if(!adv->start()){
+#if DEBUG_SERIAL
+    Serial.println("FATAL: NimBLE advertising start failed");
+#endif
+    while(true) delay(1000);
+  }
+#else
   BLEDevice::init(DEVICE_NAME);
   // Match the working WLED/NimBLE implementation and the official app's
   // large-transfer expectations. On Arduino-ESP32 3.3.x the compatibility
@@ -6858,20 +7008,26 @@ void setup(){
   // 2890-byte media packets after 6 writes (1518 bytes).
   BLEDevice::setMTU(517);
 #if DEBUG_SERIAL
+  Serial.println("BLE backend: Arduino BLE compatibility layer");
   Serial.println("BLE local MTU configured: 517");
 #endif
-  server=BLEDevice::createServer(); server->setCallbacks(new ServerCallbacks());
+  server=BLEDevice::createServer(); server->setCallbacks(&serverCallbacksInstance);
   BLEService *fas=server->createService(FA_SERVICE_UUID);
-  fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(new FA02Callbacks());
+  fa02=fas->createCharacteristic(FA02_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); fa02->setCallbacks(&fa02CallbacksInstance);
   fa03=fas->createCharacteristic(FA03_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); fas->start();
   BLEService *aes=server->createService(AE_SERVICE_UUID);
-  ae01=aes->createCharacteristic(AE01_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); ae01->setCallbacks(new AE01Callbacks());
+  ae01=aes->createCharacteristic(AE01_UUID,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR); ae01->setCallbacks(&ae01CallbacksInstance);
   ae02=aes->createCharacteristic(AE02_UUID,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_NOTIFY); aes->start();
 
   BLEAdvertising *adv=BLEDevice::getAdvertising(); BLEAdvertisementData ad;
   ad.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC|ESP_BLE_ADV_FLAG_BREDR_NOT_SPT); ad.setName(DEVICE_NAME); ad.setCompleteServices(BLEUUID(FA_SERVICE_UUID));
   const char mb[]={0x54,0x52,0x00,0x70,(char)IDOTMATRIX_SCREEN_TYPE,(char)FW_RELEASE_MAJOR,(char)FW_RELEASE_MINOR}; ad.setManufacturerData(String(mb,sizeof(mb))); adv->setAdvertisementData(ad);
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
+#endif
+
+#if IDOTMATRIX_OTA_AVAILABLE
+  idotOtaBegin(FW_RELEASE, FW_BUILD);
+#endif
 
 #if IDOTMATRIX_ORIENTATION_SENSOR && IDOTMATRIX_ORIENTATION_DIAGNOSTICS
   // Repeat the orientation summary at the end of setup. On ESP32-C3 USB/CDC
@@ -6888,6 +7044,12 @@ void setup(){
 // LOOP
 // ======================================================
 void loop(){
+#if IDOTMATRIX_OTA_AVAILABLE
+  // OTA HTTP handling must remain outside the runtime-state mutex. Firmware
+  // upload can take seconds and must never block BLE callbacks or leave shared
+  // playback state locked.
+  idotOtaLoop(millis());
+#endif
   bool restartAdvertisingNow=false;
   if(!lockRuntimeState()){ delay(1); return; }
   // Take the time snapshot only after the runtime mutex is held.
@@ -7027,6 +7189,12 @@ void loop(){
 #endif
 #endif
   unlockRuntimeState();
-  if(restartAdvertisingNow) BLEDevice::startAdvertising();
+  if(restartAdvertisingNow){
+#if IDOTMATRIX_USE_NIMBLE
+    NimBLEDevice::startAdvertising();
+#else
+    BLEDevice::startAdvertising();
+#endif
+  }
   delay(5);
 }

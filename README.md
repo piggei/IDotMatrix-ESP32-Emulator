@@ -10,20 +10,22 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release:** `0.5.2`
-- **Build:** `189`
+- **Release:** `0.6.0-dev.3`
+- **Build:** `193`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.5.2-B190
+IDOTMATRIX_FW=0.6.0-dev.3-B194
 ```
 
 The public release number identifies the software version. The build number identifies the exact internal source state used to produce the firmware.
 
-Release notes: [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md).
+Development notes: [`docs/RELEASE-NOTES-0.6.0-dev.3.md`](docs/RELEASE-NOTES-0.6.0-dev.3.md).
 
-`0.5.2 / Build 190` is the current stable public release.
+`0.6.0-dev.3 / Build 194` is the current development build. The stable public baseline remains `0.5.2 / Build 190`.
+
+Build 191 failed its first Waveshare hardware gate with a USB reset loop. Build 192 corrected the framework/partition baseline but then failed at the PlatformIO compile gate because the WLED-qualified Tasmota stack does not provide the legacy `BLEDevice.h` compatibility headers used by the standalone emulator. Build 193 added a Waveshare-only NimBLE-Arduino 2.5.1 backend. Build 194 keeps that qualified BLE/board baseline and adds captive-portal discovery to the existing physically triggered OTA maintenance AP.
 
 ## What the emulator supports
 
@@ -49,6 +51,12 @@ The current implementation includes:
 Protocol details, confidence levels and original-device observations are documented in [`PROTOCOL.md`](PROTOCOL.md).
 
 ## Supported hardware
+
+### Waveshare ESP32-S3 RGB Matrix + 64x64 HUB75
+
+Build 194 continues the standalone-emulator bring-up profile for the Waveshare ESP32-S3 RGB Matrix (`ESP32-S3-N32R16`, 32 MB flash, 16 MB PSRAM). The profile uses the official/WLED-qualified HUB75 GPIO mapping and a dedicated dual-slot OTA partition table. This target is **development / awaiting standalone hardware qualification** in Build 194. On-board PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio devices are deliberately not enabled yet.
+
+Build 194 retains the OTA maintenance service for this profile. Hold the on-board BOOT button (GPIO0) for about two seconds **after normal firmware boot** to start a temporary Wi-Fi access point and local upload page. Wi-Fi remains off during normal operation until the physical trigger is used. The maintenance AP now provides captive DNS/HTTP redirects so supported Windows, Android and Apple clients can offer the upload page automatically after connection; `http://192.168.4.1/` remains the manual fallback. See [`docs/OTA.md`](docs/OTA.md) and [`docs/WAVESHARE-B194-QUALIFICATION.md`](docs/WAVESHARE-B194-QUALIFICATION.md).
 
 ### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
@@ -139,9 +147,10 @@ The DS3231 address is fixed at `0x68`. If an ICM-20689/MPU-family accelerometer 
 
 ## Build with PlatformIO
 
-The repository contains four explicit environments:
+The repository contains five explicit environments:
 
 ```text
+waveshare_s3_rgbmatrix_64x64
 matrixportal_s3_hub75_64
 matrixportal_s3_hub75_64_icm20689
 ios_compat_esp32_ws2812_32
@@ -151,6 +160,20 @@ esp32c3_ws2812_16
 The reference toolchain is Arduino-ESP32 3.3.11 / ESP-IDF 5.5.5 through pioarduino.
 
 The ESP32-C3 PlatformIO profile enables native USB CDC/JTAG (`ARDUINO_USB_MODE=1`, `ARDUINO_USB_CDC_ON_BOOT=1`) so firmware `Serial` diagnostics are visible on the same native USB connection used for development.
+
+Build the Waveshare development target with:
+
+```bash
+pio run -e waveshare_s3_rgbmatrix_64x64
+```
+
+Upload the initial image over USB with:
+
+```bash
+pio run -e waveshare_s3_rgbmatrix_64x64 -t upload
+```
+
+After the first USB flash, Build 194 can enter OTA maintenance mode through the on-board BOOT button; see [`docs/OTA.md`](docs/OTA.md).
 
 Build the MatrixPortal target with:
 
@@ -211,6 +234,17 @@ pio run -e esp32c3_ws2812_16
 
 See [`docs/PLATFORMIO.md`](docs/PLATFORMIO.md) for the complete toolchain, partition and USB workflow.
 
+## Waveshare ESP32-S3 RGB Matrix reference pinout
+
+```text
+R1=4   G1=5   B1=6
+R2=7   G2=15  B2=16
+A=18   B=8    C=3    D=42   E=9
+LAT=40 OE=2   CLK=41
+```
+
+The Build 194 32 MB partition table is stored in `partitions/idotmatrix_waveshare_s3_32mb_ota.csv`. It deliberately matches the WLED 32 MB Waveshare geometry: two 3 MiB OTA application slots, a 25.875 MiB LittleFS partition, and a final 64 KiB coredump partition.
+
 ## MatrixPortal S3 reference pinout
 
 ```text
@@ -230,9 +264,9 @@ These differences are documented explicitly rather than presented as protocol fa
 
 ## Repository update helper
 
-[`update_idotmatrix_emulator.sh`](update_idotmatrix_emulator.sh) synchronizes a source archive into a local Git checkout, invokes the selected PlatformIO upload target, and waits for the normal Adafruit runtime serial endpoint before opening the monitor.
+[`update_idotmatrix_emulator.sh`](update_idotmatrix_emulator.sh) synchronizes a source archive into a local Git checkout, invokes the selected PlatformIO upload target, and can wait for a target-specific runtime serial endpoint before opening the monitor. Build 194 defaults to the Waveshare development environment; `PIO_ENV`, `MONITOR_SERIAL_PATTERN` and `MONITOR_SERIAL_PORT` remain overridable.
 
-The helper deliberately does not wait for the Espressif JTAG endpoint before starting PlatformIO upload, because that USB identity appears only after the programming transition has already begun.
+The helper deliberately does not wait for a programming/JTAG endpoint before starting PlatformIO upload, because PlatformIO owns that transition.
 
 Before synchronizing the repository, the helper runs `tests/run_tests.py`. This regression runner uses only the Python standard library, so `pytest` is optional and does not need to be installed in the PlatformIO Python environment. Set `TEST_PYTHON` only when a different Python interpreter is desired.
 
@@ -256,8 +290,12 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/PLATFORMIO.md`](docs/PLATFORMIO.md) — reproducible PlatformIO build/upload guide
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
-- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — final release validation scope
-- [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md) — 0.5.2 final release notes and qualification summary
+- [`docs/WAVESHARE-B194-QUALIFICATION.md`](docs/WAVESHARE-B194-QUALIFICATION.md) — Build 194 Waveshare bring-up and field-test gate
+- [`docs/OTA.md`](docs/OTA.md) — Waveshare OTA maintenance workflow and safety model
+- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — stable 0.5.2 release validation scope
+- [`docs/RELEASE-NOTES-0.6.0-dev.3.md`](docs/RELEASE-NOTES-0.6.0-dev.3.md) — current development build notes
+- [`docs/RELEASE-AUDIT-0.6.0-dev.3.md`](docs/RELEASE-AUDIT-0.6.0-dev.3.md) — Build 194 static/package audit and known limitations
+- [`docs/RELEASE-NOTES-0.5.2.md`](docs/RELEASE-NOTES-0.5.2.md) — stable 0.5.2 release notes and qualification summary
 - [`docs/RELEASE-AUDIT-0.5.2.md`](docs/RELEASE-AUDIT-0.5.2.md) — 0.5.2 final source/documentation/package audit
 - [`docs/RELEASE-AUDIT-0.5.1.md`](docs/RELEASE-AUDIT-0.5.1.md) — historical 0.5.1 release audit
 

@@ -7,11 +7,25 @@ PlatformIO is the recommended reproducible build path for the standalone emulato
 The repository currently provides:
 
 ```text
+waveshare_s3_rgbmatrix_64x64
 matrixportal_s3_hub75_64
 matrixportal_s3_hub75_64_icm20689
 ios_compat_esp32_ws2812_32
 esp32c3_ws2812_16
 ```
+
+### `waveshare_s3_rgbmatrix_64x64`
+
+- board profile: ESP32-S3-N32R16 / 32 MB flash / 16 MB octal PSRAM;
+- logical 64x64 iDotMatrix profile;
+- physical 64x64 HUB75;
+- official/WLED-qualified Waveshare HUB75 pinout;
+- dedicated two-slot OTA partition table;
+- LittleFS media partition after both OTA slots;
+- BOOT/GPIO0 physical trigger for the local OTA maintenance AP;
+- Build 194 development target, awaiting standalone hardware qualification.
+
+Build 194 intentionally does not enable the board's PCF85063, QMI8658, SHTC3, MicroSD or audio hardware.
 
 ### `matrixportal_s3_hub75_64`
 
@@ -54,36 +68,52 @@ This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-
 
 This is a diagnostic environment and is not part of the main release qualification.
 
-The checked-in `default_envs` value points at the primary qualified MatrixPortal S3 / 64x64 HUB75 target. For reproducible work on another profile, pass `-e <environment>` explicitly.
+For the active 0.6.0 development line, the checked-in `default_envs` value points at the Waveshare S3 / 64x64 bring-up target. The stable 0.5.2 MatrixPortal and ESP32-C3 environments remain available explicitly. For reproducible work on another profile, pass `-e <environment>` explicitly.
 
 ## Reference toolchain
 
-The qualified baseline is:
+The stable non-Waveshare profiles retain the pioarduino baseline:
 
 ```text
 Arduino-ESP32 3.3.11
 ESP-IDF       5.5.5
 ```
 
-The project therefore uses pioarduino:
-
 ```text
 https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip
 ```
+
+The active Waveshare bring-up deliberately uses the already-qualified WLED board stack instead:
+
+```text
+Tasmota Arduino Core 3.3.8
+ESP-IDF              5.5.4
+platform-espressif32  2026.05.50
+NimBLE-Arduino        2.5.1
+```
+
+The Waveshare environment pins NimBLE because the Tasmota platform does not expose the legacy `BLEDevice.h` compatibility library used by the older standalone profiles. This BLE backend selection is target-local; MatrixPortal, ESP32-C3 and classic ESP32 behavior is intentionally unchanged in Build 194.
 
 Primary libraries:
 
 ```text
 FastLED                         3.10.3
 AnimatedGIF                     2.2.3
-ESP32-HUB75-MatrixPanel-DMA     pinned commit for HUB75 target
+ESP32-HUB75-MatrixPanel-DMA     pinned commit for HUB75 targets
+NimBLE-Arduino                  2.5.1 (Waveshare only)
 ```
 
-BLE, Preferences and LittleFS come from the pinned Arduino-ESP32 framework.
+Preferences and LittleFS come from the selected Arduino-ESP32 framework.
 
 ## Build
 
-From the repository root:
+From the repository root, Waveshare development build:
+
+```bash
+pio run -e waveshare_s3_rgbmatrix_64x64
+```
+
+MatrixPortal stable-baseline build:
 
 ```bash
 pio run -e matrixportal_s3_hub75_64
@@ -111,6 +141,14 @@ The first build can take longer because PlatformIO downloads the platform and de
 
 ## Upload
 
+Waveshare ESP32-S3 RGB Matrix initial USB flash:
+
+```bash
+pio run -e waveshare_s3_rgbmatrix_64x64 -t upload
+```
+
+After the initial USB flash, the Waveshare Build 194 OTA maintenance flow is documented in [`OTA.md`](OTA.md).
+
 MatrixPortal S3:
 
 ```bash
@@ -124,6 +162,18 @@ pio run -e esp32c3_ws2812_16 -t upload
 ```
 
 Do not commit machine-specific serial ports to `platformio.ini`.
+
+## Waveshare USB / serial behavior
+
+The Waveshare profile also pins `h2zero/NimBLE-Arduino @ 2.5.1` and defines `IDOTMATRIX_USE_NIMBLE=1`. The Tasmota Arduino 3.3.8 stack used by the WLED-qualified board target does not provide the legacy `BLEDevice.h` compatibility headers expected by the standalone emulator. Other profiles retain their previous BLE backend.
+
+The Build 194 profile enables native USB CDC. The repository helper defaults to:
+
+```text
+/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00
+```
+
+USB product strings can vary with framework/OS state. If the board appears under a different persistent name, set `MONITOR_SERIAL_PORT` explicitly rather than editing `platformio.ini`. PlatformIO itself handles the upload-port transition.
 
 ## MatrixPortal S3 USB behavior
 
@@ -139,7 +189,7 @@ Runtime monitor:
 
 The JTAG identity appears only after the upload process has already initiated the programming transition. Therefore the repository update helper intentionally runs the PlatformIO upload target directly instead of waiting for JTAG before starting `pio`.
 
-After upload, the helper waits for the Adafruit runtime endpoint before opening the monitor.
+After upload, the helper uses a target-specific runtime pattern. For Waveshare Build 194 the default is the Espressif USB JTAG/serial debug runtime identity; override `MONITOR_SERIAL_PATTERN` or `MONITOR_SERIAL_PORT` if the local OS exposes a different persistent name.
 
 ## Serial monitor
 
@@ -150,6 +200,25 @@ pio device monitor -e matrixportal_s3_hub75_64
 The reference speed is 115200 baud. Under Linux/WSL, prefer persistent `/dev/serial/by-id` names over `/dev/ttyACM*`.
 
 `MONITOR_SERIAL_PORT` can be used by the repository helper to override automatic runtime-port discovery.
+
+## Waveshare 32 MB OTA partition layout
+
+Build 194 uses:
+
+```text
+partitions/idotmatrix_waveshare_s3_32mb_ota.csv
+```
+
+| Region | Offset | Size | Purpose |
+| --- | ---: | ---: | --- |
+| NVS | `0x009000` | 20 KiB | Preferences/NVS |
+| OTA metadata | `0x00E000` | 8 KiB | selected OTA slot |
+| `ota_0` | `0x010000` | 3 MiB | application slot A |
+| `ota_1` | `0x310000` | 3 MiB | application slot B |
+| `spiffs` | `0x610000` | `0x19E0000` (25.875 MiB) | Arduino LittleFS media |
+| `coredump` | `0x1FF0000` | 64 KiB | ESP32 crash dump |
+
+A normal firmware OTA update writes only the inactive application slot; the LittleFS media region is not part of the firmware image.
 
 ## MatrixPortal S3 partition layout
 

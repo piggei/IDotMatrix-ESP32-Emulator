@@ -1,3 +1,53 @@
+## 0.6.0-dev.3 / Build 194
+
+- OTA usability hardening on top of the Build 193 Waveshare baseline.
+- Adds the core ESP32 `DNSServer` while OTA maintenance mode is active; normal runtime still keeps Wi-Fi off.
+- Wildcard DNS points captive-connectivity requests to the SoftAP.
+- Redirects common Android, Apple and Windows captive probe paths plus unknown HTTP paths to the OTA upload page.
+- Keeps `/health` and direct `http://192.168.4.1/` access available.
+- Keeps the existing dual-slot `Update` upload transaction and interrupted-upload handling unchanged.
+- Adds host regression guards and compile stubs for captive DNS/redirect behavior.
+- No scaling, GIF/PSRAM, storage or peripheral changes are included.
+
+Status: **development build; requires PlatformIO compilation and physical Waveshare captive-portal/OTA qualification.**
+
+## 0.6.0-dev.3 / Build 193
+
+- Supersedes Build 192 after the Waveshare PlatformIO compile gate failed with `BLEDevice.h: No such file or directory`.
+- Keeps the Build 192 WLED-qualified Tasmota Arduino 3.3.8 / ESP-IDF 5.5.4 platform and 32 MB partition geometry unchanged.
+- Adds pinned `h2zero/NimBLE-Arduino @ 2.5.1` only to the Waveshare environment, matching the BLE library family already used by the qualified iDotMatrix WLED Usermod.
+- Adds `IDOTMATRIX_USE_NIMBLE=1` for the Waveshare target and conditional NimBLE 2.x server, characteristic callback, GATT and advertising code.
+- Preserves the existing legacy Arduino BLE backend for MatrixPortal, ESP32-C3 and classic ESP32 profiles.
+- Keeps the 517-byte local MTU and the existing FA/AE services, characteristics, manufacturer data and delayed advertising-restart behavior.
+- Adds regression guards for the pinned NimBLE dependency/backend selection.
+- No GIF staging/cache, SD, PCF85063, QMI8658, SHTC3 or audio features are introduced.
+
+Status: **development build; requires PlatformIO compilation and physical Waveshare qualification.**
+
+## 0.6.0-dev.2 / Build 192
+
+- Supersedes Build 191 after its first Waveshare hardware gate produced a blank panel and repeated native-USB reconnects/reset-loop symptoms.
+- Waveshare target now uses the same Tasmota Arduino 3.3.8 / ESP-IDF 5.5.4 platform baseline as the already-qualified WLED Waveshare environment.
+- Restores the WLED-qualified 32 MB partition geometry: 3 MiB `ota_0`, 3 MiB `ota_1`, filesystem at `0x610000`, and 64 KiB coredump at the end of flash.
+- Removes the explicit `flash_mode=opi` override; the `esp32s3camlcd` board keeps OPI boot through `memory_type=opi_opi` with DOUT flash access.
+- Adds serial checkpoints around HUB75 initialization for physical bring-up diagnostics.
+- No GIF staging/cache, SD, PCF85063, QMI8658, SHTC3 or audio features are introduced.
+
+## 0.6.0-dev.1 / Build 191
+
+First development build of the 0.6.0 line, based on the stable 0.5.2 / Build 190 runtime.
+
+- Adds the standalone `waveshare_s3_rgbmatrix_64x64` target for Waveshare ESP32-S3 RGB Matrix / ESP32-S3-N32R16.
+- Adds the official/WLED-qualified Waveshare HUB75 GPIO mapping.
+- Configures 32 MB flash, 16 MB octal PSRAM and a dedicated two-slot OTA partition table.
+- Adds a physically triggered OTA maintenance mode using BOOT/GPIO0 and a local HTTP firmware-upload page.
+- Keeps Wi-Fi disabled during normal operation until OTA maintenance is explicitly triggered.
+- Adds startup diagnostics for board identity, flash, PSRAM and OTA state.
+- Deliberately leaves PCF85063, QMI8658, SHTC3, MicroSD and audio support disabled for this first standalone Waveshare bring-up.
+- Adds regression coverage for the Waveshare target, pinout, OTA update path and 32 MB partition layout.
+
+Status: **development build; requires PlatformIO compilation and physical Waveshare qualification.**
+
 ## 0.5.2 / Build 190
 
 Stable packaging/tooling correction that supersedes Build 189.

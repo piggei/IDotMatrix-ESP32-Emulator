@@ -15,6 +15,68 @@
   #define IDOTMATRIX_USER_CONFIG_PRESENT 0
 #endif
 
+
+// -----------------------------------------------------------------------------
+// Optional OTA maintenance service
+//
+// OTA is disabled by default and enabled only by profiles that explicitly
+// provide IDOTMATRIX_DEFAULT_OTA_ENABLED=1. The initial 0.6.0 development
+// implementation uses a physical-button maintenance mode: hold the configured
+// button for IDOTMATRIX_OTA_TRIGGER_HOLD_MS while the firmware is running to
+// start a temporary Wi-Fi access point and local HTTP upload page. This keeps
+// Wi-Fi off during normal operation and avoids coupling OTA to stored network
+// credentials.
+// -----------------------------------------------------------------------------
+#ifndef IDOTMATRIX_OTA_ENABLED
+  #ifdef IDOTMATRIX_DEFAULT_OTA_ENABLED
+    #define IDOTMATRIX_OTA_ENABLED IDOTMATRIX_DEFAULT_OTA_ENABLED
+  #else
+    #define IDOTMATRIX_OTA_ENABLED 0
+  #endif
+#endif
+
+#ifndef IDOTMATRIX_OTA_TRIGGER_PIN
+  #ifdef IDOTMATRIX_DEFAULT_OTA_TRIGGER_PIN
+    #define IDOTMATRIX_OTA_TRIGGER_PIN IDOTMATRIX_DEFAULT_OTA_TRIGGER_PIN
+  #else
+    #define IDOTMATRIX_OTA_TRIGGER_PIN -1
+  #endif
+#endif
+
+#ifndef IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW
+  #ifdef IDOTMATRIX_DEFAULT_OTA_TRIGGER_ACTIVE_LOW
+    #define IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW IDOTMATRIX_DEFAULT_OTA_TRIGGER_ACTIVE_LOW
+  #else
+    #define IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW 1
+  #endif
+#endif
+
+#ifndef IDOTMATRIX_OTA_TRIGGER_HOLD_MS
+  #define IDOTMATRIX_OTA_TRIGGER_HOLD_MS 2000UL
+#endif
+
+#ifndef IDOTMATRIX_OTA_AP_PASSWORD
+  #define IDOTMATRIX_OTA_AP_PASSWORD "idotmatrix"
+#endif
+
+#if IDOTMATRIX_OTA_ENABLED != 0 && IDOTMATRIX_OTA_ENABLED != 1
+  #error "IDOTMATRIX_OTA_ENABLED must be 0 or 1"
+#endif
+
+#if IDOTMATRIX_OTA_ENABLED && IDOTMATRIX_OTA_TRIGGER_PIN < 0
+  #error "OTA maintenance mode requires IDOTMATRIX_OTA_TRIGGER_PIN >= 0"
+#endif
+
+#if IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW != 0 && IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW != 1
+  #error "IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW must be 0 or 1"
+#endif
+
+#if IDOTMATRIX_OTA_ENABLED
+  #define IDOTMATRIX_OTA_AVAILABLE 1
+#else
+  #define IDOTMATRIX_OTA_AVAILABLE 0
+#endif
+
 // PlatformIO profiles provide DEFAULT_* values rather than hard overrides.
 // This lets IDotMatrixUserConfig.h select a different backend/address/mount
 // without editing platformio.ini or causing duplicate driver selections.

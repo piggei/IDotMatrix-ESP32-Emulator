@@ -85,3 +85,18 @@
 // #define IDOTMATRIX_COUNTDOWN_BUZZER_ENABLED 1
 // #define IDOTMATRIX_SCHEDULE_BUZZER_ENABLED 1
 // #define IDOTMATRIX_CONNECTION_BUZZER_ENABLED 1
+
+// -----------------------------------------------------------------------------
+// Optional OTA maintenance override.
+//
+// The Waveshare 0.6.0 development profile enables OTA by default and uses the
+// on-board BOOT button (GPIO0). Hold the button for about two seconds while the
+// firmware is already running to start a temporary Wi-Fi AP and HTTP upload
+// page. The AP is never started during normal operation unless this physical
+// trigger is used.
+// -----------------------------------------------------------------------------
+// #define IDOTMATRIX_OTA_ENABLED 1
+// #define IDOTMATRIX_OTA_TRIGGER_PIN 0
+// #define IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW 1
+// #define IDOTMATRIX_OTA_TRIGGER_HOLD_MS 2000UL
+// #define IDOTMATRIX_OTA_AP_PASSWORD "idotmatrix"  // minimum 8 characters

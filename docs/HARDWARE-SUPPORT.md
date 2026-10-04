@@ -8,6 +8,25 @@ A target is considered **supported** only after end-to-end physical validation o
 
 ## Supported and hardware validated
 
+### Waveshare ESP32-S3 RGB Matrix + 64x64 HUB75
+
+Build `0.6.0-dev.1 / 191` adds the first standalone-emulator profile for the Waveshare ESP32-S3 RGB Matrix / ESP32-S3-N32R16.
+
+Reference capabilities for this board are 32 MB flash and 16 MB PSRAM. Build 194 uses one physical 64x64 HUB75 panel with the official/WLED-qualified pin mapping:
+
+```text
+R1=4   G1=5   B1=6
+R2=7   G2=15  B2=16
+A=18   B=8    C=3    D=42   E=9
+LAT=40 OE=2   CLK=41
+```
+
+The target is **implemented but awaiting standalone hardware qualification**. The first field gate covers native 64x64 rendering, BLE behavior and OTA. The board's PCF85063 RTC, QMI8658 IMU, SHTC3, MicroSD and audio hardware are deliberately not enabled in Build 194 and must not be described as standalone-emulator qualified yet.
+
+OTA uses two 3 MiB application slots, a 25.875 MiB LittleFS media partition and a final 64 KiB coredump partition. Wi-Fi remains disabled until the on-board BOOT button is held for about two seconds after normal startup.
+
+See [`WAVESHARE-B194-QUALIFICATION.md`](WAVESHARE-B194-QUALIFICATION.md) and [`OTA.md`](OTA.md).
+
 ### Adafruit MatrixPortal ESP32-S3 + 64x64 HUB75
 
 ![Adafruit MatrixPortal ESP32-S3](../assets/hardware/adafruit-matrixportal-s3.jpg)

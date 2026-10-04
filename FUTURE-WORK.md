@@ -1,6 +1,18 @@
 # Future Work
 
-Release `0.5.2 / Build 190` is the current stable baseline. The items below are non-blocking research or possible future extensions and are not part of the 0.5.2 release scope.
+Release `0.5.2 / Build 190` remains the stable baseline. Active development is `0.6.0-dev.3 / Build 194`. Build 191 exposed the first Waveshare reset-loop problem. Build 192 aligned the framework and partition geometry with the qualified WLED target, then failed the compile gate because that stack does not provide the legacy Arduino BLE compatibility headers. Build 193 added the Waveshare-only NimBLE-Arduino 2.5.1 backend while preserving the legacy BLE path for existing qualified profiles. Build 194 hardens the already-present OTA maintenance AP with captive-portal discovery and redirects while keeping the firmware upload path unchanged.
+
+## 0.6.0 development sequence
+
+1. **Build 194** - qualify the existing Waveshare bring-up and OTA path with captive-portal discovery; verify clean PlatformIO build, stable boot, native 64x64 HUB75, BLE, automatic portal opening, direct-IP fallback and interrupted-upload recovery.
+2. **Build 195** - qualify 16x16/32x32/64x64 logical scaling on the 64x64 Waveshare panel.
+3. **Build 196** - measurement-only PSRAM/heap baseline and media-latency telemetry.
+4. **Build 197** - guarded whole-file GIF staging in PSRAM with LittleFS fallback.
+5. **Build 198** - bounded persistent GIF source cache.
+6. **Build 199** - one-item Carousel look-ahead prefetch.
+7. **Build 200+** - Preset transaction hardening, Carousel transaction research/atomic-bank work and versioned persistence.
+
+Waveshare on-board PCF85063, QMI8658, SHTC3, MicroSD and audio devices are intentionally deferred until the board/display/BLE/OTA baseline is physically qualified.
 
 ## iOS compatibility research
 

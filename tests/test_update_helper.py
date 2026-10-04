@@ -12,6 +12,12 @@ def test_update_helper_uses_dependency_free_runner():
     assert 'TEST_PYTHON' in UPDATER
 
 
+def test_update_helper_defaults_to_waveshare_development_target():
+    assert 'PIO_ENV="${PIO_ENV:-waveshare_s3_rgbmatrix_64x64}"' in UPDATER
+    assert 'Waveshare ESP32-S3 RGB Matrix' in UPDATER
+    assert 'usb-Espressif_USB_JTAG_serial_debug_unit_' in UPDATER
+
+
 def test_dependency_free_runner_has_no_pytest_import():
     assert 'import pytest' not in RUNNER
     assert 'from pytest' not in RUNNER

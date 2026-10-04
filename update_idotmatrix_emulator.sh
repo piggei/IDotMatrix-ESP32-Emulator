@@ -13,7 +13,7 @@ set -euo pipefail
 #      intentionally no pre-upload JTAG endpoint check: that USB identity appears
 #      only after PlatformIO has already started the programming transition.
 #   7. Optionally report the linked firmware signature after upload, then wait for
-#      the Adafruit runtime serial endpoint and optionally open the monitor.
+#      the selected target runtime serial endpoint and optionally open the monitor.
 #
 # Every operational step requires explicit confirmation.
 
@@ -21,12 +21,19 @@ ARCHIVE_DIR="${ARCHIVE_DIR:-/mnt/c/Users/PJ/Downloads}"
 ARCHIVE_PATTERN="${ARCHIVE_PATTERN:-IDotMatrix-ESP32-Emulator-*.zip}"
 
 REPO="${REPO:-$HOME/repo/idotmatrix-esp32-emulator}"
-PIO_ENV="${PIO_ENV:-matrixportal_s3_hub75_64}"
+PIO_ENV="${PIO_ENV:-waveshare_s3_rgbmatrix_64x64}"
 
 # PlatformIO itself handles the transient Espressif JTAG/programming identity.
-# The helper only resolves the stable Adafruit runtime serial endpoint used by
-# the post-upload monitor.
-MONITOR_SERIAL_PATTERN="${MONITOR_SERIAL_PATTERN:-/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3_*-if00}"
+# The helper resolves a target-specific runtime serial endpoint for the
+# post-upload monitor. MONITOR_SERIAL_PATTERN / MONITOR_SERIAL_PORT may override it.
+if [[ "$PIO_ENV" == waveshare_s3_rgbmatrix_64x64 ]]; then
+    TARGET_LABEL="Waveshare ESP32-S3 RGB Matrix"
+    DEFAULT_MONITOR_SERIAL_PATTERN="/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00"
+else
+    TARGET_LABEL="MatrixPortal/ESP32 target"
+    DEFAULT_MONITOR_SERIAL_PATTERN="/dev/serial/by-id/usb-Adafruit_MatrixPortal_ESP32-S3_*-if00"
+fi
+MONITOR_SERIAL_PATTERN="${MONITOR_SERIAL_PATTERN:-$DEFAULT_MONITOR_SERIAL_PATTERN}"
 MONITOR_SERIAL_PORT_OVERRIDE="${MONITOR_SERIAL_PORT:-${SERIAL_PORT:-}}"
 SERIAL_ROLE="runtime/monitor"
 SERIAL_PORT_OVERRIDE="$MONITOR_SERIAL_PORT_OVERRIDE"
@@ -104,7 +111,7 @@ resolve_serial_port() {
 
     SERIAL_PORT=""
     if [[ ${#matches[@]} -gt 1 ]]; then
-        echo "Multiple MatrixPortal $SERIAL_ROLE devices match:" >&2
+        echo "Multiple $TARGET_LABEL $SERIAL_ROLE devices match:" >&2
         printf '  %s\n' "${matches[@]}" >&2
         echo "Set SERIAL_PORT explicitly to choose one." >&2
         return 2
@@ -117,7 +124,7 @@ wait_for_serial_port() {
         local status=0
         if resolve_serial_port; then
             echo
-            echo "MatrixPortal $SERIAL_ROLE device found:"
+            echo "$TARGET_LABEL $SERIAL_ROLE device found:"
             echo "  $SERIAL_PORT"
             echo "  -> $(readlink -f "$SERIAL_PORT" 2>/dev/null || true)"
             return 0
@@ -127,9 +134,9 @@ wait_for_serial_port() {
 
         echo
         if [[ $status -eq 2 ]]; then
-            echo "More than one matching MatrixPortal $SERIAL_ROLE device is present."
+            echo "More than one matching $TARGET_LABEL $SERIAL_ROLE device is present."
         else
-            echo "MatrixPortal $SERIAL_ROLE device not found."
+            echo "$TARGET_LABEL $SERIAL_ROLE device not found."
             if [[ -n "$SERIAL_PORT_OVERRIDE" ]]; then
                 echo "  Expected: $SERIAL_PORT_OVERRIDE"
             else
@@ -137,7 +144,7 @@ wait_for_serial_port() {
             fi
         fi
         echo
-        echo "Attach/re-bind the MatrixPortal $SERIAL_ROLE USB device from Windows to Linux/WSL, then retry."
+        echo "Attach/re-bind the $TARGET_LABEL $SERIAL_ROLE USB device from Windows to Linux/WSL, then retry."
         if ! confirm "Retry serial detection?"; then
             echo "Aborted while waiting for the serial device."
             exit 0
@@ -165,7 +172,7 @@ open_serial_monitor() {
 
         echo
         echo "Serial monitor closed or the USB serial device disconnected."
-        if ! confirm "Wait for the MatrixPortal serial device and reopen the monitor?"; then
+        if ! confirm "Wait for the target serial device and reopen the monitor?"; then
             break
         fi
     done
@@ -222,7 +229,7 @@ echo "Important:"
 echo "  .git/, .pio/ and src/IDotMatrixUserConfig.h are preserved during repository synchronization."
 echo "  Build and upload run as one PlatformIO upload target."
 echo "  No JTAG endpoint is checked before upload; it appears only during programming."
-echo "  After upload the script waits for the Adafruit runtime endpoint used by the serial monitor."
+echo "  After upload the script waits for the selected target runtime endpoint used by the serial monitor."
 
 if ! confirm "Start emulator update workflow?"; then
     echo "Aborted."
@@ -351,9 +358,8 @@ fi
 echo
 echo "==> [6] Build and upload with PlatformIO"
 echo "    pio run -d '$REPO' -e '$PIO_ENV' -t upload"
-echo "    The MatrixPortal changes from the Adafruit runtime USB identity to the"
-echo "    Espressif JTAG/programming identity only after PlatformIO starts upload."
-echo "    Therefore there is intentionally no pre-upload JTAG serial check."
+echo "    PlatformIO owns the programming-port transition for the selected target."
+echo "    Therefore there is intentionally no pre-upload JTAG/runtime serial check."
 
 UPLOAD_PERFORMED=0
 if confirm "Build and upload ${REPO_RELEASE:-firmware} BUILD ${REPO_BUILD:-?}?"; then
@@ -389,10 +395,10 @@ REPO_BUILD="$VERIFY_BUILD"
 # STEP 7 - Wait for runtime serial endpoint, then optionally monitor
 # -----------------------------------------------------------------------------
 echo
-echo "==> [7] Wait for MatrixPortal runtime monitor endpoint"
+echo "==> [7] Wait for target runtime monitor endpoint"
 echo "    Runtime pattern: $MONITOR_SERIAL_PATTERN"
 echo "    If WSL/Linux lost the USB device during programming, re-attach/re-bind it"
-echo "    now so the Adafruit MatrixPortal runtime serial endpoint becomes visible."
+echo "    now so the selected target runtime serial endpoint becomes visible."
 select_serial_role monitor
 if confirm "Wait for the runtime serial endpoint and optionally open the monitor?"; then
     wait_for_serial_port

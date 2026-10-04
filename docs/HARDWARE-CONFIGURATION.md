@@ -180,3 +180,21 @@ Three-wire passive buzzer modules may include a transistor driver and expose `VC
 ```
 
 With `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW=1`, the firmware holds GPIO3 HIGH while silent. During a beep, LEDC generates the configured square wave. This prevents the module transistor from remaining enabled by a constant LOW level when no tone is requested. Direct passive buzzers normally use the default value `0`.
+
+## OTA maintenance overrides
+
+Build 194 enables OTA maintenance by default only on the Waveshare ESP32-S3 RGB Matrix profile. The profile uses BOOT/GPIO0 as an active-low physical trigger; Wi-Fi remains disabled until the button is held for about two seconds while the firmware is already running.
+
+Local overrides may be placed in `src/IDotMatrixUserConfig.h`:
+
+```cpp
+#define IDOTMATRIX_OTA_ENABLED 1
+#define IDOTMATRIX_OTA_TRIGGER_PIN 0
+#define IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW 1
+#define IDOTMATRIX_OTA_TRIGGER_HOLD_MS 2000UL
+#define IDOTMATRIX_OTA_AP_PASSWORD "idotmatrix"
+```
+
+Do not hold GPIO0 low during reset/power-up when using it as the maintenance trigger; it is also an ESP32 boot strap. Trigger OTA after the normal firmware has booted.
+
+See [`OTA.md`](OTA.md) for the update workflow and safety model.
