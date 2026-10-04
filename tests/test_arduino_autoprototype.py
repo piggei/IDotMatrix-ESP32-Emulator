@@ -15,7 +15,7 @@ def test_custom_enum_is_still_used_for_stored_state():
     assert "DeferredAssetCommitKind kind = DEFERRED_ASSET_NONE;" in INO
 
 
-def test_b202_custom_runtime_helpers_do_not_expose_custom_types_in_signatures():
+def test_custom_runtime_helpers_do_not_expose_custom_types_in_signatures():
     ino = (ROOT / "src" / "IDotMatrix.ino").read_text(encoding="utf-8")
     assert "bool gifCachePathEquals(const GifCacheEntry" not in ino
     assert "bool gifCachePathEquals(uint8_t index" in ino

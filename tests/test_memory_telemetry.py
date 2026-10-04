@@ -49,7 +49,7 @@ def test_non_measurement_profiles_compile_to_noop_telemetry_calls():
     assert "inline void idotMemoryTelemetryLatency" in MEM_H
 
 
-def test_b196_covers_boot_media_and_ota_measurement_points():
+def test_covers_boot_media_and_ota_measurement_points():
     for tag in (
         '"setup.begin"',
         '"setup.before_logical_buffers"',
@@ -81,7 +81,7 @@ def test_b196_covers_boot_media_and_ota_measurement_points():
         assert tag in OTA
 
 
-def test_b196_records_latency_without_changing_media_storage_policy():
+def test_records_latency_without_changing_media_storage_policy():
     for tag in (
         '"text.live.parse_render_us"',
         '"gif.live.open_us"',

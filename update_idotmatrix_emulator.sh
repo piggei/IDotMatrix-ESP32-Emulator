@@ -382,7 +382,7 @@ fi
 # image, so signature checking must not gate the transition into programming.
 VERIFY_RELEASE="$(extract_fw_release "$REPO/src/IDotMatrix.ino")"
 VERIFY_BUILD="$(extract_fw_build "$REPO/src/IDotMatrix.ino")"
-EXPECTED_SIGNATURE="IDOTMATRIX_FW=${VERIFY_RELEASE}-B${VERIFY_BUILD}"
+EXPECTED_SIGNATURE="IDOTMATRIX_FW=${VERIFY_RELEASE}"
 if [[ -f "$FIRMWARE_ELF" ]] && grep -aFq "$EXPECTED_SIGNATURE" "$FIRMWARE_ELF"; then
     echo "Post-upload ELF signature: $EXPECTED_SIGNATURE [MATCH]"
 else

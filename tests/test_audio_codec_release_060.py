@@ -8,8 +8,8 @@ AUDIO = (ROOT / "src" / "IDotMatrixAudioOutput.cpp").read_text(encoding="utf-8")
 
 
 def test_release_identity():
-    assert '#define FW_RELEASE "0.6.0-rc.1"' in INO
-    assert '#define FW_BUILD 220' in INO
+    assert '#define FW_RELEASE "0.6.0"' in INO
+    assert '#define FW_BUILD 223' in INO
 
 
 def test_waveshare_audio_profile_is_synth_only():

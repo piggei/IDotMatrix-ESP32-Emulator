@@ -2,7 +2,7 @@
 
 ## Scope
 
-OTA support is available in `0.6.0-rc.1` for the Waveshare ESP32-S3 RGB Matrix profiles only. It is intentionally a maintenance service, not a permanently exposed Wi-Fi control interface.
+OTA support is available in `0.6.0` for the Waveshare ESP32-S3 RGB Matrix profiles only. It is intentionally a maintenance service, not a permanently exposed Wi-Fi control interface.
 
 The normal emulator runtime keeps Wi-Fi disabled. BLE, HUB75 rendering and all existing iDotMatrix behavior continue to run without a Wi-Fi connection.
 

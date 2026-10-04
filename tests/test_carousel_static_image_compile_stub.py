@@ -9,7 +9,7 @@ def _extract():
     b=INO.index('bool startCarouselSlot(uint8_t slot)',a)
     return INO[a:b]
 
-def test_b209_image_loader_compiles_with_minimal_host_stubs():
+def test_image_loader_compiles_with_minimal_host_stubs():
     cc=shutil.which('g++') or shutil.which('c++')
     assert cc
     code=_extract()

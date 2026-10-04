@@ -1,6 +1,6 @@
 # Future Work
 
-Baseline: **0.6.0 release-candidate line**.
+Baseline: **0.6.0 stable release**.
 
 The items below are intentionally outside the 0.6.0 release boundary. None is required for the qualified hardware/runtime paths documented in `README.md` and `docs/RELEASE-VALIDATION.md`.
 

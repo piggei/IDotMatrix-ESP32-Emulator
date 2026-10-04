@@ -22,12 +22,12 @@
 // ======================================================
 // FIRMWARE RELEASE / BUILD ID
 // FW_RELEASE identifies the public project release.
-// FW_BUILD is an internal diagnostic identifier and is not part of the public RC documentation.
+// FW_BUILD is an internal diagnostic identifier and is not part of the public release identity.
 // ======================================================
-#define FW_RELEASE "0.6.0-rc.1"
+#define FW_RELEASE "0.6.0"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 6
-#define FW_BUILD 220
+#define FW_BUILD 223
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -1484,7 +1484,7 @@ CRGB *gifFrame = nullptr;
 // (timeSign, LE seconds) and byte 15 is the device asset slot/imageIndex.
 // Command 0A/01 enters/starts the asset view, but current official-app captures
 // show it may arrive before a later page push and is not necessarily repeated
-// afterwards. Assets-view intent is preserved across 02/01,
+// afterwards. Command 02/01 therefore establishes persistent Assets-view intent,
 // stores GIF, static IMAGE (PNG/RGB24) and observed TEXT slots without rendering them during the push,
 // then starts the completed bank after a short upload-idle settle interval.
 // Empty positions are skipped.
@@ -1692,25 +1692,32 @@ uint32_t textPageChangedAt = 0;
 uint8_t *rawRgbData = nullptr;
 size_t rawRgbWriteOffset = 0;
 
-// Static Carousel type-2 assets are buffered in memory on the BLE host
-// task and written to LittleFS only by loopTask. This preserves the
-// callback stack/I/O safety boundary while retaining PNG support.
+// Waveshare persistent Carousel assets are buffered in PSRAM on the BLE host
+// task and written to LittleFS only by loopTask. Other targets retain their
+// qualified streaming policy; type 2 remains buffered because it may be PNG.
 uint8_t *carouselImageRxData = nullptr;
 size_t carouselImageRxWriteOffset = 0;
 
 __attribute__((noinline)) uint8_t *allocateCarouselImageRxBuffer(size_t bytes){
 #if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
-  uint8_t *p=(uint8_t*)heap_caps_malloc(bytes,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if(p) return p;
-#endif
+  // Persistent Carousel RX must stay off the NimBLE host task filesystem path.
+  // Keep the same PSRAM reserve used by GIF staging/cache and fail cleanly rather
+  // than falling back to scarce internal RAM for a potentially multi-megabyte asset.
+  const size_t freePsram=heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  const size_t largestPsram=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  const size_t reserve=(size_t)IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES;
+  if(bytes>largestPsram || freePsram<=reserve || bytes>freePsram-reserve) return nullptr;
+  return (uint8_t*)heap_caps_malloc(bytes,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
   return (uint8_t*)malloc(bytes);
+#endif
 }
 
 __attribute__((noinline)) bool beginCarouselBufferedImageTransfer(uint32_t total, uint8_t imageIndex, uint16_t timeSign){
   carouselImageRxData=allocateCarouselImageRxBuffer(total);
   if(!carouselImageRxData){
 #if DEBUG_SERIAL
-    Serial.println("BULK IMAGE carousel rejected: buffer allocation failed");
+    Serial.println("BULK CAROUSEL asset rejected: RX buffer allocation failed");
 #endif
     return false;
   }
@@ -1719,7 +1726,7 @@ __attribute__((noinline)) bool beginCarouselBufferedImageTransfer(uint32_t total
   carouselImageRxWriteOffset=0;
   beginCarouselTransferIndicator(total,imageIndex);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
-  Serial.print("BULK IMAGE BUFFERED: CAROUSEL slot="); Serial.print(imageIndex);
+  Serial.print("BULK BUFFERED: CAROUSEL slot="); Serial.print(imageIndex);
   Serial.print(" format="); Serial.print(bulk.format);
   Serial.print(" dwell="); Serial.println(timeSign);
 #endif
@@ -2509,7 +2516,7 @@ void renderClock64Combined(uint8_t h, uint8_t m, uint8_t d, uint8_t mo, uint8_t 
   clearFramebuffer(style==3 ? clockColor : CRGB::Black);
   if(style==0) drawNative64RainbowBorder();
   const CRGB c=(style==3) ? CRGB::Black : clockColor;
-  // WLED RC parity: the time row received the final +4 physical-pixel adjustment.
+  // WLED reference parity: the time row received the final +4 physical-pixel adjustment.
   drawNative64ClockRow(h/10,h%10,m/10,m%10,12,c,false);
   drawNative64ClockRow(d/10,d%10,mo/10,mo%10,38,c,true);
   refreshMatrix();
@@ -4853,9 +4860,10 @@ bool startCarouselSlot(uint8_t slot) {
 }
 
 void updateCarousel(uint32_t now) {
-  // Official-app captures show 0A/01 can establish the Assets view before a
-  // later page push, with no second 0A/01 after the Bulk transfers.  Therefore
-  // 02/01 preserves that view intent.  Because no explicit end-of-push frame
+  // Official-app workflows may establish the Assets view before a page push,
+  // and a completed Device Assets replacement is expected to become visible
+  // even when no second 0A/01 follows the Bulk transfers.  Therefore 02/01
+  // establishes persistent Carousel view intent.  Because no explicit end-of-push frame
   // has been observed, use a conservative idle-settle boundary only
   // after at least one carousel asset has committed.  This is emulator policy,
   // not a claimed original-device protocol timing.
@@ -4947,7 +4955,7 @@ bool queueDeferredCarouselBankSetup(const uint8_t *slots, uint8_t count, bool vi
 void processDeferredCarouselBankSetup() {
   if(!deferredCarouselBankSetup.active) return;
   const uint8_t count=deferredCarouselBankSetup.count;
-  const bool hadAssetView=deferredCarouselBankSetup.viewIntent;
+  const bool queuedViewIntent=deferredCarouselBankSetup.viewIntent;
   uint8_t order[CAROUSEL_SLOT_COUNT]={0};
   memcpy(order,deferredCarouselBankSetup.order,CAROUSEL_SLOT_COUNT);
 
@@ -4959,7 +4967,9 @@ void processDeferredCarouselBankSetup() {
     if(littleFsReady && pendingGifSlot>=0 && pendingGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)pendingGifSlot]);
     pendingGifStart=false; pendingGifSlot=-1; pendingGifSize=0; pendingGifCRC=0; pendingGifStartAt=0;
   }
-  carouselEnterRequested=hadAssetView;
+  // Preserve any 0A/01 that may have arrived after 02/01 was queued, and
+  // honor the bank-setup request itself as persistent Carousel view intent.
+  carouselEnterRequested=queuedViewIntent || carouselEnterRequested;
   carouselStartPending=false;
 
   uint16_t touchedMask=0;
@@ -5010,8 +5020,12 @@ bool handleCarouselCommand(const uint8_t *data, size_t len) {
     // Capture the command only. Filesystem journal/backup/wipe work is
     // deferred to loopTask; its ACK is emitted only after the bank is ready for
     // the first Bulk object, preserving app pacing without blocking nimble_host.
-    bool hadAssetView=carouselEnterRequested || carouselActive || gifCarouselPlaybackFileActive;
-    if(!queueDeferredCarouselBankSetup(data+5,count,hadAssetView)){
+    // Starting a Device Assets bank replacement is itself a request to enter
+    // the Carousel view once the new bank is safely committed.  This matters
+    // when the app starts the upload while Preset/Default playback owns the
+    // display and does not send a second 0A/01 after the transfer.
+    const bool viewIntent=true;
+    if(!queueDeferredCarouselBankSetup(data+5,count,viewIntent)){
 #if DEBUG_SERIAL
       Serial.println("[CARBANK] state=setup_queue_busy");
 #endif
@@ -5610,9 +5624,9 @@ void processDeferredAssetCommit(){
 
   bool stored=false;
   bool stagedForCommit=job.integrityOk;
-  if(stagedForCommit && job.kind==DEFERRED_ASSET_CAROUSEL && job.dataType==2){
-    // Stack-safety boundary: type-2 static-image bytes are accumulated
-    // in memory by nimble_host. Perform all LittleFS work here on loopTask.
+  if(stagedForCommit && job.kind==DEFERRED_ASSET_CAROUSEL && carouselImageRxData){
+    // Waveshare stack-safety boundary: persistent Carousel bytes are accumulated
+    // in memory by nimble_host. Perform every LittleFS open/write here on loopTask.
     stagedForCommit=false;
     if(littleFsReady && carouselImageRxData && carouselImageRxWriteOffset==job.size){
       const String tmp=carouselTempFileName(job.localSlot);
@@ -5835,6 +5849,28 @@ bool processBulkPacket(const uint8_t *data,size_t len){
 #endif
       resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
     }
+#if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
+    // Waveshare stack-safety boundary: every persistent Carousel
+    // asset (GIF, static IMAGE/PNG/RAW, TEXT) is accumulated in PSRAM first.
+    // No LittleFS open/write is allowed from nimble_host for Device Assets.
+    if((type==1 || type==2 || type==3) && carouselUploadOpen &&
+       imageIndex<CAROUSEL_SLOT_COUNT &&
+       (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
+      if(carouselActive && carouselActiveSlot==(int8_t)imageIndex) stopCarouselPlayback();
+      if(!beginCarouselBufferedImageTransfer(total,imageIndex,timeSign)){
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
+    }
+#else
+    // Other targets retain the qualified streaming path. Type 2 has always
+    // required buffering because it can carry a static PNG rather than RGB24.
+    if(type==2 && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
+       (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
+      if(!beginCarouselBufferedImageTransfer(total,imageIndex,timeSign)){
+        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
+      }
+    }
+#endif
     if((type==1 || type==3) && presetTraceSlot){
       // A new preset invocation re-sends the whole selected bank. Freeze the
       // previous preset on its last framebuffer while replacement assets arrive.
@@ -5876,7 +5912,8 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       Serial.print(" timeSign="); Serial.println(timeSign);
 #endif
     }
-    if(type==3 && !bulk.presetToFS && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
+#if !defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
+    if(type==3 && !bulk.presetToFS && !bulk.carouselBuffered && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
        (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
       if(!littleFsReady){
 #if DEBUG_SERIAL
@@ -5908,7 +5945,8 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       Serial.print(" dwell="); Serial.println(timeSign);
 #endif
     }
-    if(type==1 && !bulk.presetToFS){
+#endif
+    if(type==1 && !bulk.presetToFS && !bulk.carouselBuffered){
       if(!littleFsReady){
 #if DEBUG_SERIAL
         Serial.println("BULK GIF rejected: LittleFS unavailable");
@@ -5926,12 +5964,11 @@ bool processBulkPacket(const uint8_t *data,size_t len){
         resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
       }
 
+#if !defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX)
       if(carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
          (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
-        // Device Assets use imageIndex directly as persistent slot 0..11.
+        // Non-Waveshare targets retain the established persistent streaming path.
         uint8_t localSlot=imageIndex;
-        // Never replace a file while AnimatedGIF is decoding that same slot.
-        // Preserve Assets-view intent so playback resumes after commit.
         if(carouselActive && carouselActiveSlot==(int8_t)localSlot) stopCarouselPlayback();
         bulk.carouselLocalSlot=(int8_t)localSlot;
         String tmp=carouselTempFileName(localSlot);
@@ -5945,7 +5982,9 @@ bool processBulkPacket(const uint8_t *data,size_t len){
         Serial.print("BULK GIF STORAGE: CAROUSEL slot="); Serial.print(localSlot);
         Serial.print(" dwell="); Serial.println(timeSign);
 #endif
-      } else {
+      } else
+#endif
+      {
         // Live/preview GIF path: preserve the stable alternating RX -> PLAY flow.
         int8_t slot=(int8_t)(nextGifRxSlot & 1U);
         nextGifRxSlot ^= 1U;
@@ -5961,15 +6000,6 @@ bool processBulkPacket(const uint8_t *data,size_t len){
         Serial.print("BULK GIF STORAGE: LittleFS RX slot="); Serial.print(slot);
         Serial.print(" imageIndex="); Serial.println(imageIndex);
 #endif
-      }
-    }
-    if(type==2 && carouselUploadOpen && imageIndex<CAROUSEL_SLOT_COUNT &&
-       (!carouselBankTxnActive || (carouselBankTxnManifest.touchedMask&(1U<<imageIndex)))){
-      // Hardware capture proved that the official app sends static Carousel slot 0 as a
-      // PNG in Bulk type 0x02. Do not touch LittleFS from nimble_host here:
-      // buffer the exact payload, verify CRC, then let loopTask stage+commit it.
-      if(!beginCarouselBufferedImageTransfer(total,imageIndex,timeSign)){
-        resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
       }
     }
     if(type==2 && bulk.format=="RAW RGB" && !bulk.carouselBuffered){
@@ -6001,7 +6031,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       resetBulkTransfer(true); sendTransferAck(type,0x03); return true;
     }
   }
-  if(type==2 && bulk.carouselBuffered && carouselImageRxData && carouselImageRxWriteOffset+useful<=bulk.expectedSize){
+  if(bulk.carouselBuffered && carouselImageRxData && carouselImageRxWriteOffset+useful<=bulk.expectedSize){
     ::memcpy(carouselImageRxData+carouselImageRxWriteOffset,payload,useful);
     carouselImageRxWriteOffset+=useful;
   }
@@ -6022,8 +6052,8 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     bool ok=((bulk.runningCRC^0xFFFFFFFF)==bulk.expectedCRC);
 #if DEBUG_SERIAL && TEXT_PROTOCOL_DEBUG
     if(type==3){
-      Serial.print("TEXT RX COMPLETE len="); Serial.print(bulk.carouselToFS ? bulk.receivedSize : textPayloadReceived);
-      Serial.print(" carousel="); Serial.print(bulk.carouselToFS ? "YES" : "NO");
+      Serial.print("TEXT RX COMPLETE len="); Serial.print((bulk.carouselToFS || bulk.carouselBuffered) ? bulk.receivedSize : textPayloadReceived);
+      Serial.print(" carousel="); Serial.print((bulk.carouselToFS || bulk.carouselBuffered) ? "YES" : "NO");
       Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
     }
 #endif
@@ -6444,7 +6474,7 @@ static uint8_t audioProtocolIndex(bool fft, uint8_t mode) {
   return mode;
 }
 
-// LEVEL 3 - existing internal visualization plus WLED-RC moving perimeter.
+// LEVEL 3 - existing internal visualization plus WLED-reference moving perimeter.
 // Perimeter: one cyan pixel ON followed by two OFF, advancing one logical
 // perimeter pixel counter-clockwise approximately every 95 ms.
 static void renderAudioFakeSpectrum(uint8_t level) {

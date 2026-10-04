@@ -11,7 +11,7 @@ def _extract():
     return INO[a:b]
 
 
-def test_b210_buffer_helpers_compile_with_minimal_host_stubs():
+def test_buffer_helpers_compile_with_minimal_host_stubs():
     cc=shutil.which('g++') or shutil.which('c++')
     assert cc
     code=_extract()
@@ -25,6 +25,7 @@ using std::size_t;
 #define IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX 1
 #define MALLOC_CAP_SPIRAM 0x1
 #define MALLOC_CAP_8BIT 0x2
+#define IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES 4194304UL
 struct BulkState { int8_t carouselLocalSlot=-1; bool carouselBuffered=false; const char *format="PNG"; } bulk;
 struct SerialStub {
   void println(const char*){}
@@ -37,6 +38,8 @@ struct SerialStub {
 uint8_t *carouselImageRxData=nullptr;
 size_t carouselImageRxWriteOffset=0;
 void beginCarouselTransferIndicator(uint32_t,uint8_t){}
+size_t heap_caps_get_free_size(uint32_t){ return 16U*1024U*1024U; }
+size_t heap_caps_get_largest_free_block(uint32_t){ return 15U*1024U*1024U; }
 void *heap_caps_malloc(size_t n,uint32_t){ return std::malloc(n); }
 '''
     with tempfile.TemporaryDirectory() as td:

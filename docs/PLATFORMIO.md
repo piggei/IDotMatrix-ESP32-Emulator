@@ -72,7 +72,7 @@ This environment overrides `lib_deps` so PlatformIO does not build `ESP32-HUB75-
 
 This is a diagnostic environment and is not part of the main release qualification.
 
-For 0.6.0 release-candidate, the checked-in `default_envs` value points at the Waveshare S3 / 64x64 target. MatrixPortal and ESP32-C3 environments remain available explicitly. For reproducible work on another profile, pass `-e <environment>` explicitly.
+For 0.6.0, the checked-in `default_envs` value points at the Waveshare S3 / 64x64 target. MatrixPortal and ESP32-C3 environments remain available explicitly. For reproducible work on another profile, pass `-e <environment>` explicitly.
 
 All three Waveshare environments share the same board/toolchain/partition policy; only the logical `IDOTMATRIX_SCREEN_TYPE` changes. `PHYSICAL_MATRIX_WIDTH` and `PHYSICAL_MATRIX_HEIGHT` remain 64 in every case.
 
@@ -173,7 +173,7 @@ Do not commit machine-specific serial ports to `platformio.ini`.
 
 ## Waveshare USB / serial behavior
 
-The Waveshare profiles also pin `h2zero/NimBLE-Arduino @ 2.5.1` and defines `IDOTMATRIX_USE_NIMBLE=1`. The Tasmota Arduino 3.3.8 stack used by the WLED-qualified board target does not provide the legacy `BLEDevice.h` compatibility headers expected by the standalone emulator. Other profiles retain their previous BLE backend.
+The Waveshare profiles also pin `h2zero/NimBLE-Arduino @ 2.5.1` and define `IDOTMATRIX_USE_NIMBLE=1`. The Tasmota Arduino 3.3.8 stack used by the WLED-qualified board target does not provide the legacy `BLEDevice.h` compatibility headers expected by the standalone emulator. Other profiles retain their previous BLE backend.
 
 The Waveshare profiles enable native USB CDC. The repository helper defaults to:
 
@@ -264,6 +264,8 @@ MATRIX_PIN
 ```
 
 Logical and physical resolutions are independent. The final renderer/output stage handles direct copy, nearest-neighbor upscaling and box-average downscaling.
+
+See [`COMPILE-TIME-CONFIGURATION.md`](COMPILE-TIME-CONFIGURATION.md) for the full compile-time reference, including advanced PSRAM/cache/prefetch, orientation, audio, OTA and BLE-stack controls.
 
 ## HUB75 backend
 

@@ -10,7 +10,7 @@ def _between(start: str, end: str) -> str:
     return INO[a:b]
 
 
-def test_b197_has_deferred_asset_commit_state():
+def test_has_deferred_asset_commit_state():
     assert "enum DeferredAssetCommitKind" in INO
     assert "DEFERRED_ASSET_CAROUSEL" in INO
     assert "DEFERRED_ASSET_PRESET" in INO
@@ -59,7 +59,7 @@ def test_disconnect_preserves_fully_received_pending_commit():
     assert "if(!deferredAssetCommit.active) resetBulkTransfer(true);" in disconnect
 
 
-def test_b197_keeps_memory_telemetry_around_loop_side_commit():
+def test_keeps_memory_telemetry_around_loop_side_commit():
     finalizer = _between("void processDeferredAssetCommit", "void expireStalledTransfers")
     assert '"fs.commit.carousel.before"' in finalizer
     assert '"fs.commit.carousel.after"' in finalizer

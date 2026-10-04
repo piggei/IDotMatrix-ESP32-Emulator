@@ -58,7 +58,7 @@ def test_staging_has_machine_readable_telemetry_and_total_first_frame_timing():
     assert first_timer < stage < decoder_timer
 
 
-def test_b201_keeps_b199_staging_and_b200_cache_as_fallback_layers():
+def test_keeps_staging_and_cache_as_fallback_layers():
     assert "gifStageData" in INO
     assert "gifStagePeakBytes" in INO
     assert "GifCacheEntry" in INO

@@ -4,6 +4,8 @@ For exact photographed reference modules and their qualification state, see [`HA
 
 The optional local configuration header keeps board-specific wiring and peripheral policy outside tracked source files. It covers accelerometer selection and mounting, shared-I2C pins, RTC settings, buzzer hardware and sound-policy overrides.
 
+For a consolidated list of local overrides **and** advanced profile-level compile flags (orientation timing, ES8311/I2S pins, OTA debounce, PSRAM GIF policy, prefetch and NimBLE stack headroom), see [`COMPILE-TIME-CONFIGURATION.md`](COMPILE-TIME-CONFIGURATION.md).
+
 ## Create the local file
 
 Copy the tracked template:
@@ -185,13 +187,22 @@ With `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW=1`, the firmware holds GPIO3 HIGH wh
 
 The Waveshare profiles enable the on-board ES8311 notification backend by default. No audio samples are stored; the firmware synthesizes the same 2 kHz notification waveform used by the buzzer state machine. The physical 64x64 target is qualified at a codec volume of 100%.
 
-A local configuration can reduce the codec volume without changing the checked-in profile:
+A local configuration can disable/enable the codec, change a custom-board pin map, or reduce the codec volume without editing the checked-in profile. The hardware-qualified Waveshare values are:
 
 ```cpp
-#define IDOTMATRIX_AUDIO_CODEC_VOLUME 60  // valid range: 0..100
+#define IDOTMATRIX_AUDIO_CODEC_ENABLED 1
+#define IDOTMATRIX_AUDIO_CODEC_I2C_ADDRESS 0x18
+#define IDOTMATRIX_AUDIO_I2C_SDA_PIN 47
+#define IDOTMATRIX_AUDIO_I2C_SCL_PIN 48
+#define IDOTMATRIX_AUDIO_I2S_MCLK_PIN 12
+#define IDOTMATRIX_AUDIO_I2S_BCLK_PIN 43
+#define IDOTMATRIX_AUDIO_I2S_WS_PIN 38
+#define IDOTMATRIX_AUDIO_I2S_DOUT_PIN 21
+#define IDOTMATRIX_AUDIO_PA_ENABLE_PIN 11
+#define IDOTMATRIX_AUDIO_CODEC_VOLUME 100  // valid range: 0..100
 ```
 
-The qualified board mapping is ES8311 `0x18`, I2C1 SDA47/SCL48, I2S1 MCLK12/BCLK43/WS38/DOUT21 and PA enable GPIO11. Change these only for a different hardware design.
+Change the pin map only for a different hardware design.
 
 
 ## OTA maintenance overrides
@@ -205,6 +216,7 @@ Local overrides may be placed in `src/IDotMatrixUserConfig.h`:
 #define IDOTMATRIX_OTA_TRIGGER_PIN 0
 #define IDOTMATRIX_OTA_TRIGGER_ACTIVE_LOW 1
 #define IDOTMATRIX_OTA_TRIGGER_HOLD_MS 2000UL
+#define IDOTMATRIX_OTA_TRIGGER_DEBOUNCE_MS 40UL
 #define IDOTMATRIX_OTA_AP_PASSWORD "idotmatrix"
 ```
 

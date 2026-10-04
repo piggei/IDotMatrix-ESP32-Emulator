@@ -1,6 +1,6 @@
 # Hardware Support Status
 
-This document describes the hardware targets and qualification status for the 0.6.0 release-candidate emulator line.
+This document describes the hardware targets and qualification status for the 0.6.0 emulator release.
 
 ## Support policy
 
@@ -40,7 +40,8 @@ Hardware qualification covers:
 - invocation-atomic volatile Preset/Default replacement;
 - static type-2 Device Assets images, including the app-observed 64x64 RGBA PNG form;
 - mixed PNG/GIF/TEXT Carousel playback and correct TEXT-to-next-slot return;
-- repeated Carousel replacement without the previously observed `nimble_host` stack-canary after the Waveshare host-task stack was increased to 8 KiB;
+- 8 KiB NimBLE host-task stack retained as headroom; persistent Carousel filesystem work is kept off `nimble_host`;
+- Persistent Waveshare Carousel GIF/IMAGE/TEXT receive is PSRAM-buffered and filesystem publication is moved to `loopTask`; repeated-replacement hardware qualification passed;
 - on-board ES8311 speaker output on the 64x64 target, including BLE connection beep, Countdown completion, Program/Schedule notification and repeating Alarm patterns, all synthesized at runtime without stored audio samples.
 
 The on-board PCF85063 RTC, QMI8658 IMU, SHTC3 and MicroSD remain deliberately disabled and are not claimed as standalone-emulator-qualified in 0.6.0.

@@ -10,15 +10,15 @@ The emulator is based on official-app BLE captures, differential testing and dir
 
 ## Release
 
-- **Release candidate:** `0.6.0-rc.1`
+- **Release:** `0.6.0`
 
 The firmware embeds the signature:
 
 ```text
-IDOTMATRIX_FW=0.6.0-rc.1
+IDOTMATRIX_FW=0.6.0
 ```
 
-Release candidate 0.6.0-rc.1 consolidates the complete hardware-qualified 0.6.0 feature set into a publication candidate. It includes the Waveshare ESP32-S3 RGB Matrix target, dual-slot maintenance OTA, logical 16x16/32x32/64x64 scaling on a 64x64 HUB75 panel, guarded GIF PSRAM staging/cache/prefetch, transactional Carousel and Preset replacement, static PNG Device Assets, mixed PNG/GIF/TEXT Carousel playback, NimBLE host-stack hardening, and the synthesized ES8311/I2S notification backend.
+Release 0.6.0 adds the Waveshare ESP32-S3 RGB Matrix target, dual-slot maintenance OTA, logical 16x16/32x32/64x64 scaling on a 64x64 HUB75 panel, guarded GIF PSRAM staging/cache/prefetch, transactional Carousel and Preset replacement, static PNG Device Assets, mixed PNG/GIF/TEXT Carousel playback, NimBLE receive-path hardening, and the synthesized ES8311/I2S notification backend. Persistent Waveshare Carousel GIF/IMAGE/TEXT receive is buffered in PSRAM and filesystem publication is deferred to `loopTask`; repeated consecutive Carousel replacement is hardware-qualified without reboot or `nimble_host` stack-canary. A completed Device Assets upload also transfers display ownership from Preset/Default to the newly committed Carousel, matching the official-app workflow even when no second Assets-view command follows the upload.
 
 On Waveshare, notification audio is generated at runtime as the same 2 kHz buzzer-equivalent pattern used by the existing notification state machine; no WAV/PCM assets are stored. BLE connection, Countdown, Program/Schedule and Alarm notification paths are hardware-qualified on the physical 64x64 target. The codec default is 100% and remains compile-time configurable.
 
@@ -52,9 +52,9 @@ Protocol details, confidence levels and original-device observations are documen
 
 ### Waveshare ESP32-S3 RGB Matrix + 64x64 HUB75
 
-The 0.6.0 release-candidate line adds the Waveshare ESP32-S3 RGB Matrix (`ESP32-S3-N32R16`, 32 MB flash, 16 MB PSRAM) as the primary high-memory target. The three checked-in profiles expose logical 16x16, 32x32 or 64x64 iDotMatrix identities while driving one physical 64x64 HUB75 panel with the official/WLED-qualified GPIO mapping.
+Release 0.6.0 adds the Waveshare ESP32-S3 RGB Matrix (`ESP32-S3-N32R16`, 32 MB flash, 16 MB PSRAM) as the primary high-memory target. The three checked-in profiles expose logical 16x16, 32x32 or 64x64 iDotMatrix identities while driving one physical 64x64 HUB75 panel with the official/WLED-qualified GPIO mapping.
 
-The Waveshare path is hardware-qualified for OTA maintenance, all three logical scaling profiles, guarded whole-GIF PSRAM staging, bounded compressed-source LRU caching, one-item Carousel prefetch, crash-recoverable Carousel-bank replacement, invocation-atomic Preset replacement, static type-2 PNG Device Assets, mixed PNG/GIF/TEXT Carousel playback and repeated Carousel replacement with an 8 KiB NimBLE host-task stack. The Device Assets settle window is 8 seconds because the official app was observed to pause for about 3.8 seconds between items in one valid push.
+The Waveshare path is hardware-qualified for OTA maintenance, all three logical scaling profiles, guarded whole-GIF PSRAM staging, bounded compressed-source LRU caching, one-item Carousel prefetch, crash-recoverable Carousel-bank replacement, invocation-atomic Preset replacement, static type-2 PNG Device Assets and mixed PNG/GIF/TEXT Carousel playback. Persistent Carousel GIF/IMAGE/TEXT receive is buffered in PSRAM and filesystem write/commit is performed on `loopTask`; three consecutive complete Carousel replacements were qualified without reboot, Guru Meditation or `nimble_host` stack-canary. The Device Assets settle window is 8 seconds because the official app was observed to pause for about 3.8 seconds between items in one valid push.
 
 Press and release the on-board BOOT button (GPIO0) briefly **after normal firmware boot** for a software reboot; hold it for at least two seconds to start the temporary OTA maintenance access point. Wi-Fi remains off during normal operation. See [`docs/OTA.md`](docs/OTA.md).
 
@@ -106,7 +106,7 @@ When logical and physical dimensions differ, the final output stage performs nea
 
 The emulator intentionally keeps Device Assets and Preset/Default as two distinct systems.
 
-**Device Assets / Carousel** is a persistent 12-slot bank. GIF and TEXT items are stored in LittleFS and can be restored by the boot policy.
+**Device Assets / Carousel** is a persistent 12-slot bank. GIF, static IMAGE (PNG/RGB24) and TEXT items are stored in LittleFS and can be restored by the boot policy. On Waveshare, incoming persistent Carousel assets are first buffered in PSRAM so LittleFS open/write activity is not performed on `nimble_host`. Starting a new Device Assets bank replacement establishes Carousel view intent: after the bank commit/settle boundary, active Preset/Default playback is stopped and the first valid Carousel slot is started automatically.
 
 **Preset / Default** is a volatile six-slot bank using device slots `14..19`. Assets are staged separately from Carousel content and become active only after the `06/02` activation command. Preset media is not restored after reboot/reset.
 
@@ -299,14 +299,15 @@ Do not expose the device in environments where unauthenticated BLE control would
 - [`docs/HARDWARE-SUPPORT.md`](docs/HARDWARE-SUPPORT.md) — supported hardware and qualification policy
 - [`docs/HARDWARE-MODULES.md`](docs/HARDWARE-MODULES.md) — exact peripheral modules and qualification state
 - [`docs/HARDWARE-CONFIGURATION.md`](docs/HARDWARE-CONFIGURATION.md) — local sensor/I2C override file and precedence
+- [`docs/COMPILE-TIME-CONFIGURATION.md`](docs/COMPILE-TIME-CONFIGURATION.md) — complete compile-time option reference, profile defaults and advanced tuning controls
 - [`docs/ORIENTATION-SENSOR.md`](docs/ORIENTATION-SENSOR.md) — accelerometer architecture and diagnostics
 - [`docs/PLATFORMIO.md`](docs/PLATFORMIO.md) — reproducible PlatformIO build/upload guide
 - [`docs/OTA.md`](docs/OTA.md) — Waveshare OTA maintenance workflow and safety model
 - [`docs/ORIGINAL-HARDWARE-64X64.md`](docs/ORIGINAL-HARDWARE-64X64.md) — direct observations from original hardware
 - [`docs/PROTOCOL-COMPARISON.md`](docs/PROTOCOL-COMPARISON.md) — comparison with independent implementations
-- [`docs/RELEASE-NOTES-0.6.0.md`](docs/RELEASE-NOTES-0.6.0.md) — 0.6.0-rc.1 release notes
-- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — 0.6.0-rc.1 validation checklist
-- [`docs/RELEASE-AUDIT-0.6.0.md`](docs/RELEASE-AUDIT-0.6.0.md) — 0.6.0-rc.1 package audit
+- [`docs/RELEASE-NOTES-0.6.0.md`](docs/RELEASE-NOTES-0.6.0.md) — 0.6.0 release notes
+- [`docs/RELEASE-VALIDATION.md`](docs/RELEASE-VALIDATION.md) — 0.6.0 validation checklist
+- [`docs/RELEASE-AUDIT-0.6.0.md`](docs/RELEASE-AUDIT-0.6.0.md) — 0.6.0 package audit
 
 ## Related project
 

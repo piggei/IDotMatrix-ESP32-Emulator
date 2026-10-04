@@ -24,3 +24,8 @@ def test_dependency_free_runner_has_no_pytest_import():
     assert 'from pytest' not in RUNNER
     assert 'test_*.py' in RUNNER
     assert 'os.chdir(repository_root)' in RUNNER
+
+
+def test_post_upload_signature_matches_embedded_public_identity():
+    assert 'EXPECTED_SIGNATURE="IDOTMATRIX_FW=${VERIFY_RELEASE}"' in UPDATER
+    assert 'EXPECTED_SIGNATURE="IDOTMATRIX_FW=${VERIFY_RELEASE}-B${VERIFY_BUILD}"' not in UPDATER

@@ -1,48 +1,63 @@
-# Release Audit - iDotMatrix ESP32 Emulator 0.6.0-rc.1
+# Release Audit - iDotMatrix ESP32 Emulator 0.6.0
 
-## Purpose
+## Scope
 
-This audit covers the first 0.6.0 release candidate. The RC packages the hardware-qualified runtime as a publication candidate and removes internal development chronology from user-facing documentation.
+This audit covers the updated final `0.6.0` source package. The qualified media/storage runtime is preserved, with one narrow display-ownership correction: starting a Device Assets bank replacement now establishes Carousel view intent so a successfully committed bank can replace an active Preset/Default on screen.
 
-## Public identity
+## Release identity
 
-- Release candidate: `0.6.0-rc.1`
-- Firmware signature: `IDOTMATRIX_FW=0.6.0-rc.1`
-- Default PlatformIO environment: `waveshare_s3_rgbmatrix_64x64`
+- Public release: `0.6.0`
+- Internal diagnostic build: `223`
+- Firmware signature: `IDOTMATRIX_FW=0.6.0`
 
-Internal numeric revision identifiers may still exist in source-level diagnostics and regression-test filenames for engineering traceability; they are not part of the public release documentation or compatibility contract.
+The internal build number is deliberately not part of the public firmware signature.
+
+## Code review findings
+
+- The final static review identified and corrected one display-ownership bug: a Carousel bank could commit successfully while active Preset/Default playback remained on screen because bank setup inherited a false view-intent state.
+- Protocol debug switches remain disabled by default.
+- Persistent Waveshare Carousel GIF/IMAGE/TEXT receive remains PSRAM-buffered; LittleFS publication occurs on `loopTask`, not in the NimBLE receive callback.
+- Static Device Assets type `0x02` retains RGB24/PNG handling on the loop-side playback path.
+- Device Assets bank setup now establishes Carousel view intent, and deferred setup preserves any later explicit Assets-view request; after commit/settle the new Carousel takes display ownership from an active Preset/Default.
+- Transactional Carousel and Preset publication/recovery logic remains intact.
+- The updater's post-upload ELF signature check was corrected to match the actual embedded signature (`IDOTMATRIX_FW=<release>`). The previous helper expected an obsolete `-B<build>` suffix even though the firmware did not embed one; the check was non-blocking but inconsistent.
 
 ## Hardware evidence
 
-The release candidate carries the following physically verified results:
+Physical Waveshare qualification already includes:
 
-- Waveshare logical 16x16/32x32/64x64 scaling on a physical 64x64 HUB75 panel: PASS.
-- Static image, GIF and TEXT operation: PASS.
-- Mixed PNG/GIF/TEXT Carousel lifecycle: PASS.
-- Repeated Carousel replacement with hardened NimBLE host stack: PASS.
-- Transactional recovery after interrupted Carousel replacement: PASS.
-- Maintenance OTA and interrupted-upload recovery: PASS.
-- BOOT short press software reboot: PASS.
-- Waveshare ES8311/I2S1 speaker initialization: PASS.
-- Synthesized BLE connection beep: PASS.
-- Synthesized Countdown completion notification: PASS.
-- Synthesized Program/Schedule notification: PASS.
-- Synthesized repeating Alarm notification: PASS.
-- 100% codec-volume default on the tested Waveshare speaker path: PASS.
-- Notification backend requires no stored WAV/PCM assets: PASS by design.
+- native 64x64 HUB75 bring-up;
+- logical 16x16, 32x32 and 64x64 scaling;
+- OTA maintenance and interrupted-upload recovery;
+- GIF staging/cache/prefetch;
+- crash-recoverable Carousel bank replacement;
+- Preset disconnect rollback/resume;
+- static PNG Device Assets and mixed PNG/GIF/TEXT playback;
+- three consecutive complete Carousel replacements with commit/playback after each and no `nimble_host` stack-canary, Guru Meditation or spontaneous reboot;
+- BOOT short reboot / long OTA behavior;
+- ES8311/I2S synthesized notification audio.
 
-## Documentation/package cleanup
+## Automated validation
 
-- Public documentation is organized around current behavior, hardware support, protocol evidence, configuration, validation and future work.
-- Internal development-build chronology has been removed from the release history and current release documents.
-- Historical per-release audit/note files that duplicated `HISTORY.md` have been removed from the RC package.
-- Temporary codec bring-up dumps are not part of normal release diagnostics.
-- Generated firmware, `.pio`, Python caches and local user hardware configuration are excluded from the source package.
+Final pre-package validation produced **153/153 host regression tests passing**, `bash -n update_idotmatrix_emulator.sh` PASS, **55 source Markdown local links / 0 broken**, and **105 Wiki links / 0 broken**.
 
-## Remaining exclusions
+The final package must pass:
 
-Password completion/enforcement, complete iOS/RCSP compatibility, automatic post-boot OTA rollback, the supplied GY-521 qualification, MatrixPortal plus external ICM-20689 qualification, and Waveshare PCF85063/QMI8658/SHTC3/MicroSD support remain outside the RC scope.
+```bash
+python3 tests/run_tests.py
+bash -n update_idotmatrix_emulator.sh
+```
 
-## RC decision
+Packaging hygiene requires no `.pio`, `.pytest_cache`, `__pycache__`, `.pyc`, generated firmware, map/ELF output or local `src/IDotMatrixUserConfig.h`.
 
-The source tree is suitable for RC validation. Publication as final `v0.6.0` should follow successful compilation of the intended targets and a final physical smoke test using the checklist in `RELEASE-VALIDATION.md`.
+## Tooling limitation of this audit environment
+
+PlatformIO is not available in the assistant execution environment, so the complete embedded compile matrix cannot be re-run here. The repository retains the exact commands in `docs/RELEASE-VALIDATION.md`; physical Waveshare evidence was supplied from the release workstation.
+
+## Remaining final gate
+
+The updated ownership fix is covered by host regression but has not been physically re-qualified in this audit environment. Before tagging/re-publishing `v0.6.0`, start from active Preset/Default playback, upload a Carousel, wait for `[CARBANK] state=commit` plus the settle boundary, and confirm that the first valid Carousel slot takes display ownership automatically.
+
+## Conclusion
+
+The source tree is coherent as the updated `0.6.0` package, subject to the release workstation's normal PlatformIO build gate and the explicit Preset/Default-to-Carousel physical switch test above. No intermediate development-build chronology is required in the public release package; the engineering lessons are documented by problem and solution instead.

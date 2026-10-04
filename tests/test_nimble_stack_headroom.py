@@ -12,11 +12,11 @@ def _env_block(name: str) -> str:
     return PIO[start:] if next_env < 0 else PIO[start:next_env]
 
 
-def test_b212_stack_hardening_and_b211_settle_are_preserved():
+def test_stack_hardening_and_settle_policy_are_preserved():
     assert '#define CAROUSEL_UPLOAD_SETTLE_MS 8000UL' in INO
 
 
-def test_b212_waveshare_nimble_host_stack_is_8k():
+def test_waveshare_nimble_host_stack_is_8k():
     for env in (
         "waveshare_s3_rgbmatrix_64x64",
         "waveshare_s3_rgbmatrix_16x16",
@@ -27,7 +27,7 @@ def test_b212_waveshare_nimble_host_stack_is_8k():
         assert "-DMYNEWT_VAL_NIMBLE_HOST_TASK_STACK_SIZE=8192" in block
 
 
-def test_b212_non_waveshare_profiles_do_not_inherit_stack_override():
+def test_non_waveshare_profiles_do_not_inherit_stack_override():
     for env in (
         "matrixportal_s3_hub75_64",
         "matrixportal_s3_hub75_64_icm20689",

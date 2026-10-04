@@ -10,7 +10,7 @@ def _between(start: str, end: str) -> str:
     return INO[a:b]
 
 
-def test_b203_stages_preset_media_under_candidate_names_until_activation():
+def test_stages_preset_media_under_candidate_names_until_activation():
     assert '".new.txt" : ".new.gif"' in INO
     assert '".old.txt" : ".old.gif"' in INO
     assert "PresetSlotMeta presetStaging[PRESET_SLOT_COUNT]" in INO
@@ -24,7 +24,7 @@ def test_b203_stages_preset_media_under_candidate_names_until_activation():
     assert "presetStaging[localSlot]=m" in candidate_branch
 
 
-def test_b203_first_preset_bulk_opens_transaction_without_erasing_authoritative_bank():
+def test_first_preset_bulk_opens_transaction_without_erasing_authoritative_bank():
     bulk = _between("bool processBulkPacket", "void processFA02Packet")
     preset = bulk[bulk.index("if((type==1 || type==3) && presetTraceSlot)"):]
     assert "if(!presetBankTxnActive) beginPresetBankTransaction(previousPresetActive ? 1U : 0U,previousPresetSlot);" in preset
@@ -34,7 +34,7 @@ def test_b203_first_preset_bulk_opens_transaction_without_erasing_authoritative_
     assert "presetStagedMask=0" in begin
 
 
-def test_b203_06_02_activation_is_deferred_off_nimble_host():
+def test_06_02_activation_is_deferred_off_nimble_host():
     handler = _between("bool handlePresetCommand", "// ======================================================\n// BULK")
     assert "queueDeferredPresetActivation(localOrder,count)" in handler
     assert "commitPresetBankActivation" not in handler
@@ -44,7 +44,7 @@ def test_b203_06_02_activation_is_deferred_off_nimble_host():
     assert "sendCommandAck(0x06,0x02)" in process
 
 
-def test_b203_activation_requires_every_declared_candidate_before_backup_or_publication():
+def test_activation_requires_every_declared_candidate_before_backup_or_publication():
     commit = _between("bool commitPresetBankActivation", "bool queueDeferredPresetActivation")
     validation = commit.index("fileMatchesMedia(presetStagedFileName(slot,m.dataType),m.mediaSize,m.mediaCRC)")
     backup = commit.index("LittleFS.rename(gif,gifBak)")
@@ -54,7 +54,7 @@ def test_b203_activation_requires_every_declared_candidate_before_backup_or_publ
     assert 'state=reject reason=incomplete' in commit
 
 
-def test_b203_publication_uses_rename_only_old_file_backups_and_rolls_back_before_metadata_switch():
+def test_publication_uses_rename_only_old_file_backups_and_rolls_back_before_metadata_switch():
     commit = _between("bool commitPresetBankActivation", "bool queueDeferredPresetActivation")
     assert "presetBackupFileName(slot,1)" in commit
     assert "presetBackupFileName(slot,3)" in commit
@@ -64,7 +64,7 @@ def test_b203_publication_uses_rename_only_old_file_backups_and_rolls_back_befor
     assert "LittleFS.rename(txtBak,txt)" in rollback
 
 
-def test_b203_abort_can_resume_the_previous_authoritative_preset():
+def test_abort_can_resume_the_previous_authoritative_preset():
     abort = _between("void abortPresetBankTransaction", "void clearPresetSlot")
     assert "presetBankPreviousActive" in INO
     assert "presetBankPreviousActiveSlot" in INO
@@ -73,7 +73,7 @@ def test_b203_abort_can_resume_the_previous_authoritative_preset():
     assert 'Serial.print(" resumed=")' in abort
 
 
-def test_b203_disconnect_and_partial_bulk_abort_only_request_loop_cleanup():
+def test_disconnect_and_partial_bulk_abort_only_request_loop_cleanup():
     disconnect = _between("void handleBleDisconnected()", "#if IDOTMATRIX_USE_NIMBLE")
     assert "requestPresetBankCleanup(1)" in disconnect
     assert "abortPresetBankTransaction" not in disconnect
@@ -84,7 +84,7 @@ def test_b203_disconnect_and_partial_bulk_abort_only_request_loop_cleanup():
     assert "abortPresetBankTransaction" in cleanup
 
 
-def test_b203_loop_orders_asset_stage_then_activation_then_cleanup():
+def test_loop_orders_asset_stage_then_activation_then_cleanup():
     loop = INO[INO.index("void loop(){"):]
     asset = loop.index("processDeferredAssetCommit();")
     activation = loop.index("processDeferredPresetActivation();")
@@ -93,7 +93,7 @@ def test_b203_loop_orders_asset_stage_then_activation_then_cleanup():
     assert asset < activation < cleanup < timeout
 
 
-def test_b203_preset_transaction_is_still_volatile_across_reboot_and_reset():
+def test_preset_transaction_is_still_volatile_across_reboot_and_reset():
     setup = INO[INO.index("void setup(){"):INO.index("void loop(){")]
     assert "clearPresetBank(true); // Preset/Default slots are intentionally volatile across reboot." in setup
     clear_slot = _between("void clearPresetSlot", "void clearPresetBank")
@@ -103,7 +103,7 @@ def test_b203_preset_transaction_is_still_volatile_across_reboot_and_reset():
     assert "presetBackupFileName(localSlot,3)" in clear_slot
 
 
-def test_b203_custom_helper_signatures_remain_arduino_autoprototype_safe():
+def test_custom_helper_signatures_remain_arduino_autoprototype_safe():
     assert "bool queueDeferredPresetActivation(const uint8_t *order, uint8_t count)" in INO
     assert "bool commitPresetBankActivation(const uint8_t *order, uint8_t count)" in INO
     assert "bool rollbackPresetBankPublication(const uint8_t *order, uint8_t count," in INO
