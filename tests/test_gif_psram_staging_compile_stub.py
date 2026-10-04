@@ -18,7 +18,7 @@ def _extract():
     return state_and_stage + "\n" + callbacks
 
 
-def _compile(stage_max: int):
+def _compile(stage_max: int, cache_max: int = 1048576, entry_max: int = 524288, entries: int = 12):
     compiler = shutil.which("g++") or shutil.which("c++")
     assert compiler, "host C++ compiler not available"
     code = _extract()
@@ -59,10 +59,12 @@ LittleFSClass LittleFS;
 bool littleFsReady=true;
 struct SerialClass {
   template<class T> void print(const T&) {}
+  template<class T, class U> void print(const T&, const U&) {}
   template<class T> void println(const T&) {}
 };
 SerialClass Serial;
 #define DEBUG_SERIAL 1
+#define HEX 16
 #define IDOTMATRIX_MEMORY_TELEMETRY 1
 #define MALLOC_CAP_SPIRAM 0x01u
 #define MALLOC_CAP_8BIT 0x02u
@@ -76,7 +78,7 @@ inline void yield(){}
 inline void idotMemoryTelemetrySnapshot(const char*){}
 inline void idotMemoryTelemetryLatency(const char*,uint32_t){}
 struct GIFFILE { void *fHandle=nullptr; int32_t iSize=0; int32_t iPos=0; };
-''' + f"\n#define IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES {stage_max}UL\n#define IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES 4194304UL\n" + code + "\nint main(){ return 0; }\n", encoding="utf-8")
+''' + f"\n#define IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES {stage_max}UL\n#define IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES 4194304UL\n#define IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES {cache_max}UL\n#define IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES {entry_max}UL\n#define IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES {entries}\n" + code + "\nint main(){ return 0; }\n", encoding="utf-8")
         subprocess.run([compiler,"-std=c++17","-Wall","-Wextra","-Werror","-fsyntax-only",str(td/"stub.cpp")], check=True)
 
 
@@ -86,3 +88,7 @@ def test_staging_and_callbacks_compile_with_psram_enabled():
 
 def test_staging_and_callbacks_compile_with_staging_disabled():
     _compile(0)
+
+
+def test_staging_cache_and_callbacks_compile_with_cache_disabled():
+    _compile(2097152, 0, 0, 0)

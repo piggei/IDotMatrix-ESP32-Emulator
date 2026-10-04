@@ -1,3 +1,32 @@
+## 0.6.0-dev.3 / Build 201
+
+One-item Carousel GIF look-ahead prefetch on top of the hardware-qualified B200 persistent compressed-source cache.
+
+- Enables prefetch only on the three Waveshare profiles; other targets retain B200 behavior.
+- Prefetches only the immediate next Carousel slot when it is a cache-eligible GIF.
+- Starts after a 250 ms grace period and copies at most 4 KiB per loop iteration, after active GIF/TEXT rendering.
+- Computes CRC32 during the incremental copy and transfers buffer ownership to the B200 cache only after exact size/CRC validation.
+- Preserves the 1 MiB cache budget, 512 KiB entry cap, 12-entry LRU policy, 2 MiB transient staging cap and 4 MiB PSRAM reserve.
+- Cancels partial work on Carousel stop/advance or target metadata change; normal B200 cold playback remains the fallback.
+- Adds `[GIFPREFETCH]`, `gif.prefetch.*` memory snapshots and `gif.prefetch.total_us` telemetry.
+
+Status: **development build; host regression/compile-stub qualified, requires Waveshare PlatformIO compile and physical prefetch-transition qualification.**
+
+## 0.6.0-dev.3 / Build 200
+
+Persistent compressed-GIF source cache build on top of the hardware-qualified B199 transient staging path.
+
+- Adds a Waveshare-only 1 MiB persistent PSRAM source cache with 512 KiB per-entry cap and at most 12 entries.
+- Keys entries by path + byte size + CRC32 and uses LRU eviction.
+- Protects the active decoder entry from eviction until `AnimatedGIF::close()` completes.
+- Adopts the B199 staged allocation directly into the cache with no second allocation/copy.
+- Warm Carousel/Preset hits bypass repeated LittleFS CRC rereads and serve the decoder directly from PSRAM.
+- Invalidates cached sources on live/event/Carousel/Preset file replacement or clear.
+- Retains B199 transient staging, 2 MiB stage cap, 4 MiB PSRAM reserve and transparent LittleFS fallback.
+- Adds `[GIFCACHE]` and `gif.cache.*` diagnostics. No prefetch is introduced yet.
+
+Status: **hardware-qualified.** Cold insert, warm hit, Preset/Carousel invalidation, cache re-population, 12-entry pressure and real LRU eviction/reuse were verified on the Waveshare target.
+
 ## 0.6.0-dev.3 / Build 199
 
 Waveshare transient whole-GIF PSRAM staging build on top of the hardware-qualified B198 BLE/filesystem hardening baseline.
@@ -10,7 +39,7 @@ Waveshare transient whole-GIF PSRAM staging build on top of the hardware-qualifi
 - Adds `[GIFSTAGE]`, `gif.stage.*` memory snapshots and `gif.stage.copy_us` latency telemetry. First-frame latency now includes the staging copy while decoder-open latency remains separately measured.
 - Retains B198 deferred Preset/Carousel filesystem publication and all qualified OTA/scaling behavior.
 
-Status: **development build; requires Waveshare PlatformIO compile and physical PSRAM staging/fallback qualification.**
+Status: **hardware-qualified for Carousel and live GIF PSRAM staging/release with repeated soak and no observed crash; deliberate >2 MiB fallback was not physically exercised in the captured trace.**
 
 ## 0.6.0-dev.3 / Build 198
 

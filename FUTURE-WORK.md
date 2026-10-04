@@ -1,13 +1,11 @@
 # Future Work
 
-Release `0.5.2 / Build 190` remains the stable baseline. Active development is `0.6.0-dev.3 / Build 199`. Build 191 exposed the first Waveshare reset-loop problem. Build 192 aligned framework and partition geometry with the qualified WLED target. Build 193 made the Waveshare NimBLE dependency reproducible. Build 194 qualified OTA/captive-portal operation, Build 195 qualified logical 16x16/32x32/64x64 scaling, and Build 196 established the first real memory/GIF baseline. B196 also exposed a `nimble_host` stack-canary during Preset filesystem finalization. B197 introduced loop-side deferred Preset/Carousel publication, B198 corrected its Arduino auto-prototype compile issue, and the resulting deferred Preset/Carousel path is now physically qualified. Build 199 resumes the planned media work with guarded transient whole-GIF PSRAM staging.
+Release `0.5.2 / Build 190` remains the stable baseline. Active development is `0.6.0-dev.3 / Build 201`. Build 191 exposed the first Waveshare reset-loop problem. Build 192 aligned framework and partition geometry with the qualified WLED target. Build 193 made the Waveshare NimBLE dependency reproducible. Build 194 qualified OTA/captive-portal operation, Build 195 qualified logical 16x16/32x32/64x64 scaling, and Build 196 established the first real memory/GIF baseline. B196 also exposed a `nimble_host` stack-canary during Preset filesystem finalization. B197/B198 moved final Preset/Carousel publication out of `nimble_host` and physically qualified that hardening. B199 then physically qualified transient whole-GIF PSRAM staging on Carousel and live GIF paths. Build 200 added and physically qualified the bounded persistent compressed-source cache including real LRU eviction. Build 201 adds one-item Carousel GIF look-ahead prefetch.
 
 ## 0.6.0 development sequence
 
-1. **Build 199** - physically qualify guarded whole-file GIF PSRAM staging and transparent LittleFS fallback using the B196/B198 measured envelope.
-2. **Build 200** - bounded persistent GIF source cache with media identity, LRU eviction and active-entry protection.
-3. **Build 201** - one-item Carousel look-ahead prefetch layered on the proven cache.
-4. **Build 202+** - broader Preset/Carousel transaction hardening, Carousel atomic-bank research and versioned persistence.
+1. **Build 201** - physically qualify one-item Carousel GIF look-ahead prefetch on the proven B200 cache.
+2. **Build 202+** - broader Preset/Carousel transaction hardening, Carousel atomic-bank research and versioned persistence.
 
 ## iOS compatibility research
 
@@ -39,7 +37,7 @@ Password support remains intentionally disabled because the complete transaction
 - Add further accelerometer backends only through the existing normalized X/Y/Z interface and common orientation engine.
 - Evaluate additional RTC backends only when real hardware is available; keep the hardware-qualified DS3231 path unchanged unless new evidence requires it.
 - Hardware-qualify additional logical/physical scaling combinations beyond native 64x64 and native 16x16.
-- Extend PSRAM placement beyond transient GIF source staging only when measured benefit and safe reserve policy justify it.
+- Extend PSRAM placement beyond the bounded GIF source cache only when measured benefit and safe reserve policy justify it.
 - Continue moving heavyweight work out of latency-sensitive BLE callbacks if profiling identifies a concrete problem.
 
 ## Documentation discipline

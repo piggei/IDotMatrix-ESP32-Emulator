@@ -5,7 +5,7 @@ INO = (ROOT / "src" / "IDotMatrix.ino").read_text(encoding="utf-8")
 PIO = (ROOT / "platformio.ini").read_text(encoding="utf-8")
 
 
-def test_waveshare_profiles_enable_guarded_transient_stage_only():
+def test_waveshare_profiles_keep_guarded_transient_stage():
     assert PIO.count("-DIDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES=2097152UL") == 3
     assert PIO.count("-DIDOTMATRIX_GIF_PSRAM_RESERVE_BYTES=4194304UL") == 3
     assert "#define IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES 0UL" in INO
@@ -22,19 +22,23 @@ def test_stage_uses_external_psram_with_cap_reserve_and_largest_block_guards():
     assert "heap_caps_free(gifStageData)" in INO
 
 
-def test_decoder_callbacks_share_psram_and_littlefs_paths():
+def test_decoder_callbacks_share_cache_stage_and_littlefs_paths():
+    assert "if(gifCacheActiveIndex>=0)" in INO
+    assert "h->source=2" in INO
     assert "if(gifStageData && gifStageSize && gifStagePath==fname)" in INO
+    assert "h->source=1" in INO
     assert "memcpy(pBuf,gifStageData+(size_t)pFile->iPos,(size_t)iLen)" in INO
     assert 'h->file=LittleFS.open(fname,"r")' in INO
     assert "h->file.seek((uint32_t)iPosition,SeekSet)" in INO
-    assert "prepareGifStage(path,gifSize);" in INO
+    assert "prepareGifStage(path,gifSize,expectedCRC);" in INO
 
 
-def test_stage_lifetime_extends_through_decoder_close():
+def test_source_lifetime_extends_through_decoder_close():
     close_pos = INO.index("gif->close();")
+    unpin_pos = INO.index("gifCacheActiveIndex=-1;", close_pos)
     release_pos = INO.index("releaseGifStage();", close_pos)
-    assert close_pos < release_pos
-    assert "failure leaves the B198 file-backed decoder path intact" in INO
+    assert close_pos < unpin_pos < release_pos
+    assert "Source memory must outlive AnimatedGIF::close()" in INO
 
 
 def test_staging_has_machine_readable_telemetry_and_total_first_frame_timing():
@@ -49,15 +53,14 @@ def test_staging_has_machine_readable_telemetry_and_total_first_frame_timing():
         assert token in INO
     start = INO.index("bool startGIFFile(")
     first_timer = INO.index("gifTelemetryStartedAtUs = micros();", start)
-    stage = INO.index("prepareGifStage(path,gifSize);", start)
+    stage = INO.index("prepareGifStage(path,gifSize,expectedCRC);", start)
     decoder_timer = INO.index("gifDecoderOpenStartedAtUs=micros();", start)
     assert first_timer < stage < decoder_timer
 
 
-def test_b199_is_transient_only_not_cache_or_prefetch():
+def test_b201_keeps_b199_staging_and_b200_cache_as_fallback_layers():
     assert "gifStageData" in INO
     assert "gifStagePeakBytes" in INO
-    # B199 intentionally has no multi-entry cache/LRU/prefetch implementation.
-    assert "GifCacheEntry" not in INO
-    assert "gifCacheEntries" not in INO
-    assert "prefetchGif" not in INO
+    assert "GifCacheEntry" in INO
+    assert "prepareGifStage(path,gifSize,expectedCRC);" in INO
+    assert "serviceCarouselGifPrefetch(now);" in INO

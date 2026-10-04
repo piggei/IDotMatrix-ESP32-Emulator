@@ -26,7 +26,7 @@
 #define FW_RELEASE "0.6.0-dev.3"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 6
-#define FW_BUILD 199
+#define FW_BUILD 201
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -45,14 +45,33 @@ static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_REL
 #define PRESET_SLOT_COUNT 6U
 #define PRESET_DWELL_MS 3000UL
 
-// Build 199: guarded whole-file GIF source staging. The three Waveshare
-// profiles enable this explicitly; all other targets default to disabled so
-// their memory/runtime behavior remains unchanged.
+// Build 201: retain the B199/B200 staging + persistent compressed-source LRU
+// cache and add one-item Carousel look-ahead prefetch. Prefetch is explicitly
+// enabled only on the Waveshare profiles; all other targets keep the B200
+// runtime policy unchanged.
 #ifndef IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES
   #define IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES 0UL
 #endif
 #ifndef IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES
   #define IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES 0UL
+#endif
+#ifndef IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES
+  #define IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES 0UL
+#endif
+#ifndef IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES
+  #define IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES 0UL
+#endif
+#ifndef IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES
+  #define IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES 0
+#endif
+#ifndef IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  #define IDOTMATRIX_CAROUSEL_GIF_PREFETCH 0
+#endif
+#ifndef IDOTMATRIX_CAROUSEL_GIF_PREFETCH_DELAY_MS
+  #define IDOTMATRIX_CAROUSEL_GIF_PREFETCH_DELAY_MS 250UL
+#endif
+#ifndef IDOTMATRIX_CAROUSEL_GIF_PREFETCH_CHUNK_BYTES
+  #define IDOTMATRIX_CAROUSEL_GIF_PREFETCH_CHUNK_BYTES 4096U
 #endif
 
 // Optional hardware backends are resolved by IDotMatrixHardwareConfig.h.
@@ -630,6 +649,7 @@ void clearPersistentDeviceState();
 void applyBootDisplayPolicy();
 int8_t nextCarouselSlot(int8_t current);
 bool startCarouselSlot(uint8_t slot);
+String carouselFileName(uint8_t slot, uint8_t dataType);
 extern bool carouselActive;
 extern bool presetActive;
 extern int8_t carouselActiveSlot;
@@ -1437,6 +1457,8 @@ bool gifFrameWasDrawn = false;
 bool pendingGifStart = false;
 int8_t pendingGifSlot = -1;
 uint32_t pendingGifSize = 0;
+uint32_t pendingGifCRC = 0;
+uint32_t gifPlayCRC = 0;
 uint32_t pendingGifStartAt = 0;
 uint32_t gifNextFrameAt = 0;
 CRGB *gifFrame = nullptr;
@@ -3314,9 +3336,10 @@ bool processEffectCommand(const uint8_t *data,size_t len){
 // ======================================================
 // GIF
 // ======================================================
-// B199: at most one complete compressed GIF source may be staged in PSRAM.
-// LittleFS remains authoritative and is used transparently whenever staging
-// is disabled or cannot satisfy the cap/reserve/largest-block policy.
+// B200: complete compressed GIF sources use a two-level PSRAM policy.
+// A bounded persistent LRU cache serves warm media directly from PSRAM. Cache
+// misses retain the B199 one-shot staging path, with transparent LittleFS
+// fallback whenever cap/reserve/allocation/copy policy cannot be satisfied.
 uint8_t *gifStageData = nullptr;
 size_t gifStageSize = 0;
 String gifStagePath;
@@ -3326,10 +3349,174 @@ uint32_t gifStageAttempts = 0;
 uint32_t gifStageOk = 0;
 uint32_t gifStageFallback = 0;
 
+#if IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES > 0
+  #define IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES
+#else
+  #define IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES 1
+#endif
+
+constexpr size_t GIF_CACHE_PATH_MAX = 48U;
+struct GifCacheEntry {
+  bool valid = false;
+  uint8_t *data = nullptr;
+  size_t size = 0;
+  uint32_t crc = 0;
+  uint32_t lastUse = 0;
+  char path[GIF_CACHE_PATH_MAX] = {0};
+};
+
+GifCacheEntry gifCache[IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES];
+size_t gifCacheBytes = 0;
+size_t gifCachePeakBytes = 0;
+uint32_t gifCacheClock = 0;
+uint32_t gifCacheHits = 0;
+uint32_t gifCacheMisses = 0;
+uint32_t gifCacheInserts = 0;
+uint32_t gifCacheEvictions = 0;
+uint32_t gifCacheInvalidations = 0;
+uint32_t gifCacheBypasses = 0;
+int8_t gifCacheActiveIndex = -1;
+
 struct GifSourceHandle {
-  bool staged = false;
+  uint8_t source = 0; // 0=LittleFS, 1=transient B199 stage, 2=persistent B200 cache
+  int8_t cacheIndex = -1;
   File file;
 };
+
+struct CarouselGifPrefetchState {
+  bool scheduled = false;
+  bool active = false;
+  uint8_t slot = 0;
+  uint32_t readyAt = 0;
+  uint8_t *data = nullptr;
+  size_t size = 0;
+  size_t copied = 0;
+  uint32_t expectedCRC = 0;
+  uint32_t runningCRC = 0xFFFFFFFFUL;
+  uint32_t startedAtUs = 0;
+  File file;
+  char path[GIF_CACHE_PATH_MAX] = {0};
+};
+
+CarouselGifPrefetchState carouselGifPrefetch;
+uint32_t carouselGifPrefetchAttempts = 0;
+uint32_t carouselGifPrefetchOk = 0;
+uint32_t carouselGifPrefetchSkips = 0;
+uint32_t carouselGifPrefetchFailures = 0;
+uint32_t carouselGifPrefetchCancels = 0;
+
+bool gifCacheConfigured(){
+#if IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES > 0 && IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES > 0 && IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES > 0
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool gifCachePathEquals(uint8_t index, const char *path){
+  if(index>=IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES || !path) return false;
+  const GifCacheEntry &e=gifCache[index];
+  return e.valid && strncmp(e.path,path,GIF_CACHE_PATH_MAX)==0;
+}
+
+void reportGifCache(const char *state, const char *reason, int index, const char *path, size_t size, uint32_t crc){
+#if DEBUG_SERIAL
+  Serial.print("[GIFCACHE] state="); Serial.print(state ? state : "unknown");
+  Serial.print(" reason="); Serial.print(reason ? reason : "none");
+  Serial.print(" index="); Serial.print(index);
+  Serial.print(" bytes="); Serial.print((uint32_t)size);
+  Serial.print(" crc="); Serial.print(crc,HEX);
+  Serial.print(" used="); Serial.print((uint32_t)gifCacheBytes);
+  Serial.print(" peak="); Serial.print((uint32_t)gifCachePeakBytes);
+  Serial.print(" hits="); Serial.print(gifCacheHits);
+  Serial.print(" misses="); Serial.print(gifCacheMisses);
+  Serial.print(" inserts="); Serial.print(gifCacheInserts);
+  Serial.print(" evict="); Serial.print(gifCacheEvictions);
+  Serial.print(" invalidate="); Serial.print(gifCacheInvalidations);
+  Serial.print(" bypass="); Serial.print(gifCacheBypasses);
+  Serial.print(" budget="); Serial.print((uint32_t)IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES);
+  Serial.print(" entryMax="); Serial.print((uint32_t)IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES);
+  Serial.print(" entries="); Serial.print((uint32_t)IDOTMATRIX_GIF_PSRAM_CACHE_MAX_ENTRIES);
+  Serial.print(" path="); Serial.println(path ? path : "-");
+#else
+  (void)state; (void)reason; (void)index; (void)path; (void)size; (void)crc;
+#endif
+}
+
+int8_t gifCacheFind(const char *path, size_t size, uint32_t crc, bool touch){
+  if(!gifCacheConfigured() || !path || !size || !crc) return -1;
+  for(uint8_t i=0;i<IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES;i++){
+    GifCacheEntry &e=gifCache[i];
+    if(!e.valid || !e.data || e.size!=size || e.crc!=crc || !gifCachePathEquals(i,path)) continue;
+    if(touch) e.lastUse=++gifCacheClock;
+    return (int8_t)i;
+  }
+  return -1;
+}
+
+bool gifCacheMatches(const char *path, uint32_t size, uint32_t crc){
+  return gifCacheFind(path,(size_t)size,crc,false)>=0;
+}
+
+bool gifCacheDropIndex(uint8_t index, const char *reason, bool countEviction){
+  if(index>=IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES) return false;
+  GifCacheEntry &e=gifCache[index];
+  if(!e.valid) return true;
+  if((int8_t)index==gifCacheActiveIndex) return false;
+  const size_t oldSize=e.size;
+  char oldPath[GIF_CACHE_PATH_MAX];
+  strncpy(oldPath,e.path,sizeof(oldPath)-1); oldPath[sizeof(oldPath)-1]='\0';
+  const uint32_t oldCRC=e.crc;
+  if(e.data) heap_caps_free(e.data);
+  if(gifCacheBytes>=oldSize) gifCacheBytes-=oldSize; else gifCacheBytes=0;
+  e=GifCacheEntry();
+  if(countEviction) gifCacheEvictions++; else gifCacheInvalidations++;
+  reportGifCache(countEviction ? "evict" : "invalidate",reason,(int)index,oldPath,oldSize,oldCRC);
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot(countEviction ? "gif.cache.evict" : "gif.cache.invalidate");
+#endif
+  return true;
+}
+
+void gifCacheInvalidatePath(const char *path){
+  if(!gifCacheConfigured() || !path) return;
+  for(uint8_t i=0;i<IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES;i++){
+    if(gifCachePathEquals(i,path)) gifCacheDropIndex(i,"path",false);
+  }
+}
+
+int8_t gifCacheLruVictim(){
+  int8_t victim=-1;
+  uint32_t oldest=0;
+  for(uint8_t i=0;i<IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES;i++){
+    const GifCacheEntry &e=gifCache[i];
+    if(!e.valid || (int8_t)i==gifCacheActiveIndex) continue;
+    if(victim<0 || e.lastUse<oldest){ victim=(int8_t)i; oldest=e.lastUse; }
+  }
+  return victim;
+}
+
+int8_t gifCacheFreeSlot(){
+  for(uint8_t i=0;i<IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES;i++) if(!gifCache[i].valid) return (int8_t)i;
+  return -1;
+}
+
+bool gifCacheMakeRoom(size_t incoming){
+  if(!gifCacheConfigured() || !incoming) return false;
+  const size_t budget=(size_t)IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES;
+  const size_t reserve=(size_t)IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES;
+  const uint32_t caps=MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+  while(true){
+    const size_t freePsram=heap_caps_get_free_size(caps);
+    const bool budgetOK=incoming<=budget && gifCacheBytes<=budget-incoming;
+    const bool reserveOK=freePsram>=reserve;
+    const bool slotOK=gifCacheFreeSlot()>=0;
+    if(budgetOK && reserveOK && slotOK) return true;
+    int8_t victim=gifCacheLruVictim();
+    if(victim<0) return false;
+    if(!gifCacheDropIndex((uint8_t)victim,"lru",true)) return false;
+  }
+}
 
 void reportGifStage(const char *state, const char *reason){
 #if DEBUG_SERIAL
@@ -3370,9 +3557,78 @@ bool failGifStage(const char *reason){
   return false;
 }
 
-bool prepareGifStage(const char *path, size_t expectedSize){
+bool gifCacheInsertOwnedBuffer(const char *path, size_t size, uint32_t crc, uint8_t *data, const char *reason, int8_t *slotOut){
+  if(slotOut) *slotOut=-1;
+  if(!gifCacheConfigured() || !data || !size || !path || !crc) return false;
+  if(size>(size_t)IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES){
+    gifCacheBypasses++; reportGifCache("bypass","entry_cap",-1,path,size,crc); return false;
+  }
+  if(size>(size_t)IDOTMATRIX_GIF_PSRAM_CACHE_MAX_BYTES){
+    gifCacheBypasses++; reportGifCache("bypass","budget",-1,path,size,crc); return false;
+  }
+  if(!gifCacheMakeRoom(size)){
+    gifCacheBypasses++; reportGifCache("bypass","room",-1,path,size,crc); return false;
+  }
+  int8_t slot=gifCacheFreeSlot();
+  if(slot<0){ gifCacheBypasses++; reportGifCache("bypass","slot",-1,path,size,crc); return false; }
+  GifCacheEntry &e=gifCache[(uint8_t)slot];
+  e.valid=true;
+  e.data=data;
+  e.size=size;
+  e.crc=crc;
+  e.lastUse=++gifCacheClock;
+  strncpy(e.path,path,GIF_CACHE_PATH_MAX-1); e.path[GIF_CACHE_PATH_MAX-1]='\0';
+  gifCacheBytes+=e.size;
+  if(gifCacheBytes>gifCachePeakBytes) gifCachePeakBytes=gifCacheBytes;
+  gifCacheInserts++;
+  if(slotOut) *slotOut=slot;
+  reportGifCache("insert",reason ? reason : "owned",slot,e.path,e.size,e.crc);
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("gif.cache.insert");
+#endif
+  return true;
+}
+
+bool gifCacheAdoptStage(const char *path, uint32_t crc){
+  if(!gifStageData || !gifStageSize || !path || !crc) return false;
+  int8_t slot=-1;
+  if(!gifCacheInsertOwnedBuffer(path,gifStageSize,crc,gifStageData,"cold",&slot)) return false;
+  gifCacheActiveIndex=slot;
+  gifStageData=nullptr;
+  gifStageSize=0;
+  gifStagePath="";
+  return true;
+}
+
+bool prepareGifStage(const char *path, size_t expectedSize, uint32_t expectedCRC){
   releaseGifStage();
+  gifCacheActiveIndex=-1;
   gifStageRequestedBytes=expectedSize;
+
+  if(gifCacheConfigured() && path && expectedSize && expectedCRC &&
+     expectedSize<=(size_t)IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES){
+#if IDOTMATRIX_MEMORY_TELEMETRY
+    const uint32_t cacheLookupStartedAtUs=micros();
+#endif
+    int8_t hit=gifCacheFind(path,expectedSize,expectedCRC,true);
+    if(hit>=0){
+      gifCacheHits++;
+      gifCacheActiveIndex=hit;
+      GifCacheEntry &e=gifCache[(uint8_t)hit];
+      reportGifCache("hit","identity",hit,e.path,e.size,e.crc);
+#if IDOTMATRIX_MEMORY_TELEMETRY
+      idotMemoryTelemetryLatency("gif.cache.hit_us",(uint32_t)(micros()-cacheLookupStartedAtUs));
+      idotMemoryTelemetrySnapshot("gif.cache.hit");
+#endif
+      return true;
+    }
+    gifCacheMisses++;
+    reportGifCache("miss","identity",-1,path,expectedSize,expectedCRC);
+  } else if(gifCacheConfigured()){
+    gifCacheBypasses++;
+    reportGifCache("bypass",expectedCRC ? "entry_cap" : "no_crc",-1,path,expectedSize,expectedCRC);
+  }
+
 #if IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES > 0
   gifStageAttempts++;
   if(!littleFsReady || !path || !expectedSize){
@@ -3434,10 +3690,224 @@ bool prepareGifStage(const char *path, size_t expectedSize){
   idotMemoryTelemetrySnapshot("gif.stage.psram");
 #endif
   reportGifStage("psram","ok");
+  gifCacheAdoptStage(path,expectedCRC);
   return true;
 #else
-  (void)path; (void)expectedSize;
+  (void)path; (void)expectedSize; (void)expectedCRC;
   return false;
+#endif
+}
+
+void reportCarouselGifPrefetch(const char *state, const char *reason){
+#if DEBUG_SERIAL
+  Serial.print("[GIFPREFETCH] state="); Serial.print(state ? state : "unknown");
+  Serial.print(" reason="); Serial.print(reason ? reason : "none");
+  Serial.print(" slot="); Serial.print((int)carouselGifPrefetch.slot);
+  Serial.print(" bytes="); Serial.print((uint32_t)carouselGifPrefetch.size);
+  Serial.print(" copied="); Serial.print((uint32_t)carouselGifPrefetch.copied);
+  Serial.print(" attempts="); Serial.print(carouselGifPrefetchAttempts);
+  Serial.print(" ok="); Serial.print(carouselGifPrefetchOk);
+  Serial.print(" skip="); Serial.print(carouselGifPrefetchSkips);
+  Serial.print(" fail="); Serial.print(carouselGifPrefetchFailures);
+  Serial.print(" cancel="); Serial.print(carouselGifPrefetchCancels);
+  Serial.print(" path="); Serial.println(carouselGifPrefetch.path[0] ? carouselGifPrefetch.path : "-");
+#else
+  (void)state; (void)reason;
+#endif
+}
+
+void resetCarouselGifPrefetch(bool freeBuffer){
+  if(carouselGifPrefetch.file) carouselGifPrefetch.file.close();
+  if(freeBuffer && carouselGifPrefetch.data) heap_caps_free(carouselGifPrefetch.data);
+  carouselGifPrefetch.scheduled=false;
+  carouselGifPrefetch.active=false;
+  carouselGifPrefetch.slot=0;
+  carouselGifPrefetch.readyAt=0;
+  carouselGifPrefetch.data=nullptr;
+  carouselGifPrefetch.size=0;
+  carouselGifPrefetch.copied=0;
+  carouselGifPrefetch.expectedCRC=0;
+  carouselGifPrefetch.runningCRC=0xFFFFFFFFUL;
+  carouselGifPrefetch.startedAtUs=0;
+  carouselGifPrefetch.path[0]='\0';
+}
+
+void cancelCarouselGifPrefetch(const char *reason){
+#if IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  if(!carouselGifPrefetch.scheduled && !carouselGifPrefetch.active) return;
+  carouselGifPrefetchCancels++;
+  reportCarouselGifPrefetch("cancel",reason ? reason : "cancel");
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("gif.prefetch.cancel");
+#endif
+  resetCarouselGifPrefetch(true);
+#else
+  (void)reason;
+#endif
+}
+
+void skipCarouselGifPrefetch(const char *reason){
+#if IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  carouselGifPrefetchSkips++;
+  reportCarouselGifPrefetch("skip",reason ? reason : "skip");
+  resetCarouselGifPrefetch(true);
+#else
+  (void)reason;
+#endif
+}
+
+void failCarouselGifPrefetch(const char *reason){
+#if IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  carouselGifPrefetchFailures++;
+  reportCarouselGifPrefetch("fail",reason ? reason : "fail");
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("gif.prefetch.fail");
+#endif
+  resetCarouselGifPrefetch(true);
+#else
+  (void)reason;
+#endif
+}
+
+void scheduleCarouselGifPrefetch(uint8_t currentSlot){
+#if IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  cancelCarouselGifPrefetch("reschedule");
+  if(!gifCacheConfigured() || !littleFsReady || currentSlot>=CAROUSEL_SLOT_COUNT) return;
+  int8_t next=nextCarouselSlot((int8_t)currentSlot);
+  if(next<0 || next>=CAROUSEL_SLOT_COUNT) return;
+  const CarouselSlotMeta &m=carouselSlots[(uint8_t)next];
+  if(!m.configured || m.dataType!=1 || !m.mediaSize || !m.mediaCRC){
+    carouselGifPrefetch.slot=(uint8_t)next;
+    skipCarouselGifPrefetch(m.dataType==3 ? "next_text" : "metadata");
+    return;
+  }
+  String path=carouselFileName((uint8_t)next,1);
+  carouselGifPrefetch.slot=(uint8_t)next;
+  carouselGifPrefetch.size=m.mediaSize;
+  carouselGifPrefetch.expectedCRC=m.mediaCRC;
+  strncpy(carouselGifPrefetch.path,path.c_str(),GIF_CACHE_PATH_MAX-1);
+  carouselGifPrefetch.path[GIF_CACHE_PATH_MAX-1]='\0';
+  if(m.mediaSize>(uint32_t)IDOTMATRIX_GIF_PSRAM_CACHE_ENTRY_MAX_BYTES){
+    skipCarouselGifPrefetch("entry_cap");
+    return;
+  }
+  if(gifCacheMatches(carouselGifPrefetch.path,m.mediaSize,m.mediaCRC)){
+    skipCarouselGifPrefetch("cached");
+    return;
+  }
+  carouselGifPrefetch.scheduled=true;
+  carouselGifPrefetch.readyAt=millis()+(uint32_t)IDOTMATRIX_CAROUSEL_GIF_PREFETCH_DELAY_MS;
+  reportCarouselGifPrefetch("scheduled","next");
+#else
+  (void)currentSlot;
+#endif
+}
+
+bool beginCarouselGifPrefetch(){
+#if IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  if(!carouselGifPrefetch.scheduled || carouselGifPrefetch.active) return false;
+  if(!carouselActive || carouselActiveSlot<0){ cancelCarouselGifPrefetch("inactive"); return false; }
+  if(gifCarouselPlaybackFileActive && gifCacheActiveIndex<0 && !gifStageData){
+    skipCarouselGifPrefetch("current_fs");
+    return false;
+  }
+  if(carouselGifPrefetch.slot>=CAROUSEL_SLOT_COUNT){ failCarouselGifPrefetch("slot"); return false; }
+  const CarouselSlotMeta &m=carouselSlots[carouselGifPrefetch.slot];
+  if(!m.configured || m.dataType!=1 || m.mediaSize!=carouselGifPrefetch.size || m.mediaCRC!=carouselGifPrefetch.expectedCRC){
+    failCarouselGifPrefetch("stale"); return false;
+  }
+  if(gifCacheMatches(carouselGifPrefetch.path,(uint32_t)carouselGifPrefetch.size,carouselGifPrefetch.expectedCRC)){
+    skipCarouselGifPrefetch("cached"); return false;
+  }
+  if(!LittleFS.exists(carouselGifPrefetch.path)){ failCarouselGifPrefetch("missing"); return false; }
+  const uint32_t caps=MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+  const size_t freePsram=heap_caps_get_free_size(caps);
+  const size_t largestPsram=heap_caps_get_largest_free_block(caps);
+  const size_t reserve=(size_t)IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES;
+  if(carouselGifPrefetch.size>largestPsram){ skipCarouselGifPrefetch("largest"); return false; }
+  if(carouselGifPrefetch.size>freePsram || freePsram-carouselGifPrefetch.size<reserve){ skipCarouselGifPrefetch("reserve"); return false; }
+  carouselGifPrefetch.file=LittleFS.open(carouselGifPrefetch.path,"r");
+  if(!carouselGifPrefetch.file || (size_t)carouselGifPrefetch.file.size()!=carouselGifPrefetch.size){
+    if(carouselGifPrefetch.file) carouselGifPrefetch.file.close();
+    failCarouselGifPrefetch("source"); return false;
+  }
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("gif.prefetch.before");
+#endif
+  uint8_t *buf=(uint8_t *)heap_caps_malloc(carouselGifPrefetch.size,caps);
+  if(!buf){ carouselGifPrefetch.file.close(); skipCarouselGifPrefetch("alloc"); return false; }
+  carouselGifPrefetch.data=buf;
+  carouselGifPrefetch.copied=0;
+  carouselGifPrefetch.runningCRC=0xFFFFFFFFUL;
+  carouselGifPrefetch.startedAtUs=micros();
+  carouselGifPrefetch.active=true;
+  carouselGifPrefetchAttempts++;
+  reportCarouselGifPrefetch("begin","copy");
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("gif.prefetch.begin");
+#endif
+  return true;
+#else
+  return false;
+#endif
+}
+
+void finishCarouselGifPrefetch(){
+#if IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  if(!carouselGifPrefetch.active) return;
+  if(carouselGifPrefetch.file) carouselGifPrefetch.file.close();
+  const uint32_t calc=carouselGifPrefetch.runningCRC^0xFFFFFFFFUL;
+  if(carouselGifPrefetch.copied!=carouselGifPrefetch.size || calc!=carouselGifPrefetch.expectedCRC){
+    failCarouselGifPrefetch(calc!=carouselGifPrefetch.expectedCRC ? "crc" : "short"); return;
+  }
+  const CarouselSlotMeta &m=carouselSlots[carouselGifPrefetch.slot];
+  if(!m.configured || m.dataType!=1 || m.mediaSize!=carouselGifPrefetch.size || m.mediaCRC!=carouselGifPrefetch.expectedCRC){
+    failCarouselGifPrefetch("stale"); return;
+  }
+  if(gifCacheMatches(carouselGifPrefetch.path,(uint32_t)carouselGifPrefetch.size,carouselGifPrefetch.expectedCRC)){
+    skipCarouselGifPrefetch("cached"); return;
+  }
+  int8_t inserted=-1;
+  if(!gifCacheInsertOwnedBuffer(carouselGifPrefetch.path,carouselGifPrefetch.size,carouselGifPrefetch.expectedCRC,
+                                carouselGifPrefetch.data,"prefetch",&inserted)){
+    failCarouselGifPrefetch("cache"); return;
+  }
+  carouselGifPrefetch.data=nullptr; // ownership transferred to cache
+  carouselGifPrefetchOk++;
+  reportCarouselGifPrefetch("cached","ok");
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetryLatency("gif.prefetch.total_us",(uint32_t)(micros()-carouselGifPrefetch.startedAtUs));
+  idotMemoryTelemetrySnapshot("gif.prefetch.cached");
+#endif
+  resetCarouselGifPrefetch(false);
+#else
+#endif
+}
+
+void serviceCarouselGifPrefetch(uint32_t now){
+#if IDOTMATRIX_CAROUSEL_GIF_PREFETCH
+  if(!carouselGifPrefetch.scheduled && !carouselGifPrefetch.active) return;
+  if(!carouselActive || carouselActiveSlot<0){ cancelCarouselGifPrefetch("inactive"); return; }
+  if(!carouselGifPrefetch.active){
+    if((int32_t)(now-carouselGifPrefetch.readyAt)<0) return;
+    if(!beginCarouselGifPrefetch()) return;
+  }
+  if(!carouselGifPrefetch.active || !carouselGifPrefetch.file || !carouselGifPrefetch.data) return;
+  if(carouselGifPrefetch.slot>=CAROUSEL_SLOT_COUNT){ failCarouselGifPrefetch("slot"); return; }
+  const CarouselSlotMeta &m=carouselSlots[carouselGifPrefetch.slot];
+  if(!m.configured || m.dataType!=1 || m.mediaSize!=carouselGifPrefetch.size || m.mediaCRC!=carouselGifPrefetch.expectedCRC){
+    cancelCarouselGifPrefetch("stale"); return;
+  }
+  const size_t remaining=carouselGifPrefetch.size-carouselGifPrefetch.copied;
+  const size_t want=min((size_t)IDOTMATRIX_CAROUSEL_GIF_PREFETCH_CHUNK_BYTES,remaining);
+  int n=carouselGifPrefetch.file.read(carouselGifPrefetch.data+carouselGifPrefetch.copied,want);
+  if(n<=0){ failCarouselGifPrefetch("read"); return; }
+  carouselGifPrefetch.runningCRC=crc32Update(carouselGifPrefetch.runningCRC,
+                                             carouselGifPrefetch.data+carouselGifPrefetch.copied,(size_t)n);
+  carouselGifPrefetch.copied+=(size_t)n;
+  if(carouselGifPrefetch.copied>=carouselGifPrefetch.size) finishCarouselGifPrefetch();
+#else
+  (void)now;
 #endif
 }
 
@@ -3454,8 +3924,9 @@ void destroyGIFDecoder(){
     delete gif;
     gif=nullptr;
   }
-  // The staged source must outlive AnimatedGIF::close(), because close may
-  // still invoke the source callback. Free it only after decoder teardown.
+  // Source memory must outlive AnimatedGIF::close(). A transient stage can be
+  // freed now; a cache entry is merely unpinned and remains available to LRU.
+  gifCacheActiveIndex=-1;
   releaseGifStage();
 }
 void stopGIFPlayback(){
@@ -3464,30 +3935,43 @@ void stopGIFPlayback(){
   gifEventPlaybackFileActive=false;
   gifCarouselPlaybackFileActive=false;
   gifPresetPlaybackFileActive=false;
-  if(removeEventFile && littleFsReady) LittleFS.remove(EVENT_GIF_PLAY_FILE);
+  if(removeEventFile && littleFsReady){
+    gifCacheInvalidatePath(EVENT_GIF_PLAY_FILE);
+    LittleFS.remove(EVENT_GIF_PLAY_FILE);
+  }
 }
 void freeGIF(){
   pendingGifStart=false;
   pendingGifSlot=-1;
   pendingGifSize=0;
+  pendingGifCRC=0;
   pendingGifStartAt=0;
   gifDecoderTeardownPending=false;
   gifDecoderOpenPending=false;
   gifDecoderOpenAt=0;
   stopGIFPlayback();
   gifSize=0;
+  gifPlayCRC=0;
   gifStoredOnFS=false;
 }
 
-// AnimatedGIF source callbacks. B199 serves the active complete compressed
-// source from PSRAM when staging succeeded, otherwise from the same LittleFS
-// file path used by B198. The decoder itself sees one callback API either way.
+// AnimatedGIF source callbacks. B200 selects a pinned persistent cache entry,
+// a transient B199 stage, or the original LittleFS file behind one callback API.
 void *GIFOpenFile(const char *fname, int32_t *pSize){
   if(!pSize || !fname) return nullptr;
   GifSourceHandle *h=new GifSourceHandle();
   if(!h) return nullptr;
+  if(gifCacheActiveIndex>=0){
+    GifCacheEntry &e=gifCache[(uint8_t)gifCacheActiveIndex];
+    if(e.valid && e.data && gifCachePathEquals((uint8_t)gifCacheActiveIndex,fname)){
+      h->source=2;
+      h->cacheIndex=gifCacheActiveIndex;
+      *pSize=(int32_t)e.size;
+      return (void *)h;
+    }
+  }
   if(gifStageData && gifStageSize && gifStagePath==fname){
-    h->staged=true;
+    h->source=1;
     *pSize=(int32_t)gifStageSize;
     return (void *)h;
   }
@@ -3500,7 +3984,7 @@ void *GIFOpenFile(const char *fname, int32_t *pSize){
 void GIFCloseFile(void *pHandle){
   GifSourceHandle *h=(GifSourceHandle *)pHandle;
   if(!h) return;
-  if(!h->staged && h->file) h->file.close();
+  if(h->source==0 && h->file) h->file.close();
   delete h;
 }
 int32_t GIFReadFile(GIFFILE *pFile,uint8_t *pBuf,int32_t iLen){
@@ -3510,7 +3994,15 @@ int32_t GIFReadFile(GIFFILE *pFile,uint8_t *pBuf,int32_t iLen){
   int32_t remain=pFile->iSize-pFile->iPos;
   if(remain<=0) return 0;
   if(iLen>remain) iLen=remain;
-  if(h->staged){
+  if(h->source==2){
+    if(h->cacheIndex<0 || h->cacheIndex>=IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES) return 0;
+    GifCacheEntry &e=gifCache[(uint8_t)h->cacheIndex];
+    if(!e.valid || !e.data || pFile->iPos<0 || (size_t)pFile->iPos+(size_t)iLen>e.size) return 0;
+    memcpy(pBuf,e.data+(size_t)pFile->iPos,(size_t)iLen);
+    pFile->iPos+=iLen;
+    return iLen;
+  }
+  if(h->source==1){
     if(!gifStageData || pFile->iPos<0 || (size_t)pFile->iPos+(size_t)iLen>gifStageSize) return 0;
     memcpy(pBuf,gifStageData+(size_t)pFile->iPos,(size_t)iLen);
     pFile->iPos+=iLen;
@@ -3527,7 +4019,14 @@ int32_t GIFSeekFile(GIFFILE *pFile,int32_t iPosition){
   if(!h) return -1;
   if(iPosition<0) iPosition=0;
   if(iPosition>pFile->iSize) iPosition=pFile->iSize;
-  if(h->staged){
+  if(h->source==2){
+    if(h->cacheIndex<0 || h->cacheIndex>=IDOTMATRIX_GIF_CACHE_STORAGE_ENTRIES) return -1;
+    GifCacheEntry &e=gifCache[(uint8_t)h->cacheIndex];
+    if(!e.valid || !e.data || (size_t)iPosition>e.size) return -1;
+    pFile->iPos=iPosition;
+    return pFile->iPos;
+  }
+  if(h->source==1){
     if(!gifStageData || (size_t)iPosition>gifStageSize) return -1;
     pFile->iPos=iPosition;
     return pFile->iPos;
@@ -3555,7 +4054,7 @@ void GIFDraw(GIFDRAW *pDraw){
   }
 }
 
-bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
+bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback, uint32_t expectedCRC){
   if(!littleFsReady || !path || !gifSize || !LittleFS.exists(path)) return false;
   if(gif) destroyGIFDecoder();
   else releaseGifStage();
@@ -3568,8 +4067,8 @@ bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
   // separately comparable with the B196/B198 file-backed baseline.
   gifTelemetryStartedAtUs = micros();
 #endif
-  // Best-effort only: failure leaves the B198 file-backed decoder path intact.
-  prepareGifStage(path,gifSize);
+  // Best-effort only: failure leaves the B199/B198 file-backed fallback path intact.
+  prepareGifStage(path,gifSize,expectedCRC);
   fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
   Serial.println("GIF NEW alloc");
@@ -3628,7 +4127,7 @@ bool startGIF(){
   carouselUploadOpen=false;
   carouselUploadBlackout=false;
   endCarouselTransferIndicator();
-  return startGIFFile(GIF_PLAY_FILE,false,false);
+  return startGIFFile(GIF_PLAY_FILE,false,false,gifPlayCRC);
 }
 
 bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uint32_t expectedCRC){
@@ -3648,6 +4147,7 @@ bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uin
   // renamed as part of a transactional update. Copy it to a disposable PLAY
   // file so AnimatedGIF owns a stable file for the whole playback lifetime.
   stopGIFPlayback();
+  gifCacheInvalidatePath(EVENT_GIF_PLAY_FILE);
   LittleFS.remove(EVENT_GIF_PLAY_FILE);
   size_t fsTotal=LittleFS.totalBytes();
   size_t fsUsed=LittleFS.usedBytes();
@@ -3693,7 +4193,7 @@ bool startStoredGIFPlayback(const String &sourcePath, uint32_t expectedSize, uin
   Serial.print("EVENT GIF PLAY copy bytes="); Serial.print(expectedSize);
   Serial.print(" source="); Serial.println(sourcePath);
 #endif
-  if(!startGIFFile(EVENT_GIF_PLAY_FILE,true,false)){
+  if(!startGIFFile(EVENT_GIF_PLAY_FILE,true,false,expectedCRC)){
     gifStoredOnFS=false;
     gifSize=0;
     LittleFS.remove(EVENT_GIF_PLAY_FILE);
@@ -3745,6 +4245,8 @@ void removeCarouselSlotMeta(uint8_t slot) {
 
 void clearCarouselSlot(uint8_t slot) {
   if(slot>=CAROUSEL_SLOT_COUNT) return;
+  String gifPath=carouselFileName(slot,1);
+  gifCacheInvalidatePath(gifPath.c_str());
   if(littleFsReady){
     LittleFS.remove(carouselTempFileName(slot));
     LittleFS.remove(carouselBackupFileName(slot));
@@ -3848,6 +4350,7 @@ void loadCarousel() {
 }
 
 void stopCarouselPlayback() {
+  cancelCarouselGifPrefetch("stop");
   carouselStartPending=false;
   carouselActive=false;
   carouselActiveSlot=-1;
@@ -3879,6 +4382,10 @@ int8_t nextCarouselSlot(int8_t current) {
 }
 
 bool startCarouselSlot(uint8_t slot) {
+  // Any unfinished look-ahead belongs to the previous active slot. Drop it
+  // before validating/opening the new source so it cannot consume reserve or
+  // race a slot replacement.
+  cancelCarouselGifPrefetch("advance");
 #if IDOTMATRIX_MEMORY_TELEMETRY
   idotMemoryTelemetrySnapshot("carousel.before_start");
   const uint32_t carouselTelemetryStartedAtUs = micros();
@@ -3890,13 +4397,16 @@ bool startCarouselSlot(uint8_t slot) {
   CarouselSlotMeta &m=carouselSlots[slot];
   if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) return false;
   String path=carouselFileName(slot,m.dataType);
-  if(!LittleFS.exists(path) || !fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return false;
+  if(!LittleFS.exists(path)) return false;
+  if(m.dataType==1){
+    if(!gifCacheMatches(path.c_str(),m.mediaSize,m.mediaCRC) && !fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return false;
+  } else if(!fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return false;
 
   bool started=false;
   stopGIFPlayback();
   if(m.dataType==1){
     gifSize=m.mediaSize;
-    started=startGIFFile(path.c_str(),false,true);
+    started=startGIFFile(path.c_str(),false,true,m.mediaCRC);
     if(!started){ gifSize=0; gifStoredOnFS=false; }
   } else if(m.dataType==3){
     if(m.mediaSize<=MAX_TEXT_PAYLOAD){
@@ -3913,6 +4423,7 @@ bool startCarouselSlot(uint8_t slot) {
   carouselActive=true;
   carouselActiveSlot=(int8_t)slot;
   carouselSlotStartedAt=millis();
+  scheduleCarouselGifPrefetch(slot);
 #if IDOTMATRIX_MEMORY_TELEMETRY
   idotMemoryTelemetryLatency(m.dataType==3 ? "carousel.text.start_us" : "carousel.gif.start_us",
                              (uint32_t)(micros() - carouselTelemetryStartedAtUs));
@@ -3969,6 +4480,8 @@ bool commitCarouselSlot(uint8_t slot, uint8_t dataType, uint16_t dwellSeconds, u
 
   CarouselSlotMeta oldMeta=carouselSlots[slot];
   String oldDst=(oldMeta.configured && (oldMeta.dataType==1 || oldMeta.dataType==3)) ? carouselFileName(slot,oldMeta.dataType) : String();
+  if(oldDst.length()) gifCacheInvalidatePath(oldDst.c_str());
+  gifCacheInvalidatePath(dst.c_str());
   bool hadOld=oldDst.length() && LittleFS.exists(oldDst);
   LittleFS.remove(bak);
   if(hadOld && !LittleFS.rename(oldDst,bak)) return false;
@@ -4028,7 +4541,7 @@ bool handleCarouselCommand(const uint8_t *data, size_t len) {
     // otherwise start in the middle of the Device Assets replacement.
     if(pendingGifStart){
       if(littleFsReady && pendingGifSlot>=0 && pendingGifSlot<=1) LittleFS.remove(GIF_RX_FILES[(uint8_t)pendingGifSlot]);
-      pendingGifStart=false; pendingGifSlot=-1; pendingGifSize=0; pendingGifStartAt=0;
+      pendingGifStart=false; pendingGifSlot=-1; pendingGifSize=0; pendingGifCRC=0; pendingGifStartAt=0;
     }
     carouselEnterRequested=hadAssetView;
     carouselStartPending=false;
@@ -4087,6 +4600,8 @@ String presetTempFileName(uint8_t localSlot) { return String("/pre") + localSlot
 
 void clearPresetSlot(uint8_t localSlot) {
   if(localSlot>=PRESET_SLOT_COUNT) return;
+  String gifPath=presetFileName(localSlot,1);
+  gifCacheInvalidatePath(gifPath.c_str());
   if(littleFsReady){
     LittleFS.remove(presetTempFileName(localSlot));
     LittleFS.remove(presetFileName(localSlot,1));
@@ -4127,6 +4642,8 @@ bool commitPresetSlot(uint8_t localSlot, uint8_t dataType, uint16_t timeSign, ui
   if(presetActive && presetActiveSlot==(int8_t)localSlot) stopPresetPlayback();
 
   String dst=presetFileName(localSlot,dataType);
+  gifCacheInvalidatePath(dst.c_str());
+  if(dataType!=1){ String oldGif=presetFileName(localSlot,1); gifCacheInvalidatePath(oldGif.c_str()); }
   LittleFS.remove(dst);
   if(!LittleFS.rename(tmp,dst)) return false;
   LittleFS.remove(presetFileName(localSlot,dataType==1 ? 3 : 1));
@@ -4157,7 +4674,9 @@ int8_t nextPresetSlot(int8_t currentLocal) {
     const PresetSlotMeta &m=presetSlots[local];
     if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) continue;
     String path=presetFileName(local,m.dataType);
-    if(fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return (int8_t)local;
+    if(m.dataType==1){
+      if(LittleFS.exists(path) && (gifCacheMatches(path.c_str(),m.mediaSize,m.mediaCRC) || fileMatchesMedia(path,m.mediaSize,m.mediaCRC))) return (int8_t)local;
+    } else if(fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return (int8_t)local;
   }
   return -1;
 }
@@ -4196,7 +4715,9 @@ bool startPresetSlot(uint8_t localSlot) {
   PresetSlotMeta &m=presetSlots[localSlot];
   if(!m.configured || !m.mediaSize || (m.dataType!=1 && m.dataType!=3)) return false;
   String path=presetFileName(localSlot,m.dataType);
-  if(!fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return false;
+  if(m.dataType==1){
+    if(!LittleFS.exists(path) || (!gifCacheMatches(path.c_str(),m.mediaSize,m.mediaCRC) && !fileMatchesMedia(path,m.mediaSize,m.mediaCRC))) return false;
+  } else if(!fileMatchesMedia(path,m.mediaSize,m.mediaCRC)) return false;
 
   if(carouselActive || gifCarouselPlaybackFileActive || carouselStartPending) stopCarouselPlayback();
   stopGIFPlayback();
@@ -4205,7 +4726,7 @@ bool startPresetSlot(uint8_t localSlot) {
   bool started=false;
   if(m.dataType==1){
     gifSize=m.mediaSize;
-    started=startGIFFile(path.c_str(),false,false);
+    started=startGIFFile(path.c_str(),false,false,m.mediaCRC);
     if(started) gifPresetPlaybackFileActive=true;
     else { gifSize=0; gifStoredOnFS=false; }
   } else {
@@ -4768,6 +5289,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
           // current decoder and no PLAY-file mutation are allowed from Core 0.
           pendingGifSlot=bulk.gifRxSlot;
           pendingGifSize=bulk.expectedSize;
+          pendingGifCRC=bulk.expectedCRC;
           pendingGifStartAt=millis();
           pendingGifStart=true;
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
@@ -7463,9 +7985,11 @@ void loop(){
   if(pendingGifStart && (long)(now-pendingGifStartAt)>=0 && !gifDecoderTeardownPending && !gifDecoderOpenPending){
     int8_t slot=pendingGifSlot;
     uint32_t newSize=pendingGifSize;
+    uint32_t newCRC=pendingGifCRC;
     pendingGifStart=false;
     pendingGifSlot=-1;
     pendingGifSize=0;
+    pendingGifCRC=0;
     if(slot>=0 && slot<=1){
       const char *rxPath=GIF_RX_FILES[(uint8_t)slot];
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
@@ -7477,9 +8001,11 @@ void loop(){
                             !gifEventPlaybackFileActive && !gifCarouselPlaybackFileActive &&
                             LittleFS.exists(GIF_PLAY_FILE));
       uint32_t previousPlaySize=restartPrevious ? storedFileSize(GIF_PLAY_FILE) : 0;
+      uint32_t previousPlayCRC=restartPrevious ? gifPlayCRC : 0;
       carouselActive=false; carouselActiveSlot=-1; carouselEnterRequested=false; carouselUploadOpen=false; carouselUploadBlackout=false; carouselStartPending=false;
       stopGIFPlayback();
-      gifStoredOnFS=false; gifSize=0;
+      gifCacheInvalidatePath(GIF_PLAY_FILE);
+      gifStoredOnFS=false; gifSize=0; gifPlayCRC=0;
 
       bool promoted=promoteGifRxToPlay((uint8_t)slot);
       if(!promoted){
@@ -7489,12 +8015,14 @@ void loop(){
         if(restartPrevious && previousPlaySize && littleFsReady && LittleFS.exists(GIF_PLAY_FILE)){
           gifStoredOnFS=true;
           gifSize=previousPlaySize;
+          gifPlayCRC=previousPlayCRC;
           gifDecoderOpenPending=true;
           gifDecoderOpenAt=millis()+1;
         }
       } else {
         gifStoredOnFS=true;
         gifSize=newSize;
+        gifPlayCRC=newCRC;
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
         Serial.println("GIF RX -> PLAY rename OK");
         Serial.println("GIF OPEN deferred to next loop");
@@ -7538,6 +8066,10 @@ void loop(){
   updatePreset(now);
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_GIF) updateGIF();
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_TEXT) updateTextAnimation();
+  // B201: copy at most one prefetch chunk after the active media has had its
+  // loop-time rendering opportunity. The cached source remains authoritative
+  // only after complete size/CRC verification.
+  if(!carouselTransferIndicatorActive) serviceCarouselGifPrefetch(now);
 
   if(!carouselTransferIndicatorActive && displayMode==DISPLAY_CLOCK){ static uint32_t last=0; if(now-last>=100){last=now;renderClock();} }
 

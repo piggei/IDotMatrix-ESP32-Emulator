@@ -66,4 +66,16 @@ Example success:
 
 ## Exit gate
 
-B199 passes when staging succeeds on eligible GIFs without playback regressions or memory drift, forced fallback remains functional, and no BLE/filesystem crash returns. Only then should Build 200 introduce persistent source caching.
+The B199 hardware gate was closed for the eligible PSRAM staging path after Carousel/live playback and repeated soak showed correct staging/release with no crash or memory drift. The deliberate >2 MiB fallback was not field-exercised in the captured run; its guards remained host-tested. Build 200 therefore proceeds with persistent source caching while preserving the same fallback implementation.
+
+## Physical qualification result
+
+B199 was exercised on the real Waveshare 64x64 target before B200 work began.
+
+- Repeated Carousel GIF staging/release completed correctly with PSRAM returning after each source switch.
+- A live GIF from the official app also staged and played correctly.
+- The captured soak reached at least 93 successful staging attempts with zero observed fallback.
+- The largest captured compressed GIF was about 176 KiB.
+- No Guru Meditation or `nimble_host` stack-canary regression was observed.
+
+The deliberate >2 MiB LittleFS fallback was not physically exercised in this capture. Therefore the PSRAM staging path is hardware-qualified; the forced-cap fallback remains host/regression covered rather than field-qualified.
