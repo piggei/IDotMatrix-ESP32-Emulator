@@ -26,7 +26,7 @@ PIO_ENV="${PIO_ENV:-waveshare_s3_rgbmatrix_64x64}"
 # PlatformIO itself handles the transient Espressif JTAG/programming identity.
 # The helper resolves a target-specific runtime serial endpoint for the
 # post-upload monitor. MONITOR_SERIAL_PATTERN / MONITOR_SERIAL_PORT may override it.
-if [[ "$PIO_ENV" == waveshare_s3_rgbmatrix_64x64 ]]; then
+if [[ "$PIO_ENV" == waveshare_s3_rgbmatrix_* ]]; then
     TARGET_LABEL="Waveshare ESP32-S3 RGB Matrix"
     DEFAULT_MONITOR_SERIAL_PATTERN="/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00"
 else

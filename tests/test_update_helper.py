@@ -16,6 +16,7 @@ def test_update_helper_defaults_to_waveshare_development_target():
     assert 'PIO_ENV="${PIO_ENV:-waveshare_s3_rgbmatrix_64x64}"' in UPDATER
     assert 'Waveshare ESP32-S3 RGB Matrix' in UPDATER
     assert 'usb-Espressif_USB_JTAG_serial_debug_unit_' in UPDATER
+    assert '[[ "$PIO_ENV" == waveshare_s3_rgbmatrix_* ]]' in UPDATER
 
 
 def test_dependency_free_runner_has_no_pytest_import():

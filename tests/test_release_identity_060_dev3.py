@@ -8,4 +8,4 @@ def test_release_and_build_identity():
     assert '#define FW_RELEASE "0.6.0-dev.3"' in INO
     assert '#define FW_RELEASE_MAJOR 0' in INO
     assert '#define FW_RELEASE_MINOR 6' in INO
-    assert '#define FW_BUILD 194' in INO
+    assert '#define FW_BUILD 199' in INO

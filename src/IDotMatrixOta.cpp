@@ -1,4 +1,5 @@
 #include "IDotMatrixOta.h"
+#include "IDotMatrixMemoryTelemetry.h"
 
 #ifndef DEBUG_SERIAL
 #define DEBUG_SERIAL 1
@@ -24,6 +25,9 @@ bool uploadCommitted = false;
 String releaseText;
 uint32_t buildNumber = 0;
 String apSsid;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+uint32_t uploadTelemetryStartedAtUs = 0;
+#endif
 
 bool triggerPressed() {
   const int level = digitalRead(IDOTMATRIX_OTA_TRIGGER_PIN);
@@ -65,6 +69,7 @@ String htmlPage() {
 void startAccessPoint() {
   if (otaActive) return;
 
+  idotMemoryTelemetrySnapshot("ota.ap.before_wifi");
   uint64_t chip = ESP.getEfuseMac();
   char suffix[7];
   snprintf(suffix, sizeof(suffix), "%06llX", (unsigned long long)(chip & 0xFFFFFFULL));
@@ -128,6 +133,10 @@ void startAccessPoint() {
         switch (upload.status) {
           case UPLOAD_FILE_START:
             uploadCommitted = false;
+            idotMemoryTelemetrySnapshot("ota.upload.before_begin");
+#if IDOTMATRIX_MEMORY_TELEMETRY
+            uploadTelemetryStartedAtUs = micros();
+#endif
 #if DEBUG_SERIAL
             Serial.print("OTA: upload start name="); Serial.println(upload.filename);
 #endif
@@ -136,6 +145,7 @@ void startAccessPoint() {
               Update.printError(Serial);
 #endif
             }
+            idotMemoryTelemetrySnapshot("ota.upload.after_begin");
             break;
           case UPLOAD_FILE_WRITE:
             if (!Update.hasError()) {
@@ -162,10 +172,19 @@ void startAccessPoint() {
               Serial.print("OTA: upload complete bytes="); Serial.println(upload.totalSize);
             }
 #endif
+#if IDOTMATRIX_MEMORY_TELEMETRY
+            idotMemoryTelemetryLatency(uploadCommitted ? "ota.upload.complete_us" : "ota.upload.failed_us",
+                                       (uint32_t)(micros() - uploadTelemetryStartedAtUs));
+#endif
+            idotMemoryTelemetrySnapshot(uploadCommitted ? "ota.upload.complete" : "ota.upload.failed");
             break;
           case UPLOAD_FILE_ABORTED:
             uploadCommitted = false;
             Update.abort();
+#if IDOTMATRIX_MEMORY_TELEMETRY
+            idotMemoryTelemetryLatency("ota.upload.aborted_us", (uint32_t)(micros() - uploadTelemetryStartedAtUs));
+#endif
+            idotMemoryTelemetrySnapshot("ota.upload.aborted");
 #if DEBUG_SERIAL
             Serial.println("OTA: upload aborted; current firmware preserved");
 #endif
@@ -181,6 +200,7 @@ void startAccessPoint() {
 
   server.begin();
   otaActive = true;
+  idotMemoryTelemetrySnapshot("ota.ap.ready");
 #if DEBUG_SERIAL
   Serial.println("=== IDOTMATRIX OTA MAINTENANCE ===");
   Serial.print("OTA AP SSID: "); Serial.println(apSsid);

@@ -7,6 +7,7 @@
 #include "IDotMatrixProtocolGuards.h"
 #include "IDotMatrixBuzzerPolicy.h"
 #include "IDotMatrixOta.h"
+#include "IDotMatrixMemoryTelemetry.h"
 #if IDOTMATRIX_BUZZER_TYPE == IDOTMATRIX_BUZZER_PASSIVE
   #include <esp32-hal-ledc.h>
 #endif
@@ -25,7 +26,7 @@
 #define FW_RELEASE "0.6.0-dev.3"
 #define FW_RELEASE_MAJOR 0
 #define FW_RELEASE_MINOR 6
-#define FW_BUILD 194
+#define FW_BUILD 199
 
 #define IDOT_STRINGIFY_INNER(x) #x
 #define IDOT_STRINGIFY(x) IDOT_STRINGIFY_INNER(x)
@@ -43,6 +44,16 @@ static const char FW_SIGNATURE[] __attribute__((used)) = "IDOTMATRIX_FW=" FW_REL
 #define PRESET_SLOT_BASE 14U
 #define PRESET_SLOT_COUNT 6U
 #define PRESET_DWELL_MS 3000UL
+
+// Build 199: guarded whole-file GIF source staging. The three Waveshare
+// profiles enable this explicitly; all other targets default to disabled so
+// their memory/runtime behavior remains unchanged.
+#ifndef IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES
+  #define IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES 0UL
+#endif
+#ifndef IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES
+  #define IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES 0UL
+#endif
 
 // Optional hardware backends are resolved by IDotMatrixHardwareConfig.h.
 struct ScheduleActivity;
@@ -1339,6 +1350,22 @@ uint32_t gifDecoderOpenAt = 0;
 size_t gifSize = 0;
 bool gifStoredOnFS = false;
 bool gifEventPlaybackFileActive = false;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+uint32_t gifTelemetryStartedAtUs = 0;
+uint8_t gifTelemetryContext = 0; // 0=live, 1=event, 2=carousel
+bool gifTelemetryFirstFramePending = false;
+
+const char *gifTelemetryTag(const char *phase) {
+  if (gifTelemetryContext == 2) {
+    if (!strcmp(phase, "open")) return "gif.carousel.open_us";
+    if (!strcmp(phase, "first")) return "gif.carousel.first_frame_us";
+  } else if (gifTelemetryContext == 1) {
+    if (!strcmp(phase, "open")) return "gif.event.open_us";
+    if (!strcmp(phase, "first")) return "gif.event.first_frame_us";
+  }
+  return !strcmp(phase, "open") ? "gif.live.open_us" : "gif.live.first_frame_us";
+}
+#endif
 // B73: RX and playback files are deliberately different.  BLE writes happen
 // on Core 0 while AnimatedGIF playback runs from loop() on Core 1; touching
 // the file/decoder currently in use from the BLE callback can corrupt the heap.
@@ -1539,6 +1566,30 @@ struct BulkTransferState {
   String format = "UNKNOWN";
 } bulk;
 
+// Final publication of Preset/Carousel files can traverse deep LittleFS and
+// flash call chains (remove/rename/NVS). Never execute that work on the
+// NimBLE host task: a real B196 field trace hit the nimble_host stack canary
+// while commitPresetSlot() was inside LittleFS.remove(). The BLE callback only
+// receives/stages bytes and queues this descriptor. Arduino loop() performs
+// flush/close/commit and sends the final transfer ACK afterwards.
+enum DeferredAssetCommitKind : uint8_t {
+  DEFERRED_ASSET_NONE = 0,
+  DEFERRED_ASSET_CAROUSEL = 1,
+  DEFERRED_ASSET_PRESET = 2
+};
+
+struct DeferredAssetCommitState {
+  bool active = false;
+  DeferredAssetCommitKind kind = DEFERRED_ASSET_NONE;
+  uint8_t dataType = 0;
+  uint8_t localSlot = 0xFF;
+  uint16_t timeSign = 0;
+  uint32_t size = 0;
+  uint32_t crc = 0;
+  bool integrityOk = false;
+  uint32_t queuedAt = 0;
+} deferredAssetCommit;
+
 uint8_t textPayload[MAX_TEXT_PAYLOAD];
 size_t textPayloadReceived = 0;
 
@@ -1596,6 +1647,7 @@ void reportHeap(const char *label) {
   Serial.print(" largest=");
   Serial.println(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 #endif
+  idotMemoryTelemetrySnapshot(label);
 }
 
 uint32_t crc32Update(uint32_t crc, const uint8_t *data, size_t len) {
@@ -2992,6 +3044,10 @@ void updateTextAnimation() {
 // and tolerates equivalent app/firmware marker variants (for example 0x0A).
 bool parseTextPayloadInternal(const uint8_t *data,size_t len,bool carouselContext) {
   if(!idotTextPayloadHasMarker(data, len, TEXT_GLOBAL_HEADER)) return false;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot(carouselContext ? "text.carousel.before_parse" : "text.live.before_parse");
+  const uint32_t textTelemetryStartedAtUs = micros();
+#endif
   uint8_t requested=data[0];
   uint8_t n=min(requested,(uint8_t)MAX_TEXT_GLYPHS);
   if(!n) return false;
@@ -3054,6 +3110,11 @@ bool parseTextPayloadInternal(const uint8_t *data,size_t len,bool carouselContex
     switchDisplayMode(DISPLAY_TEXT);
   }
   renderTextFrame();
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetryLatency(carouselContext ? "text.carousel.parse_render_us" : "text.live.parse_render_us",
+                             (uint32_t)(micros() - textTelemetryStartedAtUs));
+  idotMemoryTelemetrySnapshot(carouselContext ? "text.carousel.after_render" : "text.live.after_render");
+#endif
   return true;
 }
 
@@ -3253,6 +3314,133 @@ bool processEffectCommand(const uint8_t *data,size_t len){
 // ======================================================
 // GIF
 // ======================================================
+// B199: at most one complete compressed GIF source may be staged in PSRAM.
+// LittleFS remains authoritative and is used transparently whenever staging
+// is disabled or cannot satisfy the cap/reserve/largest-block policy.
+uint8_t *gifStageData = nullptr;
+size_t gifStageSize = 0;
+String gifStagePath;
+size_t gifStagePeakBytes = 0;
+size_t gifStageRequestedBytes = 0;
+uint32_t gifStageAttempts = 0;
+uint32_t gifStageOk = 0;
+uint32_t gifStageFallback = 0;
+
+struct GifSourceHandle {
+  bool staged = false;
+  File file;
+};
+
+void reportGifStage(const char *state, const char *reason){
+#if DEBUG_SERIAL
+  Serial.print("[GIFSTAGE] state="); Serial.print(state ? state : "unknown");
+  Serial.print(" reason="); Serial.print(reason ? reason : "none");
+  Serial.print(" bytes="); Serial.print((uint32_t)gifStageSize);
+  Serial.print(" requested="); Serial.print((uint32_t)gifStageRequestedBytes);
+  Serial.print(" peak="); Serial.print((uint32_t)gifStagePeakBytes);
+  Serial.print(" attempts="); Serial.print(gifStageAttempts);
+  Serial.print(" ok="); Serial.print(gifStageOk);
+  Serial.print(" fallback="); Serial.print(gifStageFallback);
+  Serial.print(" max="); Serial.print((uint32_t)IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES);
+  Serial.print(" reserve="); Serial.println((uint32_t)IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES);
+#else
+  (void)state; (void)reason;
+#endif
+}
+
+void releaseGifStage(){
+  const bool hadStage=gifStageData!=nullptr;
+  if(gifStageData){
+    heap_caps_free(gifStageData);
+    gifStageData=nullptr;
+  }
+  gifStageSize=0;
+  gifStagePath="";
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  if(hadStage) idotMemoryTelemetrySnapshot("gif.stage.released");
+#endif
+}
+
+bool failGifStage(const char *reason){
+  gifStageFallback++;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("gif.stage.fallback");
+#endif
+  reportGifStage("fs",reason);
+  return false;
+}
+
+bool prepareGifStage(const char *path, size_t expectedSize){
+  releaseGifStage();
+  gifStageRequestedBytes=expectedSize;
+#if IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES > 0
+  gifStageAttempts++;
+  if(!littleFsReady || !path || !expectedSize){
+    return failGifStage("invalid");
+  }
+  if(expectedSize > (size_t)IDOTMATRIX_GIF_PSRAM_STAGE_MAX_BYTES){
+    return failGifStage("cap");
+  }
+
+  const uint32_t caps=MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+  const size_t freePsram=heap_caps_get_free_size(caps);
+  const size_t largestPsram=heap_caps_get_largest_free_block(caps);
+  const size_t reserve=(size_t)IDOTMATRIX_GIF_PSRAM_RESERVE_BYTES;
+  if(expectedSize > largestPsram){
+    return failGifStage("largest");
+  }
+  if(expectedSize > freePsram || freePsram-expectedSize < reserve){
+    return failGifStage("reserve");
+  }
+
+  File src=LittleFS.open(path,"r");
+  if(!src || (size_t)src.size()!=expectedSize){
+    if(src) src.close();
+    return failGifStage("source");
+  }
+
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("gif.stage.before");
+  const uint32_t stageStartedAtUs=micros();
+#endif
+  uint8_t *buf=(uint8_t *)heap_caps_malloc(expectedSize,caps);
+  if(!buf){
+    src.close();
+    return failGifStage("alloc");
+  }
+
+  size_t copied=0;
+  bool copyOk=true;
+  while(copied<expectedSize){
+    size_t want=min((size_t)4096,expectedSize-copied);
+    int n=src.read(buf+copied,want);
+    if(n<=0){ copyOk=false; break; }
+    copied+=(size_t)n;
+    yield();
+  }
+  src.close();
+  if(!copyOk || copied!=expectedSize){
+    heap_caps_free(buf);
+    return failGifStage("copy");
+  }
+
+  gifStageData=buf;
+  gifStageSize=expectedSize;
+  gifStagePath=path;
+  if(gifStageSize>gifStagePeakBytes) gifStagePeakBytes=gifStageSize;
+  gifStageOk++;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetryLatency("gif.stage.copy_us",(uint32_t)(micros()-stageStartedAtUs));
+  idotMemoryTelemetrySnapshot("gif.stage.psram");
+#endif
+  reportGifStage("psram","ok");
+  return true;
+#else
+  (void)path; (void)expectedSize;
+  return false;
+#endif
+}
+
 void destroyGIFDecoder(){
   gifPlaying=false; gifLoaded=false; gifRestartPending=false; gifFrameWasDrawn=false;
   if(gif){
@@ -3266,6 +3454,9 @@ void destroyGIFDecoder(){
     delete gif;
     gif=nullptr;
   }
+  // The staged source must outlive AnimatedGIF::close(), because close may
+  // still invoke the source callback. Free it only after decoder teardown.
+  releaseGifStage();
 }
 void stopGIFPlayback(){
   bool removeEventFile=gifEventPlaybackFileActive;
@@ -3288,36 +3479,61 @@ void freeGIF(){
   gifStoredOnFS=false;
 }
 
-// AnimatedGIF file callbacks. All compressed GIF playback remains
-// file-backed, so no GIF requires one large contiguous DRAM allocation.
+// AnimatedGIF source callbacks. B199 serves the active complete compressed
+// source from PSRAM when staging succeeded, otherwise from the same LittleFS
+// file path used by B198. The decoder itself sees one callback API either way.
 void *GIFOpenFile(const char *fname, int32_t *pSize){
-  if(!littleFsReady) return nullptr;
-  File *f=new File(LittleFS.open(fname,"r"));
-  if(!f || !(*f)){ if(f) delete f; return nullptr; }
-  *pSize=(int32_t)f->size();
-  return (void *)f;
+  if(!pSize || !fname) return nullptr;
+  GifSourceHandle *h=new GifSourceHandle();
+  if(!h) return nullptr;
+  if(gifStageData && gifStageSize && gifStagePath==fname){
+    h->staged=true;
+    *pSize=(int32_t)gifStageSize;
+    return (void *)h;
+  }
+  if(!littleFsReady){ delete h; return nullptr; }
+  h->file=LittleFS.open(fname,"r");
+  if(!h->file){ delete h; return nullptr; }
+  *pSize=(int32_t)h->file.size();
+  return (void *)h;
 }
 void GIFCloseFile(void *pHandle){
-  File *f=(File *)pHandle;
-  if(f){ f->close(); delete f; }
+  GifSourceHandle *h=(GifSourceHandle *)pHandle;
+  if(!h) return;
+  if(!h->staged && h->file) h->file.close();
+  delete h;
 }
 int32_t GIFReadFile(GIFFILE *pFile,uint8_t *pBuf,int32_t iLen){
-  File *f=(File *)pFile->fHandle;
-  if(!f || !(*f) || iLen<=0) return 0;
+  if(!pFile || !pBuf || iLen<=0) return 0;
+  GifSourceHandle *h=(GifSourceHandle *)pFile->fHandle;
+  if(!h) return 0;
   int32_t remain=pFile->iSize-pFile->iPos;
   if(remain<=0) return 0;
   if(iLen>remain) iLen=remain;
-  int32_t n=(int32_t)f->read(pBuf,(size_t)iLen);
-  pFile->iPos=(int32_t)f->position();
+  if(h->staged){
+    if(!gifStageData || pFile->iPos<0 || (size_t)pFile->iPos+(size_t)iLen>gifStageSize) return 0;
+    memcpy(pBuf,gifStageData+(size_t)pFile->iPos,(size_t)iLen);
+    pFile->iPos+=iLen;
+    return iLen;
+  }
+  if(!h->file) return 0;
+  int32_t n=(int32_t)h->file.read(pBuf,(size_t)iLen);
+  pFile->iPos=(int32_t)h->file.position();
   return n;
 }
 int32_t GIFSeekFile(GIFFILE *pFile,int32_t iPosition){
-  File *f=(File *)pFile->fHandle;
-  if(!f || !(*f)) return -1;
+  if(!pFile) return -1;
+  GifSourceHandle *h=(GifSourceHandle *)pFile->fHandle;
+  if(!h) return -1;
   if(iPosition<0) iPosition=0;
   if(iPosition>pFile->iSize) iPosition=pFile->iSize;
-  if(!f->seek((uint32_t)iPosition,SeekSet)) return -1;
-  pFile->iPos=(int32_t)f->position();
+  if(h->staged){
+    if(!gifStageData || (size_t)iPosition>gifStageSize) return -1;
+    pFile->iPos=iPosition;
+    return pFile->iPos;
+  }
+  if(!h->file || !h->file.seek((uint32_t)iPosition,SeekSet)) return -1;
+  pFile->iPos=(int32_t)h->file.position();
   return pFile->iPos;
 }
 
@@ -3342,6 +3558,18 @@ void GIFDraw(GIFDRAW *pDraw){
 bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
   if(!littleFsReady || !path || !gifSize || !LittleFS.exists(path)) return false;
   if(gif) destroyGIFDecoder();
+  else releaseGifStage();
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  gifTelemetryContext = carouselPlayback ? 2 : (eventPlayback ? 1 : 0);
+  gifTelemetryFirstFramePending = false;
+  idotMemoryTelemetrySnapshot(carouselPlayback ? "gif.carousel.before_open" : (eventPlayback ? "gif.event.before_open" : "gif.live.before_open"));
+  // B199 first-frame latency includes the staging copy so it reflects the
+  // complete user-visible cold-start cost. Decoder open latency below remains
+  // separately comparable with the B196/B198 file-backed baseline.
+  gifTelemetryStartedAtUs = micros();
+#endif
+  // Best-effort only: failure leaves the B198 file-backed decoder path intact.
+  prepareGifStage(path,gifSize);
   fill_solid(gifFrame,NUM_LEDS,CRGB::Black);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
   Serial.println("GIF NEW alloc");
@@ -3351,6 +3579,7 @@ bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
 #if DEBUG_SERIAL
     Serial.println("GIF NEW alloc FAILED");
 #endif
+    releaseGifStage();
     return false;
   }
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
@@ -3359,6 +3588,9 @@ bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
   gif->begin(LITTLE_ENDIAN_PIXELS); gif->setDrawType(GIF_DRAW_RAW);
 #if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
   Serial.println("GIF NEW open");
+#endif
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  const uint32_t gifDecoderOpenStartedAtUs=micros();
 #endif
   bool opened=gif->open(path,GIFOpenFile,GIFCloseFile,GIFReadFile,GIFSeekFile,GIFDraw);
   if(!opened){
@@ -3379,6 +3611,11 @@ bool startGIFFile(const char *path, bool eventPlayback, bool carouselPlayback){
   gifStoredOnFS=true;
   gifEventPlaybackFileActive=eventPlayback;
   gifCarouselPlaybackFileActive=carouselPlayback;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetryLatency(gifTelemetryTag("open"), (uint32_t)(micros() - gifDecoderOpenStartedAtUs));
+  idotMemoryTelemetrySnapshot(carouselPlayback ? "gif.carousel.after_open" : (eventPlayback ? "gif.event.after_open" : "gif.live.after_open"));
+  gifTelemetryFirstFramePending = true;
+#endif
   gifLoaded=gifPlaying=true; gifNextFrameAt=millis(); displayMode=DISPLAY_GIF; return true;
 }
 
@@ -3472,6 +3709,13 @@ void updateGIF(){
   gifFrameWasDrawn=false; int delayMs=0; int result=gif->playFrame(false,&delayMs);
   if(!gifFrameWasDrawn){ gif->reset(); gifNextFrameAt=now+10; return; }
   ::memcpy(framebuffer,gifFrame,LOGICAL_FRAME_BYTES); refreshMatrix();
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  if(gifTelemetryFirstFramePending){
+    gifTelemetryFirstFramePending=false;
+    idotMemoryTelemetryLatency(gifTelemetryTag("first"), (uint32_t)(micros() - gifTelemetryStartedAtUs));
+    idotMemoryTelemetrySnapshot(gifTelemetryContext==2 ? "gif.carousel.first_frame" : (gifTelemetryContext==1 ? "gif.event.first_frame" : "gif.live.first_frame"));
+  }
+#endif
   if(delayMs<10) delayMs=10; gifNextFrameAt=now+delayMs; if(result==0) gifRestartPending=true;
 }
 
@@ -3635,6 +3879,10 @@ int8_t nextCarouselSlot(int8_t current) {
 }
 
 bool startCarouselSlot(uint8_t slot) {
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot("carousel.before_start");
+  const uint32_t carouselTelemetryStartedAtUs = micros();
+#endif
   if(presetActive) stopPresetPlayback();
   if(!littleFsReady || slot>=CAROUSEL_SLOT_COUNT) return false;
   carouselActive=false;
@@ -3665,6 +3913,11 @@ bool startCarouselSlot(uint8_t slot) {
   carouselActive=true;
   carouselActiveSlot=(int8_t)slot;
   carouselSlotStartedAt=millis();
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetryLatency(m.dataType==3 ? "carousel.text.start_us" : "carousel.gif.start_us",
+                             (uint32_t)(micros() - carouselTelemetryStartedAtUs));
+  idotMemoryTelemetrySnapshot(m.dataType==3 ? "carousel.text.started" : "carousel.gif.opened");
+#endif
 #if DEBUG_SERIAL && CAROUSEL_PROTOCOL_DEBUG
   Serial.print("CAROUSEL PLAY slot="); Serial.print(slot);
   Serial.print(" type="); Serial.print(m.dataType==3 ? "TEXT" : "GIF");
@@ -4064,6 +4317,91 @@ void resetBulkTransfer(bool removePartialGif=false){
   if(abortedCarouselTransfer) endCarouselTransferIndicator();
 }
 
+bool queueDeferredAssetCommit(uint8_t kindValue, uint8_t dataType, uint8_t localSlot,
+                              uint16_t timeSign, uint32_t size, uint32_t crc, bool integrityOk) {
+  // Keep the helper signature Arduino-preprocessor-safe: .ino prototype generation
+  // can place function prototypes before the custom enum declaration. Accept a
+  // primitive here and validate/cast only inside the implementation.
+  if(kindValue != DEFERRED_ASSET_CAROUSEL && kindValue != DEFERRED_ASSET_PRESET) return false;
+  if(deferredAssetCommit.active) return false;
+  const DeferredAssetCommitKind kind = static_cast<DeferredAssetCommitKind>(kindValue);
+  deferredAssetCommit.active=true;
+  deferredAssetCommit.kind=kind;
+  deferredAssetCommit.dataType=dataType;
+  deferredAssetCommit.localSlot=localSlot;
+  deferredAssetCommit.timeSign=timeSign;
+  deferredAssetCommit.size=size;
+  deferredAssetCommit.crc=crc;
+  deferredAssetCommit.integrityOk=integrityOk;
+  deferredAssetCommit.queuedAt=millis();
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.print("BULK COMMIT queued kind=");
+  Serial.print(kind==DEFERRED_ASSET_CAROUSEL ? "CAROUSEL" : "PRESET");
+  Serial.print(" slot="); Serial.print(localSlot);
+  Serial.print(" type="); Serial.print(dataType);
+  Serial.print(" integrity="); Serial.println(integrityOk ? "OK" : "BAD");
+#endif
+  return true;
+}
+
+void processDeferredAssetCommit(){
+  if(!deferredAssetCommit.active) return;
+  const DeferredAssetCommitState job=deferredAssetCommit;
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot(job.kind==DEFERRED_ASSET_CAROUSEL ? "fs.commit.carousel.before" : "fs.commit.preset.before");
+#endif
+
+  // File finalization and every operation below intentionally run on loopTask,
+  // never on nimble_host. This is the B197/B198 stack-safety boundary.
+  if(gifBulkFile){
+    gifBulkFile.flush();
+    gifBulkFile.close();
+  }
+
+  bool stored=false;
+  if(job.integrityOk){
+    if(job.kind==DEFERRED_ASSET_CAROUSEL && job.localSlot<CAROUSEL_SLOT_COUNT){
+      stored=commitCarouselSlot(job.localSlot,job.dataType,job.timeSign,job.size,job.crc);
+      if(stored) carouselUploadCompletedMask |= (uint16_t)(1U<<job.localSlot);
+    } else if(job.kind==DEFERRED_ASSET_PRESET && job.localSlot<PRESET_SLOT_COUNT){
+      stored=commitPresetSlot(job.localSlot,job.dataType,job.timeSign,job.size,job.crc);
+    }
+  }
+
+  if(!stored && littleFsReady){
+    if(job.kind==DEFERRED_ASSET_CAROUSEL && job.localSlot<CAROUSEL_SLOT_COUNT)
+      LittleFS.remove(carouselTempFileName(job.localSlot));
+    else if(job.kind==DEFERRED_ASSET_PRESET && job.localSlot<PRESET_SLOT_COUNT)
+      LittleFS.remove(presetTempFileName(job.localSlot));
+  }
+
+#if DEBUG_SERIAL
+  if(!stored){
+    Serial.print("BULK DEFERRED COMMIT FAILED kind=");
+    Serial.print(job.kind==DEFERRED_ASSET_CAROUSEL ? "CAROUSEL" : "PRESET");
+    Serial.print(" slot="); Serial.print(job.localSlot);
+    Serial.print(" integrity="); Serial.println(job.integrityOk ? "OK" : "BAD");
+  }
+#endif
+#if DEBUG_SERIAL && BULK_PROTOCOL_DEBUG
+  Serial.print("BULK COMMIT done kind=");
+  Serial.print(job.kind==DEFERRED_ASSET_CAROUSEL ? "CAROUSEL" : "PRESET");
+  Serial.print(" slot="); Serial.print(job.localSlot);
+  Serial.print(" stored="); Serial.print(stored ? "YES" : "NO");
+  Serial.print(" latencyMs="); Serial.println((uint32_t)(millis()-job.queuedAt));
+#endif
+
+  // Clear protocol state before the completion notification. The runtime mutex
+  // remains held by loop(), so a new FA02 write cannot observe a half-reset
+  // transfer even if the peer reacts immediately to the ACK.
+  deferredAssetCommit=DeferredAssetCommitState();
+  resetBulkTransfer(false);
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  idotMemoryTelemetrySnapshot(job.kind==DEFERRED_ASSET_CAROUSEL ? "fs.commit.carousel.after" : "fs.commit.preset.after");
+#endif
+  sendTransferAck(job.dataType,0x03);
+}
+
 void expireStalledTransfers(uint32_t now){
   // These are emulator safety timeouts, not inferred protocol timings.
   if(packetReceived && packetLastRxMs && (uint32_t)(now-packetLastRxMs)>PACKET_REASSEMBLY_TIMEOUT_MS){
@@ -4080,7 +4418,7 @@ void expireStalledTransfers(uint32_t now){
 #endif
     resetAudioReassembly();
   }
-  if(bulk.active && bulkLastRxMs && (uint32_t)(now-bulkLastRxMs)>BULK_TRANSFER_TIMEOUT_MS){
+  if(bulk.active && !deferredAssetCommit.active && bulkLastRxMs && (uint32_t)(now-bulkLastRxMs)>BULK_TRANSFER_TIMEOUT_MS){
 #if DEBUG_SERIAL
     Serial.println("BULK timeout; aborting stalled transfer");
 #endif
@@ -4116,7 +4454,9 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       const size_t payloadSize=len-9;
       if(marker==0x00){
         resetGraffitiRaster();
+        idotMemoryTelemetrySnapshot("graffiti.before_alloc");
         graffitiRaster.data=(uint8_t*)malloc(total);
+        idotMemoryTelemetrySnapshot(graffitiRaster.data ? "graffiti.after_alloc" : "graffiti.alloc_failed");
         if(!graffitiRaster.data){
 #if DEBUG_SERIAL && GRAFFITI_PROTOCOL_DEBUG
           Serial.println("GRAFFITI BEGIN allocation failed");
@@ -4168,6 +4508,7 @@ bool processBulkPacket(const uint8_t *data,size_t len){
         Serial.println(" ACK=01");
 #endif
         resetGraffitiRaster();
+        idotMemoryTelemetrySnapshot("graffiti.after_free");
       } else {
         // Captured original hardware continuation ACK.
         sendTransferAck(0x00,0x02);
@@ -4343,7 +4684,9 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       }
     }
     if(type==2 && bulk.format=="RAW RGB"){
+      idotMemoryTelemetrySnapshot("raw.before_alloc");
       rawRgbData=(uint8_t*)malloc(total);
+      idotMemoryTelemetrySnapshot(rawRgbData ? "raw.after_alloc" : "raw.alloc_failed");
       if(!rawRgbData){ resetBulkTransfer(true); sendTransferAck(type,0x03); return true; }
       rawRgbWriteOffset=0;
     }
@@ -4390,21 +4733,22 @@ bool processBulkPacket(const uint8_t *data,size_t len){
       Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
     }
 #endif
-    if(bulk.carouselToFS){
-      if(gifBulkFile){ gifBulkFile.flush(); gifBulkFile.close(); }
-      uint8_t localSlot=(bulk.carouselLocalSlot>=0) ? (uint8_t)bulk.carouselLocalSlot : 0xFF;
-      bool stored=ok && localSlot<CAROUSEL_SLOT_COUNT && gifRxWriteOffset==bulk.expectedSize &&
-                  commitCarouselSlot(localSlot,type,bulk.timeSign,bulk.expectedSize,bulk.expectedCRC);
-      if(!stored && localSlot<CAROUSEL_SLOT_COUNT) LittleFS.remove(carouselTempFileName(localSlot));
-      if(stored && localSlot<CAROUSEL_SLOT_COUNT) carouselUploadCompletedMask |= (uint16_t)(1U<<localSlot);
-      ok=ok && stored;
-    } else if(bulk.presetToFS){
-      if(gifBulkFile){ gifBulkFile.flush(); gifBulkFile.close(); }
-      uint8_t localSlot=(bulk.presetLocalSlot>=0) ? (uint8_t)bulk.presetLocalSlot : 0xFF;
-      bool stored=ok && localSlot<PRESET_SLOT_COUNT && gifRxWriteOffset==bulk.expectedSize &&
-                  commitPresetSlot(localSlot,type,bulk.timeSign,bulk.expectedSize,bulk.expectedCRC);
-      if(!stored && localSlot<PRESET_SLOT_COUNT) LittleFS.remove(presetTempFileName(localSlot));
-      ok=ok && stored;
+    if(bulk.carouselToFS || bulk.presetToFS){
+      const bool isCarousel=bulk.carouselToFS;
+      uint8_t localSlot=isCarousel
+          ? ((bulk.carouselLocalSlot>=0) ? (uint8_t)bulk.carouselLocalSlot : 0xFF)
+          : ((bulk.presetLocalSlot>=0) ? (uint8_t)bulk.presetLocalSlot : 0xFF);
+      const bool slotValid=isCarousel ? (localSlot<CAROUSEL_SLOT_COUNT) : (localSlot<PRESET_SLOT_COUNT);
+      const bool integrityOk=ok && slotValid && gifRxWriteOffset==bulk.expectedSize;
+      const DeferredAssetCommitKind kind=isCarousel ? DEFERRED_ASSET_CAROUSEL : DEFERRED_ASSET_PRESET;
+      if(!queueDeferredAssetCommit(kind,type,localSlot,bulk.timeSign,bulk.expectedSize,bulk.expectedCRC,integrityOk)){
+#if DEBUG_SERIAL
+        Serial.println("BULK deferred commit queue busy; withholding final ACK");
+#endif
+      }
+      // Do not flush/close/remove/rename/reset or send the final ACK from the
+      // BLE host task. loop() owns the complete finalization transaction.
+      return true;
     } else {
 #if DEBUG_SERIAL && PRESET_PROTOCOL_DEBUG
       if(type==3 && ok && textPayloadReceived && presetTraceSlot){
@@ -4461,7 +4805,10 @@ bool processBulkPacket(const uint8_t *data,size_t len){
     }
     Serial.print(" crc="); Serial.println(ok ? "OK" : "BAD");
 #endif
-    sendTransferAck(type,0x03); resetBulkTransfer();
+    sendTransferAck(type,0x03);
+    const bool telemetryRawTransfer = (type==2);
+    resetBulkTransfer();
+    if(telemetryRawTransfer) idotMemoryTelemetrySnapshot("raw.after_free");
   } else sendTransferAck(type,0x01);
   return true;
 }
@@ -5400,7 +5747,11 @@ void handleBleDisconnected(){
   packetReceived=packetExpected=0;
   packetLastRxMs=0;
   resetAudioReassembly();
-  resetBulkTransfer(true);
+  // If a complete Preset/Carousel is awaiting loopTask publication, preserve
+  // its staged file and descriptor across disconnect. The loop can safely
+  // finish the already-received transaction; sendFA03() will simply no-op
+  // while disconnected. Partial transfers keep the historical abort path.
+  if(!deferredAssetCommit.active) resetBulkTransfer(true);
   resetGraffitiRaster();
   // Do not sleep inside the BLE callback. Preserve the historical 300 ms
   // restart delay by deferring advertising restart to the Arduino loop.
@@ -6052,8 +6403,17 @@ bool loadScheduleMedia(uint8_t idx) {
   }
 
   if (a.contentType == SCHEDULE_CONTENT_IMAGE) {
+#if IDOTMATRIX_MEMORY_TELEMETRY
+    idotMemoryTelemetrySnapshot("schedule.png.before_decode");
+    const uint32_t pngTelemetryStartedAtUs = micros();
+#endif
     bool ok = decodeSchedulePNG(f, a.mediaSize);
     f.close();
+#if IDOTMATRIX_MEMORY_TELEMETRY
+    idotMemoryTelemetryLatency(ok ? "schedule.png.decode_us" : "schedule.png.decode_failed_us",
+                               (uint32_t)(micros() - pngTelemetryStartedAtUs));
+    idotMemoryTelemetrySnapshot(ok ? "schedule.png.after_decode" : "schedule.png.decode_failed");
+#endif
   #if PNG_DIAG_SERIAL
     Serial.print("PR i="); Serial.print(idx); Serial.print(" ok="); Serial.println(ok ? 1 : 0);
 #endif
@@ -6702,6 +7062,7 @@ void setup(){
   // update_idotmatrix_emulator.sh verifies this exact string inside firmware.bin
   // before allowing upload, preventing stale PlatformIO objects from being flashed.
   DBG_PRINTLN(FW_SIGNATURE);
+  idotMemoryTelemetrySnapshot("setup.begin");
 #if PNG_DIAG_SERIAL
   Serial.print("BOOT rr="); Serial.print((int)esp_reset_reason());
   Serial.print(" heap="); Serial.println(ESP.getFreeHeap());
@@ -6743,6 +7104,7 @@ void setup(){
 #endif
   #endif
 #endif
+  idotMemoryTelemetrySnapshot("setup.before_logical_buffers");
 // Allocate the logical display buffers at runtime. This is essential for the
   // 64x64 profile: three static 4096-pixel CRGB buffers would consume ~36 KB
   // of .bss and overflow the ESP32 DRAM linker segment.
@@ -6769,6 +7131,7 @@ void setup(){
   fill_solid(framebuffer, NUM_LEDS, CRGB::Black);
   fill_solid(gifFrame, NUM_LEDS, CRGB::Black);
   fill_solid(scheduleSavedFrame, NUM_LEDS, CRGB::Black);
+  idotMemoryTelemetrySnapshot("setup.after_logical_buffers");
 #if DEBUG_SERIAL
   Serial.print("LOGICAL BUFFERS: "); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
   Serial.print(" x3, bytes="); Serial.print(LOGICAL_FRAME_BYTES * 3U);
@@ -6780,7 +7143,8 @@ void setup(){
 #else
   Serial.println("WS2812 / FastLED");
 #endif
-  Serial.print("DISPLAY SCALE: logical="); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
+  Serial.print("DISPLAY SCALE: screenType="); Serial.print(IDOTMATRIX_SCREEN_TYPE);
+  Serial.print(" logical="); Serial.print(MATRIX_WIDTH); Serial.print('x'); Serial.print(MATRIX_HEIGHT);
   Serial.print(" physical="); Serial.print(PHYSICAL_MATRIX_WIDTH); Serial.print('x'); Serial.println(PHYSICAL_MATRIX_HEIGHT);
 #if defined(BOARD_HAS_PSRAM)
   Serial.print("PSRAM: total="); Serial.print(ESP.getPsramSize()); Serial.print(" free="); Serial.println(ESP.getFreePsram());
@@ -6885,10 +7249,12 @@ void setup(){
   loadAlarms();
   loadSchedule();
   loadCarousel();
+  idotMemoryTelemetrySnapshot("setup.after_storage");
 #if DISPLAY_BACKEND == DISPLAY_BACKEND_WS2812
   FastLED.addLeds<LED_TYPE,MATRIX_PIN,COLOR_ORDER>(leds,PHYSICAL_NUM_LEDS);
 #elif DISPLAY_BACKEND == DISPLAY_BACKEND_HUB75
   {
+    idotMemoryTelemetrySnapshot("setup.before_hub75");
 #if defined(IDOTMATRIX_BOARD_WAVESHARE_S3_RGB_MATRIX) && DEBUG_SERIAL
     Serial.println("BOOT CHECKPOINT: entering HUB75 initialization");
     Serial.flush();
@@ -6914,6 +7280,7 @@ void setup(){
 #endif
       while(true) delay(1000);
     }
+    idotMemoryTelemetrySnapshot("setup.after_hub75");
   }
 #endif
   loadBrightnessFromNVS();
@@ -7025,9 +7392,11 @@ void setup(){
   BLEAdvertisementData scan; scan.setCompleteServices(BLEUUID(AE_SERVICE_UUID)); adv->setScanResponseData(scan); adv->start();
 #endif
 
+  idotMemoryTelemetrySnapshot("setup.after_ble");
 #if IDOTMATRIX_OTA_AVAILABLE
   idotOtaBegin(FW_RELEASE, FW_BUILD);
 #endif
+  idotMemoryTelemetrySnapshot("setup.after_ota_arm");
 
 #if IDOTMATRIX_ORIENTATION_SENSOR && IDOTMATRIX_ORIENTATION_DIAGNOSTICS
   // Repeat the orientation summary at the end of setup. On ESP32-C3 USB/CDC
@@ -7057,6 +7426,11 @@ void loop(){
   // can update packetLastRxMs/bulkLastRxMs to a newer value while loop() waits.
   // Unsigned subtraction would then wrap and falsely look like a huge timeout.
   uint32_t now=millis();
+  // B197/B198: publish completed Preset/Carousel assets on loopTask before any
+  // timeout or playback work. This keeps LittleFS remove/rename/NVS activity
+  // off nimble_host and preserves ACK pacing for the next bulk transfer.
+  processDeferredAssetCommit();
+  now=millis();
 #if IDOTMATRIX_RTC_AVAILABLE
   updateRtcRecovery(now);
 #endif
@@ -7180,6 +7554,13 @@ void loop(){
     static uint32_t last=0; if(now-last>=100){last=now;uint32_t e=stopwatchElapsedMs;if(stopwatchRunning)e+=now-stopwatchStartMillis;renderStopwatch(e);}
   }
 
+#if IDOTMATRIX_MEMORY_TELEMETRY
+  static uint32_t lastMemoryTelemetry=0;
+  if(now-lastMemoryTelemetry>=30000UL){
+    lastMemoryTelemetry=now;
+    idotMemoryTelemetrySnapshot("runtime.periodic");
+  }
+#endif
 #if DEBUG_SERIAL
   static uint32_t lastHeap=0;
 #if DEBUG_SERIAL && DEBUG_SERIAL_VERBOSE

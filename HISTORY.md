@@ -1,3 +1,64 @@
+## 0.6.0-dev.3 / Build 199
+
+Waveshare transient whole-GIF PSRAM staging build on top of the hardware-qualified B198 BLE/filesystem hardening baseline.
+
+- Adds best-effort staging of one complete compressed GIF source in PSRAM on all three Waveshare profiles.
+- Uses a 2 MiB per-source cap and preserves a 4 MiB PSRAM reserve; staging also requires a sufficiently large contiguous PSRAM block.
+- Keeps LittleFS authoritative and falls back transparently to the B198 file-backed AnimatedGIF callback path when staging is disabled or any guard/allocation/copy step fails.
+- Keeps one decoder/source path: the existing AnimatedGIF open/read/seek/close callbacks now serve either the staged PSRAM source or LittleFS.
+- Frees the staged buffer only after `AnimatedGIF::close()`/decoder teardown. No persistent cache or Carousel prefetch is introduced yet.
+- Adds `[GIFSTAGE]`, `gif.stage.*` memory snapshots and `gif.stage.copy_us` latency telemetry. First-frame latency now includes the staging copy while decoder-open latency remains separately measured.
+- Retains B198 deferred Preset/Carousel filesystem publication and all qualified OTA/scaling behavior.
+
+Status: **development build; requires Waveshare PlatformIO compile and physical PSRAM staging/fallback qualification.**
+
+## 0.6.0-dev.3 / Build 198
+
+Compile-only corrective build for the B197 deferred Preset/Carousel filesystem hardening.
+
+- Preserves the B197 runtime design: final Preset/Carousel publication remains deferred from `nimble_host` to `loopTask`, with the final ACK sent only after commit.
+- Fixes the PlatformIO/Arduino `.ino` auto-prototype failure where `queueDeferredAssetCommit(DeferredAssetCommitKind, ...)` was prototyped before `DeferredAssetCommitKind` was declared.
+- Changes only that helper boundary to accept a validated `uint8_t` and cast to the enum inside the implementation.
+- Adds a host regression guard specifically for Arduino-safe helper signatures using custom enum state.
+- No protocol, storage, allocation, OTA, scaling, BLE library or memory-optimization behavior changes are introduced.
+
+Status: **hardware-qualified.** The real Waveshare build/upload succeeded; repeated Preset TEXT/font commits and Carousel commits completed without the B196 `nimble_host` stack-canary reboot, and playback continued after commit.
+
+## 0.6.0-dev.3 / Build 197
+
+Targeted Waveshare BLE/filesystem hardening after a physical B196 Preset TEXT/font upload triggered `Stack canary watchpoint triggered (nimble_host)`.
+
+- Defers final Preset and Carousel staged-file flush/close/commit/cleanup from the FA02 NimBLE callback to the Arduino loop task.
+- Sends the final bulk completion ACK only after the deferred filesystem publication has completed and protocol state has been reset.
+- Preserves an already-complete pending commit across BLE disconnect.
+- Retains B196 memory/latency telemetry and all B194/B195 OTA/scaling behavior.
+- Does not yet introduce GIF PSRAM staging/cache/prefetch.
+
+Status: **development build; requires physical reproduction test of the B196 Preset crash and repeated Carousel/Preset uploads.**
+
+## 0.6.0-dev.3 / Build 196
+
+- Measurement-only memory/latency baseline on the physically qualified B195 Waveshare runtime.
+- Enables structured internal-DRAM, DMA-capable heap and PSRAM snapshots only for the three Waveshare profiles.
+- Instruments boot, logical-buffer allocation, storage, HUB75, BLE, TEXT, RAW/Graffiti, GIF, Carousel, Schedule PNG and OTA without changing their allocation/storage policies.
+- Adds tagged microsecond latency records for TEXT render, GIF open/first frame, Carousel start, Schedule PNG decode and OTA upload.
+- Adds a dependency-free serial-log summarizer and regression guards for telemetry scope/format.
+- Does not introduce PSRAM placement, GIF staging/cache or Carousel prefetch.
+
+Status: **physical 64x64 trace captured; memory/GIF baseline recorded and Preset upload exposed the `nimble_host` stack failure addressed by B197.**
+
+## 0.6.0-dev.3 / Build 195
+
+- Scaling-qualification build on the physically exercised Build 194 Waveshare baseline.
+- Adds dedicated Waveshare logical 16x16 and 32x32 PlatformIO environments while retaining the existing logical 64x64 environment and one physical 64x64 HUB75 panel.
+- Keeps the existing nearest-neighbour logical-to-physical scaler unchanged; expected replication is 4x4 for 16x16, 2x2 for 32x32 and 1:1 for 64x64.
+- Adds deterministic visual scaling qualification PNGs and host regression coverage for all three profile configurations.
+- Extends startup diagnostics with explicit screen type and updates the repository helper to recognize every `waveshare_s3_rgbmatrix_*` environment as Waveshare.
+- Inherits the B194 OTA implementation unchanged; physical testing confirmed successful upload, recovery to the previous firmware after an interrupted upload, and preserved persistent memory/state.
+- No PSRAM/media optimization or deferred on-board peripheral support is introduced.
+
+Status: **hardware qualified for Waveshare logical 16x16, 32x32 and 64x64 scaling; superseded by B196 measurement work.**
+
 ## 0.6.0-dev.3 / Build 194
 
 - OTA usability hardening on top of the Build 193 Waveshare baseline.
@@ -9,7 +70,7 @@
 - Adds host regression guards and compile stubs for captive DNS/redirect behavior.
 - No scaling, GIF/PSRAM, storage or peripheral changes are included.
 
-Status: **development build; requires PlatformIO compilation and physical Waveshare captive-portal/OTA qualification.**
+Status: **hardware-qualified for OTA upload, interrupted-upload recovery and persistent-state preservation; superseded by later development builds.**
 
 ## 0.6.0-dev.3 / Build 193
 

@@ -183,7 +183,7 @@ With `IDOTMATRIX_BUZZER_PASSIVE_TRIGGER_LOW=1`, the firmware holds GPIO3 HIGH wh
 
 ## OTA maintenance overrides
 
-Build 194 enables OTA maintenance by default only on the Waveshare ESP32-S3 RGB Matrix profile. The profile uses BOOT/GPIO0 as an active-low physical trigger; Wi-Fi remains disabled until the button is held for about two seconds while the firmware is already running.
+Build 195 retains OTA maintenance by default on all three Waveshare ESP32-S3 RGB Matrix scaling profiles. The profile uses BOOT/GPIO0 as an active-low physical trigger; Wi-Fi remains disabled until the button is held for about two seconds while the firmware is already running.
 
 Local overrides may be placed in `src/IDotMatrixUserConfig.h`:
 

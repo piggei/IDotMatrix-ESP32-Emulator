@@ -125,3 +125,7 @@ Build 191 failed the first physical Waveshare gate with a blank panel and repeat
 6. Complete an OTA update and then repeat the interrupted-upload recovery gate.
 
 Client-controlled automatic portal opening is considered a usability feature rather than a protocol guarantee; failure to auto-open on one OS/version is acceptable only if wildcard DNS/HTTP redirection and the direct-IP fallback are verified.
+
+## Field result recorded before Build 195
+
+Physical Waveshare testing confirmed the OTA upload path. An intentionally interrupted upload returned to the previous valid firmware, and persistent memory/state remained intact. These gates are PASS. Automatic captive-portal window opening is client controlled and is not marked PASS here unless separately observed.
